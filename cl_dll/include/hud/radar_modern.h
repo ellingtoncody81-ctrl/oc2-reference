@@ -102,13 +102,23 @@ public:
 	float m_flPixelsPerTile;   // screen pixels per overview tile
 
 	// Grid basis. The mobile build computes these as cos(theta) and
-	// sin(theta) from the player's pitch; theta == 0 is the neutral case
-	// and reduces to a plain north-up, unsquashed radar, which is what we
-	// use. Kept as members so the pitch term can be wired in without
-	// touching the mapping code again.
+	// sin(theta) from the player's view angle. With the radar locked to the
+	// player's facing the basis is (sin yaw, -cos yaw) - at yaw 0 (facing
+	// +X / east) that puts east up and north to the right, which is the
+	// CS:GO layout. Kept as members so the term can be dialled in.
 	float m_flTileA;
 	float m_flTileB;
 	bool  m_bTileRotated;      // overview_t.rotated, or cl_radar_flip bit 1
+
+	// ---- world -> overview mapping, rebuilt every frame from the BSP world
+	//      model bounds. The overview .txt zoom/origin are the CS spectator
+	//      framing convention, not a description of the bitmap, so they
+	//      cannot be used here (see UpdateRadarTransform).
+	bool  m_bBoundsValid;
+	float m_flMapMinX;         // world X of the bitmap's left edge
+	float m_flMapMaxY;         // world Y of the bitmap's top edge
+	float m_flTilesPerUnitX;   // overview tiles per world unit along X
+	float m_flTilesPerUnitY;   // overview tiles per world unit along Y
 };
 
 extern CHudRadarModern gHudRadarModern;

@@ -72,6 +72,11 @@ static cvar_t *s_cl_radar_orient     = NULL;
 // at runtime instead of guessing and rebuilding.
 static cvar_t *s_cl_radar_shiftx      = NULL;
 static cvar_t *s_cl_radar_shifty      = NULL;
+// Lock the radar to the player's facing (CS:GO behaviour). 0 = plain
+// north-up, which is handy for comparing against the overview bitmap.
+static cvar_t *s_cl_radar_rotate      = NULL;
+// one-shot "no map bounds" complaint
+static bool    s_bWarnedNoBounds      = false;
 
 // sprite slots live in a plain table so LoadSprites() can fill them without
 // needing member-pointer gymnastics
@@ -122,6 +127,7 @@ int CHudRadarModern::Init( void )
 	s_cl_radar_orient     = CVAR_CREATE( "cl_radar_orient", "0", FCVAR_ARCHIVE );
 	s_cl_radar_shiftx     = CVAR_CREATE( "cl_radar_shiftx", "0", FCVAR_ARCHIVE );
 	s_cl_radar_shifty     = CVAR_CREATE( "cl_radar_shifty", "0", FCVAR_ARCHIVE );
+	s_cl_radar_rotate     = CVAR_CREATE( "cl_radar_rotate", "1", FCVAR_ARCHIVE );
 
 	m_bEnabled = true;
 
@@ -150,6 +156,11 @@ int CHudRadarModern::Init( void )
 	m_flTileA = 1.0f;
 	m_flTileB = 0.0f;
 	m_bTileRotated = false;
+	m_bBoundsValid = false;
+	m_flMapMinX = 0.0f;
+	m_flMapMaxY = 0.0f;
+	m_flTilesPerUnitX = 0.0f;
+	m_flTilesPerUnitY = 0.0f;
 	memset( m_szMapName, 0, sizeof( m_szMapName ) );
 	memset( &m_OverviewData, 0, sizeof( m_OverviewData ) );
 
@@ -236,23 +247,25 @@ void CHudRadarModern::SetLegacyState( int iPlayerNum )
 ========================
 UpdateRadarTransform
 
-The one place that turns the overview description into a screen scale.
+The one place that turns the loaded map into an overview mapping.
 
-CHudSpectator::DrawOverviewLayer shows how GoldSrc lays the overview image
-over the world: the image is 2*4096/zoom world units wide and
-2*4096/(zoom*aspect) tall. The tiled sprite is a MAPSPRITE_SIZE (128 px)
-grid, so the whole image is (tilesX*128) x (tilesY*128) overview pixels and
+Overview bitmaps are rendered by the BSP compiler from the world model's
+bounding box, stretched to fill the image - NOT fitted preserving aspect and
+NOT described by the overview .txt. For de_dust2 the world model is
 
-    overview pixels per world unit = (tilesX * 128) * zoom / 8192
-    world units per overview pixel = 8192 / ((tilesX * 128) * zoom)
+    mins (-2816, -1664, -320)   maxs (2048, 3936, 640)
+    X span 4864, Y span 5600   ->   1024 x 768 image pixels
 
-The radar shows a *window* of the map, not the whole map: the window is
-2*radius*view pixels wide, centred on the player, which gives
+so the two axes need *different* pixel-per-unit scales (0.2105 and 0.1371),
+the image's +u runs with world +X and its +v runs against world +Y. Anything
+derived from the .txt zoom/origin is off: those are the CS spectator framing
+convention, which lays the bitmap over a fixed 8192/zoom world square
+regardless of what the bitmap actually shows, and CHudSpectator's own
+DrawOverviewLayer uses it. It puts the whole map somewhere else, and the error
+grows as the player walks - which is exactly the "map doesn't follow me" bug.
 
-    screen pixels per world unit = 2 * radius * view * zoom / 8192
-
-Note how tilesX cancels out - the scale follows from zoom alone, so the
-same numbers work for any overview resolution.
+The window itself: a circle of `radius` screen pixels shows
+2*radius/pxPerTile tiles across, so one tile is 2*radius*view/tilesX pixels.
 ========================
 */
 void CHudRadarModern::UpdateRadarTransform( int cx, int cy, int radius )
@@ -260,13 +273,22 @@ void CHudRadarModern::UpdateRadarTransform( int cx, int cy, int radius )
 	m_iOverviewTilesX = 0;
 	m_iOverviewTilesY = 0;
 	m_flPixelsPerTile = 0.0f;
+	m_bBoundsValid = false;
 
-	// Grid basis: cos(theta), sin(theta) with theta == 0. The mobile build
-	// drives theta from the player's pitch so the radar squashes when you
-	// look up or down; at theta 0 the mapping is a plain north-up scale,
-	// which is what we use here.
-	m_flTileA = 1.0f;
-	m_flTileB = 0.0f;
+	// Grid basis. With the radar locked to the player's facing, a yaw of 0
+	// (looking down +X) has to put east up and north to the right, which is
+	// (sin, -cos). cl_radar_rotate 0 falls back to plain north-up.
+	float flYaw = DEG2RAD( gHUD.m_vecAngles[1] );
+	if( s_cl_radar_rotate && s_cl_radar_rotate->value == 0.0f )
+	{
+		m_flTileA = 1.0f;
+		m_flTileB = 0.0f;
+	}
+	else
+	{
+		m_flTileA =  sinf( flYaw );
+		m_flTileB = -cosf( flYaw );
+	}
 
 	int iOrient = s_cl_radar_orient ? (int)s_cl_radar_orient->value : 0;
 	m_bTileRotated = ( m_OverviewData.rotated != 0 ) || ( ( iOrient & 1 ) != 0 );
@@ -282,6 +304,25 @@ void CHudRadarModern::UpdateRadarTransform( int cx, int cy, int radius )
 	m_iOverviewTilesX = i * 4;
 	m_iOverviewTilesY = i * 3;
 
+	// world bounds straight out of the loaded BSP
+	float mins[3], maxs[3];
+	if( g_iRadarAPIVersion >= 2 && gRadarAPI.pfnGetRadarMapBounds
+		&& gRadarAPI.pfnGetRadarMapBounds( mins, maxs )
+		&& ( maxs[0] - mins[0] ) > 1.0f && ( maxs[1] - mins[1] ) > 1.0f )
+	{
+		m_flMapMinX      = mins[0];
+		m_flMapMaxY      = maxs[1];
+		m_flTilesPerUnitX = (float)m_iOverviewTilesX / ( maxs[0] - mins[0] );
+		m_flTilesPerUnitY = (float)m_iOverviewTilesY / ( maxs[1] - mins[1] );
+		m_bBoundsValid   = true;
+	}
+	else if( !s_bWarnedNoBounds )
+	{
+		s_bWarnedNoBounds = true;
+		gEngfuncs.Con_Printf( "radar: engine has no map-bounds export, falling back "
+			"to the overview .txt (map will be misplaced)\n" );
+	}
+
 	float flView = s_flRadarViewFraction;
 	if( flView <= 0.0f || flView > 1.0f )
 		flView = 1.0f;
@@ -289,7 +330,7 @@ void CHudRadarModern::UpdateRadarTransform( int cx, int cy, int radius )
 	// The window is 2*radius*view pixels wide and spans the whole map
 	// width, i.e. m_iOverviewTilesX tiles, so one tile is that divided by
 	// the column count. This is the only free scale parameter - the world
-	// to tile mapping itself is fixed by the overview description.
+	// to tile mapping itself is fixed by the bitmap.
 	m_flPixelsPerTile = ( (float)radius * 2.0f * flView ) / (float)m_iOverviewTilesX;
 }
 
@@ -302,60 +343,49 @@ WorldToTile
 World position -> fractional tile index in the overview image
 (128 overview pixels per tile, so tile = pixel / 128).
 
-    s  = zoom / 1024                       (DAT_000c5050 == 0.0009765625)
-    tx = 4 + s * (world.x - origin.x)
-    ty =     s * (world.y - origin.y)
+Primary path, taken from the map's own world model bounds:
 
-Read off the Thumb instruction stream of Draw, the non-rotated path
-(the one de_dust2 takes, offsets +556..+640):
+    tx = (wx - bounds.mins[0]) * tilesX / (bounds.maxs[0] - bounds.mins[0])
+    ty = (bounds.maxs[1] - wy) * tilesY / (bounds.maxs[1] - bounds.mins[1])
 
-    s4   = *(gHUD + 0xc9c)                ; zoom
-    d2   = s4 * 1/1024
-    d3   = -1.0 + d2*(origin.y - world.x)
-    d10  =  3.0 + d2*(origin.y - world.y)
-    d13  = -d3 = 1.0 - d2*(origin.y - world.x)
+The image's row 0 is the NORTH edge of the map, so ty grows as wy falls.
+de_dust2 gives 0.00164474 tiles per X unit and 0.00107143 per Y unit.
 
-and that reproduces the measured overview pixel exactly:
+Verified against the game: at player (103.28, 2141.21) this yields
+tile (4.801, 1.923), putting the tile-grid origin 18.5 px above where the
+old formula did - and the video shows the map's top edge at y=99 against
+98.1 predicted, a 1 px match. The old zoom/origin formula predicted 116.7.
 
-    u = 1024/2 + (wx - ox) * zoom/8        ; variance 15565 on real map
-    v =         (wy - oy) * zoom/8
-
-which is the same as tx*128 and ty*128 for the formula above. The other
-candidate - the crossed-axes form that Ghidra's C output shows - lands on
-the flat background instead (variance 533), because that C output is the
-*ROTATED* branch, reached only via the `beq` at +554.
-
-The axes are NOT crossed: world X picks the tile column, world Y picks the
-tile row, each against its own origin component.
+Fallback path (engine without the bounds export) keeps the .txt reading so
+the radar still draws, but it is known to be misplaced - see the comment in
+UpdateRadarTransform.
 ========================
 */
 void CHudRadarModern::WorldToTile( const Vector &vecWorld, float &tx, float &ty ) const
 {
-	float flZoom = m_OverviewData.zoom > 0.0f ? m_OverviewData.zoom : 1.0f;
-	float s = flZoom * ( 1.0f / 1024.0f );
-
-	if( !m_bTileRotated )
+	if( m_bBoundsValid )
 	{
-		tx = 4.0f + s * ( vecWorld[0] - m_OverviewData.origin[0] );
-		ty =        s * ( vecWorld[1] - m_OverviewData.origin[1] );
+		tx = ( vecWorld[0] - m_flMapMinX ) * m_flTilesPerUnitX;
+		ty = ( m_flMapMaxY - vecWorld[1] ) * m_flTilesPerUnitY;
 	}
 	else
 	{
-		// ROTATED branch, read off the +736 block. Not measured - none of
-		// the maps we ship set ROTATED - so keep the description's own
-		// flag rather than inventing a different transpose.
-		tx = 3.0f + s * ( m_OverviewData.origin[1] - vecWorld[0] );
-		ty = 4.0f + s * ( m_OverviewData.origin[0] - vecWorld[1] );
+		float flZoom = m_OverviewData.zoom > 0.0f ? m_OverviewData.zoom : 1.0f;
+		float s = flZoom * ( 1.0f / 1024.0f );
+
+		tx = 4.0f + s * ( vecWorld[0] - m_OverviewData.origin[0] );
+		ty =        s * ( vecWorld[1] - m_OverviewData.origin[1] );
 	}
 
-	// user overrides on top, for overviews whose description lies
-	int iOrient = s_cl_radar_orient ? (int)s_cl_radar_orient->value : 0;
-	if( iOrient & 1 )
+	if( m_bTileRotated )
 	{
 		float t = tx;
 		tx = ty;
 		ty = t;
 	}
+
+	// user overrides on top, for overviews whose description lies
+	int iOrient = s_cl_radar_orient ? (int)s_cl_radar_orient->value : 0;
 	if( iOrient & 2 )
 		ty = -ty;
 
@@ -1032,8 +1062,8 @@ int CHudRadarModern::Draw( float flTime )
 		WorldToTile( gHUD.m_vecOrigin, selfX, selfY );
 		snprintf( szDbg, sizeof( szDbg ),
 			"radar: valid=%d frames=%d tiles=%dx%d zoom=%g org=%g,%g pl=%g,%g "
-			"tile=(%.2f,%.2f) px/tile=%g view=%g orient=%d rot=%d shift=%g,%g "
-			"r=%d c=%d,%d",
+			"tile=(%.3f,%.3f) px/tile=%g view=%g rot=%d A=%.2f,B=%.2f "
+			"bnd=%d minX=%.0f maxY=%.0f k=%.6f/%.6f pn=%d exo=%g,%g r=%d c=%d,%d",
 			m_bOverviewValid, nFrames,
 			m_iOverviewTilesX, m_iOverviewTilesY,
 			m_OverviewData.zoom,
@@ -1041,9 +1071,12 @@ int CHudRadarModern::Draw( float flTime )
 			gHUD.m_vecOrigin[0], gHUD.m_vecOrigin[1],
 			selfX, selfY, m_flPixelsPerTile, s_flRadarViewFraction,
 			s_cl_radar_orient ? (int)s_cl_radar_orient->value : 0,
-			m_bTileRotated ? 1 : 0,
-			s_cl_radar_shiftx ? s_cl_radar_shiftx->value : 0.0f,
-			s_cl_radar_shifty ? s_cl_radar_shifty->value : 0.0f,
+			m_flTileA, m_flTileB,
+			m_bBoundsValid ? 1 : 0, m_flMapMinX, m_flMapMaxY,
+			m_flTilesPerUnitX, m_flTilesPerUnitY,
+			m_iPlayerNum,
+			( m_iPlayerNum > 0 && m_iPlayerNum < 32 ) ? g_PlayerExtraInfo[m_iPlayerNum].origin[0] : 0.0f,
+			( m_iPlayerNum > 0 && m_iPlayerNum < 32 ) ? g_PlayerExtraInfo[m_iPlayerNum].origin[1] : 0.0f,
 			m_iRadius, m_iCenterX, m_iCenterY );
 		DrawUtils::DrawConsoleString( 4, 260, szDbg );
 	}

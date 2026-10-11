@@ -510,17 +510,19 @@ and never calls this at all.
 */
 int DLLEXPORT HUD_RadarInterface( radar_engfuncs_t *radarapi )
 {
-	if( radarapi->version != RADAR_API_VERSION )
+	if( radarapi->version < 1 || radarapi->version > RADAR_API_VERSION )
 	{
 		gEngfuncs.Con_Printf("Client Error: Radar API version mismatch. Got: %i, want: %i\n",
 			radarapi->version, RADAR_API_VERSION);
 		return 1;
 	}
 
-	g_iRadarAPIVersion = RADAR_API_VERSION;
+	// remember the version the engine actually sent, not the newest we know:
+	// pfnGetRadarMapBounds only exists from v2 on
+	g_iRadarAPIVersion = radarapi->version;
 	gRadarAPI = *radarapi;
 
-	gEngfuncs.Con_Printf( "^2RadarAPI initialized ^7(ver. %i)\n", RADAR_API_VERSION);
+	gEngfuncs.Con_Printf( "^2RadarAPI initialized ^7(ver. %i)\n", g_iRadarAPIVersion);
 
 	if( gRadarAPI.pfnInitRadarCapture )
 		gRadarAPI.pfnInitRadarCapture();
