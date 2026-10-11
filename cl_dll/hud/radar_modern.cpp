@@ -364,6 +364,15 @@ void CHudRadarModern::LoadOverview( const char *pszMapName )
 	{
 		m_bOverviewValid = true;
 		m_OverviewData    = gHUD.m_Spectator.m_OverviewData;
+
+		// A rotated overview is stored turned 90 degrees; the CS:GO radar
+		// path below assumes the standard north-up image, so say so instead
+		// of silently drawing the map sideways.
+		if( m_OverviewData.rotated )
+		{
+			gEngfuncs.Con_Printf( "radar: overview '%s' is ROTATED, "
+				"drawn north-up anyway (unsupported)\n", m_szMapName );
+		}
 	}
 	else
 	{
@@ -379,6 +388,10 @@ Flat fill inside the circle. Everything the map does not cover - and the
 outside of the overview image - shows this instead of the game behind the
 HUD. The mobile build gets that area from its blurred background capture;
 this keeps the shape correct when blurring is off.
+
+The white texture has to be bound explicitly: the tri API keeps whatever
+the previous HUD element left bound, and sampling that turns the disc
+black.
 ========================
 */
 void CHudRadarModern::DrawRadarDisc( int cx, int cy, int radius )
@@ -386,6 +399,12 @@ void CHudRadarModern::DrawRadarDisc( int cx, int cy, int radius )
 	int i;
 	const int kSegs = 48;
 	float flStep = ( 2.0f * 3.14159265358979f ) / kSegs;
+
+	if( gHUD.m_WhiteTex )
+	{
+		gRenderAPI.GL_SelectTexture( 0 );
+		gRenderAPI.GL_Bind( 0, gHUD.m_WhiteTex );
+	}
 
 	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
 	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
@@ -401,8 +420,11 @@ void CHudRadarModern::DrawRadarDisc( int cx, int cy, int radius )
 		float flX = cx + cosf( flAng ) * (float)radius;
 		float flY = cy + sinf( flAng ) * (float)radius;
 
+		gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
 		gEngfuncs.pTriAPI->Vertex3f( cx, cy, 0 );
+		gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
 		gEngfuncs.pTriAPI->Vertex3f( flPrevX, flPrevY, 0 );
+		gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
 		gEngfuncs.pTriAPI->Vertex3f( flX, flY, 0 );
 
 		flPrevX = flX;
@@ -410,6 +432,94 @@ void CHudRadarModern::DrawRadarDisc( int cx, int cy, int radius )
 	}
 
 	gEngfuncs.pTriAPI->End();
+}
+
+/*
+========================
+ClipPolyToCircle
+
+Sutherland-Hodgman against the radar circle approximated by a convex
+polygon. The overview tiles are square, so without this the map spills
+outside the round window - the mobile build bounds it to the circle.
+========================
+*/
+#define RADAR_CLIP_SEGS  32
+#define RADAR_CLIP_MAX   64
+
+static int ClipPolyToCircle( const float *inX, const float *inY, int n,
+                             float *outX, float *outY,
+                             float cx, float cy, float radius )
+{
+	float tX[RADAR_CLIP_MAX], tY[RADAR_CLIP_MAX];
+	int cur = n;
+	int e, i, m;
+
+	if( cur > RADAR_CLIP_MAX )
+		cur = RADAR_CLIP_MAX;
+
+	for( i = 0; i < cur; i++ )
+	{
+		tX[i] = inX[i];
+		tY[i] = inY[i];
+	}
+
+	for( e = 0; e < RADAR_CLIP_SEGS && cur > 0; e++ )
+	{
+		float a0 = ( 2.0f * 3.14159265358979f ) * (float)e / (float)RADAR_CLIP_SEGS;
+		float a1 = ( 2.0f * 3.14159265358979f ) * (float)( e + 1 ) / (float)RADAR_CLIP_SEGS;
+		float ax = cx + cosf( a0 ) * radius;
+		float ay = cy + sinf( a0 ) * radius;
+		float bx = cx + cosf( a1 ) * radius;
+		float by = cy + sinf( a1 ) * radius;
+
+		float ex = bx - ax, ey = by - ay;
+		float len = sqrtf( ex * ex + ey * ey );
+		float nx, ny;
+
+		if( len < 0.0001f )
+			continue;
+
+		nx = -ey / len;
+		ny =  ex / len;		// inward normal for a CCW polygon
+
+		m = 0;
+		for( i = 0; i < cur; i++ )
+		{
+			int j = ( i + 1 ) % cur;
+			float d0 = ( tX[i] - ax ) * nx + ( tY[i] - ay ) * ny;
+			float d1 = ( tX[j] - ax ) * nx + ( tY[j] - ay ) * ny;
+
+			if( d0 >= 0.0f )
+			{
+				outX[m] = tX[i];
+				outY[m] = tY[i];
+				m++;
+			}
+
+			if( ( d0 >= 0.0f ) != ( d1 >= 0.0f ) )
+			{
+				float t = d0 / ( d0 - d1 );
+				outX[m] = tX[i] + ( tX[j] - tX[i] ) * t;
+				outY[m] = tY[i] + ( tY[j] - tY[i] ) * t;
+				m++;
+			}
+		}
+
+		for( i = 0; i < m; i++ )
+		{
+			tX[i] = outX[i];
+			tY[i] = outY[i];
+		}
+		cur = m;
+	}
+
+	for( i = 0; i < cur; i++ )
+	{
+		outX[i] = tX[i];
+		outY[i] = tY[i];
+	}
+
+	return cur;
 }
 
 /*
@@ -424,6 +534,11 @@ build reproduces.
 Tile grid and frame order are identical to CHudSpectator::DrawOverviewLayer
 (n = sqrt(numframes/12), then n*4 columns by n*3 rows, frames row major);
 only the anchor differs.
+
+The image anchor is always "one player-offset back from the centre" so the
+player lands exactly on the radar centre. Which way the image itself faces
+is a property of the bitmap, not of the anchor, so cl_radar_flip mirrors
+the tile grid rather than moving the anchor.
 ========================
 */
 void CHudRadarModern::DrawOverviewLayer( int cx, int cy, int radius )
@@ -448,14 +563,7 @@ void CHudRadarModern::DrawOverviewLayer( int cx, int cy, int radius )
 	float flImageX = (float)cx - ( gHUD.m_vecOrigin[0] - flOx ) * m_flPixelsPerWorld;
 	float flImageY = (float)cy - ( gHUD.m_vecOrigin[1] - flOy ) * m_flPixelsPerWorld;
 
-	if( iFlip & 1 )
-		flImageX = (float)cx + ( gHUD.m_vecOrigin[0] - flOx ) * m_flPixelsPerWorld;
-
-	if( !( iFlip & 2 ) )
-		flImageY = (float)cy + ( gHUD.m_vecOrigin[1] - flOy ) * m_flPixelsPerWorld;
-
-	// one tile on screen: the window is 2*radius*view wide and the image is
-	// xTiles tiles across, and 128 px tiles are square, so x and y steps match
+	// 128 px tiles are square, so one step covers both axes
 	float flView = s_flRadarViewFraction;
 	if( flView <= 0.0f || flView > 1.0f )
 		flView = 1.0f;
@@ -474,6 +582,8 @@ void CHudRadarModern::DrawOverviewLayer( int cx, int cy, int radius )
 	if( lastX > xTiles ) lastX = xTiles;
 	if( lastY > yTiles ) lastY = yTiles;
 
+	float flR = (float)radius;
+
 	gEngfuncs.pTriAPI->RenderMode( kRenderTransTexture );
 	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
 	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
@@ -485,22 +595,43 @@ void CHudRadarModern::DrawOverviewLayer( int cx, int cy, int radius )
 		for( int tx = firstX; tx < lastX; tx++ )
 		{
 			float x = flImageX + (float)tx * flTile;
-			int frame = ty * xTiles + tx;
+
+			// mirror the tile grid, not the anchor
+			int sx = ( iFlip & 1 ) ? ( xTiles - 1 - tx ) : tx;
+			int sy = ( iFlip & 2 ) ? ( yTiles - 1 - ty ) : ty;
+			int frame = sy * xTiles + sx;
 
 			if( frame < 0 || frame >= pSprite->numframes )
 				continue;
 
-			gEngfuncs.pTriAPI->SpriteTexture( pSprite, frame );
+			// clip the tile to the circle; texcoords come back from the
+			// vertex position, so a clipped corner keeps the right pixel
+			float qX[4] = { x, x + flTile, x + flTile, x };
+			float qY[4] = { y, y, y + flTile, y + flTile };
+			float cX[RADAR_CLIP_MAX], cY[RADAR_CLIP_MAX];
 
-			gEngfuncs.pTriAPI->Begin( TRI_QUADS );
-			gEngfuncs.pTriAPI->TexCoord2f( 0, 0 );
-			gEngfuncs.pTriAPI->Vertex3f( x, y, 0 );
-			gEngfuncs.pTriAPI->TexCoord2f( 1, 0 );
-			gEngfuncs.pTriAPI->Vertex3f( x + flTile, y, 0 );
-			gEngfuncs.pTriAPI->TexCoord2f( 1, 1 );
-			gEngfuncs.pTriAPI->Vertex3f( x + flTile, y + flTile, 0 );
-			gEngfuncs.pTriAPI->TexCoord2f( 0, 1 );
-			gEngfuncs.pTriAPI->Vertex3f( x, y + flTile, 0 );
+			int n = ClipPolyToCircle( qX, qY, 4, cX, cY, (float)cx, (float)cy, flR );
+			if( n < 3 )
+				continue;
+
+			float flInv = 1.0f / flTile;
+
+			gEngfuncs.pTriAPI->SpriteTexture( pSprite, frame );
+			gEngfuncs.pTriAPI->Begin( TRI_TRIANGLES );
+
+			for( int i = 2; i < n; i++ )
+			{
+				const float vx[3] = { cX[0], cX[i - 1], cX[i] };
+				const float vy[3] = { cY[0], cY[i - 1], cY[i] };
+
+				for( int k = 0; k < 3; k++ )
+				{
+					gEngfuncs.pTriAPI->TexCoord2f( ( vx[k] - x ) * flInv,
+						( vy[k] - y ) * flInv );
+					gEngfuncs.pTriAPI->Vertex3f( vx[k], vy[k], 0 );
+				}
+			}
+
 			gEngfuncs.pTriAPI->End();
 		}
 	}
