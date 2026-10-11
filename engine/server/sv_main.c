@@ -135,7 +135,14 @@ CVAR_DEFINE( public_server, "public", "0", 0, "change server type from private t
 
 CVAR_DEFINE_AUTO( sv_novis, "0", 0, "force to ignore server visibility" );			// disable server culling entities by vis
 CVAR_DEFINE( sv_pausable, "pausable", "1", 0, "allow players to pause or not" );
-CVAR_DEFINE( sv_maxclients, "maxplayers", "1", FCVAR_LATCH, "server max capacity" );
+// Default 10 rather than 1. A listen server started from the menu used to be
+// locked to a single slot because the menu's New Game path hardcodes
+// maxplayers 1 (mainui_cpp/menus/NewGame.cpp:77) on top of this default, so
+// the only way to get a bot match was to retype it in the console every time.
+// FCVAR_LATCH means the value only takes effect on a map change, which is
+// exactly what we want: it is read when the server is set up, and SV_SetupClients
+// clamps it to bound(1, n, MAX_CLIENTS) anyway (sv_init.c:817).
+CVAR_DEFINE( sv_maxclients, "maxplayers", "10", FCVAR_LATCH, "server max capacity" );
 CVAR_DEFINE_AUTO( sv_check_errors, "0", FCVAR_ARCHIVE, "check edicts for errors" );
 CVAR_DEFINE_AUTO( sv_validate_changelevel, "0", 0, "test change level for level-designer errors" );
 CVAR_DEFINE( sv_hostmap, "hostmap", "", 0, "keep name of last entered map" );

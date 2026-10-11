@@ -1292,6 +1292,18 @@ int EXPORT Host_Main( int argc, char **argv, const char *progname, int bChangeGa
 		// exec all files from userconfig.d
 		Cbuf_AddText( "userconfigd\n" );
 		Cbuf_Execute();
+
+		// Now run the commandline "+" commands.
+		//
+		// This used to be done only in the dedicated case below, which meant
+		// "+maxplayers 10 +map de_dust2" and friends were silently dropped
+		// whenever the game ran in a window: Cbuf_ExecStuffCmds() bails out
+		// immediately unless stuffcmds_pending is set, and nothing set it on
+		// this path. Anything after Host_InitCommon's switch is far too late
+		// for a command that has to run before the first map is loaded, so
+		// mark them here, right after the startup configs - which is also
+		// where a dedicated run ends up doing it.
+		host.stuffcmds_pending = true;
 		break;
 	case HOST_DEDICATED:
 		// allways parse commandline in dedicated-mode
