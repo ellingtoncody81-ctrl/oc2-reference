@@ -1082,24 +1082,28 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	if( !pEnt || !pEnt->player )
 		return;
 
-	// Team comes from the entity's curstate.team, NOT from
-	// g_PlayerExtraInfo[i].teamnumber.
+	// The team is read out of the player info string, not from any client side
+	// structure.
 	//
-	// teamnumber is only ever written by CHudScoreboard::MsgFunc_TeamInfo
-	// (scoreboard.cpp:620), and that handler is never registered anywhere in
-	// cl_dll, while this engine never sends a TeamInfo message either - a
-	// grep for it over engine/ comes back empty. So every player kept the
-	// zero-initialised value, every bot compared equal to the local player,
-	// and every blip came out as a teammate.
+	// g_PlayerExtraInfo[i].teamnumber is written only by
+	// CHudScoreboard::MsgFunc_TeamInfo (scoreboard.cpp:620), and that handler is
+	// never registered here. This engine has no svc_gamemessage at all, so the
+	// gmsgTeamInfo the server sends simply never arrives - which is why the
+	// team was always 0 and every blip came out as a teammate.
+	// entity_state.team is no better: nothing on the server side ever writes
+	// it either.
 	//
-	// curstate.team is part of the per-frame entity state
-	// (common/entity_state.h:79) and carries the real value - TERRORIST or CT
-	// on a CS server. The exact numbers do not matter, only that the two
-	// sides differ.
-	cl_entity_t *pLocal = gEngfuncs.GetLocalPlayer();
-	int iLocalTeam = pLocal ? pLocal->curstate.team : TEAM_UNASSIGNED;
+	// What does get through is svc_updateuserinfo: the server mirrors the team
+	// into the info string as a "team" key (regamedll player.cpp,
+	// TeamChangeUpdate), the engine picks it out in CL_GetPlayerInfo and
+	// hands it over as hud_player_info_t.team.
+	//
+	// Anything unidentified is drawn as an enemy rather than as a teammate:
+	// showing an enemy as friendly is the dangerous direction.
+	int iLocalTeam = g_PlayerInfoList[ m_iPlayerNum ].team;
+	int iTheirTeam = g_PlayerInfoList[ i ].team;
 
-	bool bFriend = ( pEnt->curstate.team == iLocalTeam );
+	bool bFriend = ( iLocalTeam >= 0 && iTheirTeam >= 0 && iTheirTeam == iLocalTeam );
 
 	// Teammates blue, enemies red. The sprite sheets are named iplayerblue /
 	// iplayerred and this matches that convention; SPR_Set modulates whatever
