@@ -21,7 +21,7 @@ This file is placed under the Unlicense, like its mobility_int.h sibling.
 extern "C" {
 #endif
 
-#define RADAR_API_VERSION   1
+#define RADAR_API_VERSION   2
 #define RADAR_CLIENT_EXPORT "HUD_RadarInterface"
 
 // signatures of the renderer-side implementations (ref/gl/gl_radar.c);
@@ -66,6 +66,13 @@ typedef struct radar_engfuncs_s
 	// elements too (scoreboard, death notice).
 	int (*pfnApplyBoxBlur)( const unsigned char *src, unsigned char *dst,
 		int width, int height, int radius );
+
+	// v2: world-space bounding box of the loaded map, as stored in the BSP
+	// world model. The overview .txt zoom/origin describe the *spectator*
+	// framing convention (a fixed 8192/zoom world window), NOT how the .bmp
+	// actually covers the map, so the radar cannot derive the overview
+	// mapping from them. Returns 0 when no map is loaded.
+	int (*pfnGetRadarMapBounds)( float *mins, float *maxs );
 } radar_engfuncs_t;
 
 // exported by the client, called by the engine once at init
