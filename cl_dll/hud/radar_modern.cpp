@@ -65,6 +65,9 @@ static cvar_t *s_cl_radar_view        = NULL;
 // image handedness, so this stays user adjustable. 0 = standard radar
 // convention: +X right, +Y up.
 static cvar_t *s_cl_radar_flip       = NULL;
+// Turn the map with the view so whatever the player faces points up. The
+// mobile build does this; the classic CS radar does not.
+static cvar_t *s_cl_radar_rotate     = NULL;
 
 // sprite slots live in a plain table so LoadSprites() can fill them without
 // needing member-pointer gymnastics
@@ -113,6 +116,7 @@ int CHudRadarModern::Init( void )
 	// smaller = see more of it)
 	s_cl_radar_view       = CVAR_CREATE( "cl_radar_view", "1", FCVAR_ARCHIVE );
 	s_cl_radar_flip       = CVAR_CREATE( "cl_radar_flip", "0", FCVAR_ARCHIVE );
+	s_cl_radar_rotate     = CVAR_CREATE( "cl_radar_rotate", "1", FCVAR_ARCHIVE );
 
 	m_bEnabled = true;
 
@@ -269,6 +273,37 @@ void CHudRadarModern::UpdateRadarTransform( int cx, int cy, int radius )
 		flView = 1.0f;
 
 	m_flPixelsPerWorld = ( (float)radius * 2.0f * flZoom * flView ) / 8192.0f;
+
+	m_bRadarRotate = s_cl_radar_rotate ? ( s_cl_radar_rotate->value != 0.0f ) : true;
+}
+
+/*
+========================
+ApplyRadarRotation
+
+The mobile build turns the map with the view: whatever the player is
+looking at is drawn pointing up. Rotating by (90 - viewYaw) does exactly
+that - feed in the world forward vector (cos y, sin y) and it comes out
+as (0, 1), i.e. straight up.
+
+Every point goes through here: the overview tile corners, the player
+blips, so they can never drift apart.
+========================
+*/
+void CHudRadarModern::ApplyRadarRotation( float &x, float &y ) const
+{
+	if( !m_bRadarRotate )
+		return;
+
+	float flAng = DEG2RAD( gHUD.m_vecAngles[1] );
+	float flS = sinf( flAng );
+	float flC = cosf( flAng );
+
+	float flDX = x - (float)m_iCenterX;
+	float flDY = y - (float)m_iCenterY;
+
+	x = (float)m_iCenterX + ( flDX * flS - flDY * flC );
+	y = (float)m_iCenterY - ( flDX * flC + flDY * flS );
 }
 
 /*
@@ -295,23 +330,26 @@ bool CHudRadarModern::CalcPoint( const Vector &vecWorld, int &x, int &y, int &ra
 		return false;
 	}
 
-	int iFlip = s_cl_radar_flip ? (int)s_cl_radar_flip->value : 0;
+	// map space first, then the same rotation the tiles get
+	float fx = (float)m_iCenterX + ( vecWorld[0] - gHUD.m_vecOrigin[0] ) * m_flPixelsPerWorld;
+	float fy = (float)m_iCenterY - ( vecWorld[1] - gHUD.m_vecOrigin[1] ) * m_flPixelsPerWorld;
 
-	float fx = ( vecWorld[0] - gHUD.m_vecOrigin[0] ) * m_flPixelsPerWorld;
-	float fy = ( vecWorld[1] - gHUD.m_vecOrigin[1] ) * m_flPixelsPerWorld;
+	if( s_cl_radar_flip )
+	{
+		int iFlip = (int)s_cl_radar_flip->value;
+		if( iFlip & 1 )
+			fx = 2.0f * (float)m_iCenterX - fx;
+		if( iFlip & 2 )
+			fy = 2.0f * (float)m_iCenterY - fy;
+	}
 
-	if( iFlip & 1 )
-		fx = -fx;
+	ApplyRadarRotation( fx, fy );
 
-	// standard radar orientation: world +Y is up, screen Y grows downwards
-	if( !( iFlip & 2 ) )
-		fy = -fy;
+	x = (int)fx;
+	y = (int)fy;
 
-	x = m_iCenterX + (int)fx;
-	y = m_iCenterY + (int)fy;
-
-	float flDX = (float)( x - m_iCenterX );
-	float flDY = (float)( y - m_iCenterY );
+	float flDX = fx - (float)m_iCenterX;
+	float flDY = fy - (float)m_iCenterY;
 
 	return ( flDX * flDX + flDY * flDY ) > (float)( m_iRadius * m_iRadius );
 }
@@ -408,7 +446,8 @@ void CHudRadarModern::DrawRadarDisc( int cx, int cy, int radius )
 
 	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
 	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
-	gEngfuncs.pTriAPI->Color4ub( 210, 210, 210, 235 );
+	// the mobile radar sits on a dark navy plate, not a light one
+	gEngfuncs.pTriAPI->Color4ub( 22, 28, 48, 210 );
 	gEngfuncs.pTriAPI->Begin( TRI_TRIANGLES );
 
 	float flPrevX = cx + (float)radius;
@@ -441,16 +480,24 @@ ClipPolyToCircle
 Sutherland-Hodgman against the radar circle approximated by a convex
 polygon. The overview tiles are square, so without this the map spills
 outside the round window - the mobile build bounds it to the circle.
+
+The texture coordinate travels along as a per-vertex attribute: the
+polygon is rotated before it is clipped, and the clip points land between
+two corners, so their texcoords have to be interpolated here rather than
+recovered from the final screen position afterwards.
 ========================
 */
 #define RADAR_CLIP_SEGS  32
 #define RADAR_CLIP_MAX   64
 
-static int ClipPolyToCircle( const float *inX, const float *inY, int n,
+static int ClipPolyToCircle( const float *inX, const float *inY,
+                             const float *inU, const float *inV, int n,
                              float *outX, float *outY,
+                             float *outU, float *outV,
                              float cx, float cy, float radius )
 {
 	float tX[RADAR_CLIP_MAX], tY[RADAR_CLIP_MAX];
+	float tU[RADAR_CLIP_MAX], tV[RADAR_CLIP_MAX];
 	int cur = n;
 	int e, i, m;
 
@@ -461,6 +508,8 @@ static int ClipPolyToCircle( const float *inX, const float *inY, int n,
 	{
 		tX[i] = inX[i];
 		tY[i] = inY[i];
+		tU[i] = inU[i];
+		tV[i] = inV[i];
 	}
 
 	for( e = 0; e < RADAR_CLIP_SEGS && cur > 0; e++ )
@@ -493,6 +542,8 @@ static int ClipPolyToCircle( const float *inX, const float *inY, int n,
 			{
 				outX[m] = tX[i];
 				outY[m] = tY[i];
+				outU[m] = tU[i];
+				outV[m] = tV[i];
 				m++;
 			}
 
@@ -501,6 +552,8 @@ static int ClipPolyToCircle( const float *inX, const float *inY, int n,
 				float t = d0 / ( d0 - d1 );
 				outX[m] = tX[i] + ( tX[j] - tX[i] ) * t;
 				outY[m] = tY[i] + ( tY[j] - tY[i] ) * t;
+				outU[m] = tU[i] + ( tU[j] - tU[i] ) * t;
+				outV[m] = tV[i] + ( tV[j] - tV[i] ) * t;
 				m++;
 			}
 		}
@@ -509,6 +562,8 @@ static int ClipPolyToCircle( const float *inX, const float *inY, int n,
 		{
 			tX[i] = outX[i];
 			tY[i] = outY[i];
+			tU[i] = outU[i];
+			tV[i] = outV[i];
 		}
 		cur = m;
 	}
@@ -517,6 +572,8 @@ static int ClipPolyToCircle( const float *inX, const float *inY, int n,
 	{
 		outX[i] = tX[i];
 		outY[i] = tY[i];
+		outU[i] = tU[i];
+		outV[i] = tV[i];
 	}
 
 	return cur;
@@ -586,7 +643,9 @@ void CHudRadarModern::DrawOverviewLayer( int cx, int cy, int radius )
 
 	gEngfuncs.pTriAPI->RenderMode( kRenderTransTexture );
 	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
-	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
+	// overviews ship as greyscale bmp; the mobile radar tints them cool so
+	// the map reads as blue-on-navy rather than grey-on-navy
+	gEngfuncs.pTriAPI->Color4ub( 150, 180, 215, 255 );
 
 	for( int ty = firstY; ty < lastY; ty++ )
 	{
@@ -604,31 +663,58 @@ void CHudRadarModern::DrawOverviewLayer( int cx, int cy, int radius )
 			if( frame < 0 || frame >= pSprite->numframes )
 				continue;
 
-			// clip the tile to the circle; texcoords come back from the
-			// vertex position, so a clipped corner keeps the right pixel
-			float qX[4] = { x, x + flTile, x + flTile, x };
-			float qY[4] = { y, y, y + flTile, y + flTile };
+			// Build the tile in map space, remember the texcoords, then flip
+			// and rotate the corners. A rigid transform leaves the texcoords
+			// untouched, and the clipper below interpolates them for the
+			// points it creates on the circle.
 			float cX[RADAR_CLIP_MAX], cY[RADAR_CLIP_MAX];
+			float cU[RADAR_CLIP_MAX], cV[RADAR_CLIP_MAX];
 
-			int n = ClipPolyToCircle( qX, qY, 4, cX, cY, (float)cx, (float)cy, flR );
+			cX[0] = x;                 cY[0] = y;
+			cX[1] = x + flTile;        cY[1] = y;
+			cX[2] = x + flTile;        cY[2] = y + flTile;
+			cX[3] = x;                 cY[3] = y + flTile;
+
+			cU[0] = 0.0f; cV[0] = 0.0f;
+			cU[1] = 1.0f; cV[1] = 0.0f;
+			cU[2] = 1.0f; cV[2] = 1.0f;
+			cU[3] = 0.0f; cV[3] = 1.0f;
+
+			if( iFlip & 1 )
+			{
+				for( int k = 0; k < 4; k++ )
+					cX[k] = 2.0f * (float)cx - cX[k];
+			}
+
+			if( iFlip & 2 )
+			{
+				for( int k = 0; k < 4; k++ )
+					cY[k] = 2.0f * (float)cy - cY[k];
+			}
+
+			if( m_bRadarRotate )
+			{
+				for( int k = 0; k < 4; k++ )
+					ApplyRadarRotation( cX[k], cY[k] );
+			}
+
+			int n = ClipPolyToCircle( cX, cY, cU, cV, 4, cX, cY, cU, cV,
+				(float)cx, (float)cy, flR );
 			if( n < 3 )
 				continue;
-
-			float flInv = 1.0f / flTile;
 
 			gEngfuncs.pTriAPI->SpriteTexture( pSprite, frame );
 			gEngfuncs.pTriAPI->Begin( TRI_TRIANGLES );
 
 			for( int i = 2; i < n; i++ )
 			{
-				const float vx[3] = { cX[0], cX[i - 1], cX[i] };
-				const float vy[3] = { cY[0], cY[i - 1], cY[i] };
+				const int idx[3] = { 0, i - 1, i };
 
 				for( int k = 0; k < 3; k++ )
 				{
-					gEngfuncs.pTriAPI->TexCoord2f( ( vx[k] - x ) * flInv,
-						( vy[k] - y ) * flInv );
-					gEngfuncs.pTriAPI->Vertex3f( vx[k], vy[k], 0 );
+					int v = idx[k];
+					gEngfuncs.pTriAPI->TexCoord2f( cU[v], cV[v] );
+					gEngfuncs.pTriAPI->Vertex3f( cX[v], cY[v], 0 );
 				}
 			}
 
@@ -637,6 +723,53 @@ void CHudRadarModern::DrawOverviewLayer( int cx, int cy, int radius )
 	}
 
 	gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
+}
+
+/*
+========================
+DrawSelfMarker
+
+The local player sits at the radar centre. The mobile build shows it even
+though every other blip goes through DrawPlayerBlip, which skips the local
+player - otherwise the centre of the radar is just an empty map pixel and
+there is nothing to tell the viewer which way they are facing.
+========================
+*/
+void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
+{
+	CClientSprite *pSprite = s_spr[SPR_PLAYER];
+
+	// an arrow-ish marker: a small triangle in the facing direction, so it
+	// reads the same as the CS:GO one even when no sprite is available
+	int iTeam = g_PlayerExtraInfo[ m_iPlayerNum ].teamnumber;
+	int r = ( iTeam == 1 ) ? 0 : 255;
+	int g = ( iTeam == 1 ) ? 255 : 0;
+	int b = 0;
+	int iSize = max( 4, radius / 14 );
+
+	if( pSprite && pSprite->spr )
+	{
+		SPR_Set( pSprite->spr, r, g, b );
+		SPR_DrawAdditive( cx - iSize, cy - iSize, 0, &pSprite->rect );
+		return;
+	}
+
+	float flAng = DEG2RAD( gHUD.m_vecAngles[1] ) + 1.5707963f;
+	float flTipX = cx + cosf( flAng ) * (float)iSize;
+	float flTipY = cy + sinf( flAng ) * (float)iSize;
+	float flBX = cx + cosf( flAng + 2.0944f ) * (float)iSize;
+	float flBY = cy + sinf( flAng + 2.0944f ) * (float)iSize;
+	float flCX = cx + cosf( flAng - 2.0944f ) * (float)iSize;
+	float flCY = cy + sinf( flAng - 2.0944f ) * (float)iSize;
+
+	gEngfuncs.pTriAPI->RenderMode( kRenderTransAdd );
+	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
+	gEngfuncs.pTriAPI->Color4ub( r, g, b, 255 );
+	gEngfuncs.pTriAPI->Begin( TRI_TRIANGLES );
+	gEngfuncs.pTriAPI->Vertex3f( flTipX, flTipY, 0 );
+	gEngfuncs.pTriAPI->Vertex3f( flBX, flBY, 0 );
+	gEngfuncs.pTriAPI->Vertex3f( flCX, flCY, 0 );
+	gEngfuncs.pTriAPI->End();
 }
 
 /*
@@ -845,7 +978,7 @@ int CHudRadarModern::Draw( float flTime )
 			? gHUD.m_Spectator.GetMapSprite()->numframes : -1;
 		snprintf( szDbg, sizeof( szDbg ),
 			"radar: valid=%d frames=%d tiles=%dx%d zoom=%g org=%g,%g pl=%g,%g "
-			"px/w=%g view=%g flip=%d r=%d c=%d,%d",
+			"px/w=%g view=%g flip=%d rot=%d yaw=%g r=%d c=%d,%d",
 			m_bOverviewValid, nFrames,
 			m_iOverviewTilesX, m_iOverviewTilesY,
 			m_OverviewData.zoom,
@@ -853,6 +986,7 @@ int CHudRadarModern::Draw( float flTime )
 			gHUD.m_vecOrigin[0], gHUD.m_vecOrigin[1],
 			m_flPixelsPerWorld, s_flRadarViewFraction,
 			s_cl_radar_flip ? (int)s_cl_radar_flip->value : 0,
+			m_bRadarRotate ? 1 : 0, gHUD.m_vecAngles[1],
 			m_iRadius, m_iCenterX, m_iCenterY );
 		DrawUtils::DrawConsoleString( 4, 260, szDbg );
 	}
@@ -898,6 +1032,9 @@ int CHudRadarModern::Draw( float flTime )
 
 	// ---- circular mask
 	DrawRadarMask( m_iCenterX, m_iCenterY, m_iRadius );
+
+	// ---- the local player, pinned to the centre
+	DrawSelfMarker( m_iCenterX, m_iCenterY, m_iRadius );
 
 	// ---- player blips
 	int iTeam = g_PlayerExtraInfo[ m_iPlayerNum ].teamnumber;
