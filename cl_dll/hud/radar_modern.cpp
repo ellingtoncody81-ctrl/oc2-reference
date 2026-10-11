@@ -853,20 +853,40 @@ void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 	// radar, and a missing hud.txt entry used to leave the centre empty.
 	int iSize = max( 5, radius / 12 );
 
-	// The arrow has to point the way the player faces *on this radar*. With
-	// cl_radar_rotate 1 the grid basis already maps world +X to screen up, so
-	// yaw 0 (facing +X) must draw the tip at the top; with the radar locked
-	// north-up, world +X is screen right instead and the whole thing shifts
-	// by a quarter turn.
+	// The arrow lives in the same frame as the map, so take the facing
+	// direction in grid space and push it through the grid basis rather than
+	// recomputing an angle: dx is east, dy is south (ty counts down from the
+	// map's north edge), and the basis is the one CalcPoint and
+	// DrawOverviewLayer already use. With the radar locked to the view that
+	// comes out as exactly (0,-1) - the map spins, the arrow stays up, which
+	// is the CS:GO behaviour. Recomputing the angle independently meant the
+	// arrow turned by exactly the same amount as the map, so relative to the
+	// map it never moved at all.
 	float flYaw = DEG2RAD( gHUD.m_vecAngles[1] );
-	bool bRotate = !( s_cl_radar_rotate && s_cl_radar_rotate->value == 0.0f );
-	float flAng = flYaw + ( bRotate ? -1.5707963f : 1.5707963f );
-	float flTipX = cx + cosf( flAng ) * (float)iSize * 1.6f;
-	float flTipY = cy + sinf( flAng ) * (float)iSize * 1.6f;
-	float flBX = cx + cosf( flAng + 2.0944f ) * (float)iSize;
-	float flBY = cy + sinf( flAng + 2.0944f ) * (float)iSize;
-	float flCX = cx + cosf( flAng - 2.0944f ) * (float)iSize;
-	float flCY = cy + sinf( flAng - 2.0944f ) * (float)iSize;
+	float flFDX =  cosf( flYaw );		// east component of the facing
+	float flFDY = -sinf( flYaw );		// south component
+
+	float flAX = flFDX * m_flTileA - flFDY * m_flTileB;
+	float flAY = flFDX * m_flTileB + flFDY * m_flTileA;
+	float flLen = (float)sqrt( flAX * flAX + flAY * flAY );
+	if( flLen < 0.0001f )
+	{
+		flAX = 0.0f;
+		flAY = -1.0f;
+	}
+	else
+	{
+		flAX /= flLen;
+		flAY /= flLen;
+	}
+
+	const float kSpread = 2.0943951f;	// 120 degrees, same as before
+	float flTipX = cx + flAX * (float)iSize * 1.6f;
+	float flTipY = cy + flAY * (float)iSize * 1.6f;
+	float flBX = cx + ( flAX * cosf( kSpread ) - flAY * sinf( kSpread ) ) * (float)iSize;
+	float flBY = cy + ( flAX * sinf( kSpread ) + flAY * cosf( kSpread ) ) * (float)iSize;
+	float flCX = cx + ( flAX * cosf( -kSpread ) - flAY * sinf( -kSpread ) ) * (float)iSize;
+	float flCY = cy + ( flAX * sinf( -kSpread ) + flAY * cosf( -kSpread ) ) * (float)iSize;
 
 	// solid backing so the arrow reads over any map content
 	FillRGBA( cx - 3, cy - 3, 6, 6, 0, 0, 0, 200 );
