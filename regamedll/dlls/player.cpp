@@ -6074,6 +6074,17 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Spawn)()
 		WRITE_STRING(GetTeamName(m_iTeam));
 	MESSAGE_END();
 
+	// also publish into the info string, see TeamChangeUpdate() for why
+	{
+		char *infobuffer = GET_INFO_BUFFER(edict());
+		if (infobuffer)
+		{
+			char szTeam[16];
+			Q_snprintf(szTeam, sizeof(szTeam), "%d", m_iTeam);
+			SET_CLIENT_KEY_VALUE(entindex(), infobuffer, "team", szTeam);
+		}
+	}
+
 	UpdateLocation(true);
 
 	MESSAGE_BEGIN(MSG_ALL, gmsgScoreInfo);
@@ -8678,6 +8689,17 @@ void CBasePlayer::__API_HOOK(SwitchTeam)()
 		WRITE_STRING(GetTeamName(m_iTeam));
 	MESSAGE_END();
 
+	// also publish into the info string, see TeamChangeUpdate() for why
+	{
+		char *infobuffer = GET_INFO_BUFFER(edict());
+		if (infobuffer)
+		{
+			char szTeam[16];
+			Q_snprintf(szTeam, sizeof(szTeam), "%d", m_iTeam);
+			SET_CLIENT_KEY_VALUE(entindex(), infobuffer, "team", szTeam);
+		}
+	}
+
 	if (TheBots)
 	{
 		TheBots->OnEvent(EVENT_PLAYER_CHANGED_TEAM, this);
@@ -10453,6 +10475,30 @@ void CBasePlayer::TeamChangeUpdate()
 		WRITE_STRING(GetTeamName(m_iTeam));
 	MESSAGE_END();
 
+	// Mirror the team into the player info string as well.
+	//
+	// gmsgTeamInfo above is the usual channel, and it is what the stock
+	// Counter-Strike client listens on. This engine does not forward GoldSrc
+	// game messages at all - there is no svc_gamemessage in the protocol -
+	// so nothing on the client ever sees it, and any HUD that wants to know
+	// who is on which side has no way to find out. svc_updateuserinfo (13) on
+	// the other hand IS relayed: SV_FullClientUpdate() re-reads cl->userinfo
+	// and pushes it verbatim, and the client parses it in cl_parse.c into
+	// player_info_t.userinfo.
+	//
+	// So publish the team there as well. Writing the key changes the string,
+	// which is exactly what SV_UserinfoChanged()/SV_ShouldUpdateUserinfo()
+	// compare against, so the update goes out on its own.
+	{
+		char *infobuffer = GET_INFO_BUFFER(edict());
+		if (infobuffer)
+		{
+			char szTeam[16];
+			Q_snprintf(szTeam, sizeof(szTeam), "%d", m_iTeam);
+			SET_CLIENT_KEY_VALUE(entindex(), infobuffer, "team", szTeam);
+		}
+	}
+
 	if (m_iTeam != UNASSIGNED)
 	{
 		SetScoreboardAttributes();
@@ -10763,6 +10809,17 @@ bool EXT_FUNC CBasePlayer::__API_HOOK(GetIntoGame)()
 			WRITE_BYTE(entindex());
 			WRITE_STRING(GetTeamName(m_iTeam));
 		MESSAGE_END();
+
+		// also publish into the info string, see TeamChangeUpdate() for why
+		{
+			char *infobuffer = GET_INFO_BUFFER(edict());
+			if (infobuffer)
+			{
+				char szTeam[16];
+				Q_snprintf(szTeam, sizeof(szTeam), "%d", m_iTeam);
+				SET_CLIENT_KEY_VALUE(entindex(), infobuffer, "team", szTeam);
+			}
+		}
 
 		MESSAGE_BEGIN(MSG_ALL, gmsgLocation);
 			WRITE_BYTE(entindex());
