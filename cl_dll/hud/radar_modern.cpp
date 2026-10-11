@@ -878,13 +878,12 @@ there is nothing to tell the viewer which way they are facing.
 */
 void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 {
-	int iTeam = ( m_iPlayerNum > 0 && m_iPlayerNum < 32 )
-		? g_PlayerExtraInfo[ m_iPlayerNum ].teamnumber : 0;
-	// same blue/yellow scheme as DrawPlayerBlip, so the arrow reads as "you"
-	// in whichever of the two colours matches the player's own team
-	int r = ( iTeam == 1 ) ? 0   : 255;
-	int g = ( iTeam == 1 ) ? 120 : 220;
-	int b = ( iTeam == 1 ) ? 255 : 0;
+	// Deliberately a fixed colour rather than the player's team colour: it is
+	// the one marker that always means "you", so it must not be mistaken for
+	// either a teammate (blue) or an enemy (red). Kept yellow.
+	int r = 255;
+	int g = 220;
+	int b = 0;
 
 	// Always draw the geometry, never rely on a sprite being present: the
 	// whole point of this marker is to show where the player sits on the
@@ -1074,7 +1073,7 @@ void CHudRadarModern::DrawWarningFrame( int cx, int cy, int radius, float flTime
 	DrawRadarFrame( cx, cy, radius, 255, 0, 0, iAlpha );
 }
 
-void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, int team, float flTime )
+void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float flTime )
 {
 	if( i == m_iPlayerNum || g_PlayerExtraInfo[i].dead )
 		return;
@@ -1083,13 +1082,31 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, int tea
 	if( !pEnt || !pEnt->player )
 		return;
 
-	bool bFriend = ( team == g_PlayerExtraInfo[ m_iPlayerNum ].teamnumber );
+	// Team comes from the entity's curstate.team, NOT from
+	// g_PlayerExtraInfo[i].teamnumber.
+	//
+	// teamnumber is only ever written by CHudScoreboard::MsgFunc_TeamInfo
+	// (scoreboard.cpp:620), and that handler is never registered anywhere in
+	// cl_dll, while this engine never sends a TeamInfo message either - a
+	// grep for it over engine/ comes back empty. So every player kept the
+	// zero-initialised value, every bot compared equal to the local player,
+	// and every blip came out as a teammate.
+	//
+	// curstate.team is part of the per-frame entity state
+	// (common/entity_state.h:79) and carries the real value - TERRORIST or CT
+	// on a CS server. The exact numbers do not matter, only that the two
+	// sides differ.
+	cl_entity_t *pLocal = gEngfuncs.GetLocalPlayer();
+	int iLocalTeam = pLocal ? pLocal->curstate.team : TEAM_UNASSIGNED;
 
-	// Teammates blue, enemies yellow. The sprite sheets are named iplayerblue /
-	// iplayerred but SPR_Set modulates whatever is bound, so the RGB passed
-	// here is what actually shows; the slot only picks a shape.
+	bool bFriend = ( pEnt->curstate.team == iLocalTeam );
+
+	// Teammates blue, enemies red. The sprite sheets are named iplayerblue /
+	// iplayerred and this matches that convention; SPR_Set modulates whatever
+	// is bound, so the RGB passed here is what actually shows, the slot only
+	// picks a shape.
 	int r = bFriend ? 0   : 255;
-	int g = bFriend ? 120 : 220;
+	int g = bFriend ? 120 : 0;
 	int b = bFriend ? 255 : 0;
 
 	CClientSprite *pSprite = bFriend ? s_spr[SPR_PLAYER_BLUE] : s_spr[SPR_PLAYER_RED];
@@ -1267,9 +1284,8 @@ int CHudRadarModern::Draw( float flTime )
 	DrawSelfMarker( m_iCenterX, m_iCenterY, m_iRadius );
 
 	// ---- player blips
-	int iTeam = g_PlayerExtraInfo[ m_iPlayerNum ].teamnumber;
 	for( int i = 1; i < 32; i++ )
-		DrawPlayerBlip( m_iCenterX, m_iCenterY, m_iRadius, i, iTeam, flTime );
+		DrawPlayerBlip( m_iCenterX, m_iCenterY, m_iRadius, i, flTime );
 
 	// ---- warning frame while alive with a bomb in hand
 	DrawWarningFrame( m_iCenterX, m_iCenterY, m_iRadius, flTime );
