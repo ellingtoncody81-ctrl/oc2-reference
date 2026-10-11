@@ -73,6 +73,9 @@ public:
 	void LoadMapSprites();
 	bool ParseOverviewFile();
 	bool IsActivePlayer(cl_entity_t * ent);
+	// CHudRadarModern reuses the parsed overview image; each sprite frame is
+	// one 256x256 tile of the map (see OVERVIEW_TILE_SIZE).
+	struct model_s * GetMapSprite() const { return m_MapSprite; }
 	void SetModes(int iMainMode, int iInsetMode);
 	void HandleButtonsDown(int ButtonPressed);
 	void HandleButtonsUp(int ButtonPressed);

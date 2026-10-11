@@ -290,6 +290,7 @@ private:
 
 #include "health.h"
 #include "radar.h"
+#include "radar_modern.h"
 
 #define FADE_TIME 100
 
@@ -1087,6 +1088,7 @@ public:
 	CHudSniperScope m_SniperScope;
 	CHudNVG         m_NVG;
 	CHudRadar       m_Radar;
+	CHudRadarModern m_RadarModern;	// CS:GO radar, enabled by cl_newradar_size > 0
 	CHudSpectatorGui m_SpectatorGui;
 	CHudScenario	m_Scenario;
 

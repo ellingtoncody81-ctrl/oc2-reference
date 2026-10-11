@@ -280,6 +280,11 @@ void CHudRadar::DrawZAxis( Vector pos, int r, int g, int b, int a )
 
 int CHudRadar::Draw(float flTime)
 {
+	// CHudRadarModern (CS:GO radar) draws in the same slot; when it is
+	// active the legacy radar must stay silent or both end up on screen.
+	if( gHUD.m_RadarModern.IsEnabled() )
+		return 1;
+
 	if ( (gHUD.m_iHideHUDDisplay & HIDEHUD_HEALTH) ||
 		 gEngfuncs.IsSpectateOnly() ||
 		 !(gHUD.m_iWeaponBits & (1<<(WEAPON_SUIT))) ||

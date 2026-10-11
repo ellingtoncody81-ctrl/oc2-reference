@@ -46,6 +46,7 @@ typedef int (*pfnUserMsgHook)(const char *pszName, int iSize, void *pbuf);
 
 #include "render_api.h"
 #include "mobility_int.h"
+#include "radar_int.h"
 
 extern "C"
 {
@@ -65,6 +66,7 @@ void       DLLEXPORT HUD_VoiceStatus( int entindex, qboolean bTalking );
 void       DLLEXPORT HUD_DirectorMessage( int iSize, void *pbuf );
 int        DLLEXPORT HUD_GetRenderInterface( int version, render_api_t *renderfuncs, render_interface_t *callback );
 int        DLLEXPORT HUD_MobilityInterface( mobile_engfuncs_t *mobileapi );
+int        DLLEXPORT HUD_RadarInterface( radar_engfuncs_t *radarapi );
 void       DLLEXPORT HUD_PostRunCmd( struct local_state_s *from, struct local_state_s *to, struct usercmd_s *cmd, int runfuncs, double time, unsigned int random_seed );
 int        DLLEXPORT HUD_AddEntity( int type, struct cl_entity_s *ent, const char *modelname );
 void       DLLEXPORT HUD_CreateEntities( void );

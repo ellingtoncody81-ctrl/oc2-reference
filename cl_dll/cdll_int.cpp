@@ -28,6 +28,7 @@
 #include "interface.h"
 #include "render_api.h"
 #include "mobility_int.h"
+#include "radar_int.h"
 #include "vgui_parser.h"
 #include "cl_dll/IGameMenuExports.h"
 #include "particleman.h"
@@ -40,6 +41,8 @@
 cl_enginefunc_t		gEngfuncs  = { };
 render_api_t		gRenderAPI = { };
 mobile_engfuncs_t	gMobileAPI = { };
+radar_engfuncs_t		gRadarAPI = { };
+int g_iRadarAPIVersion = 0;
 CHud gHUD;
 int g_iXash = 0; // indicates a buildnum
 int g_iMobileAPIVersion = 0;
@@ -273,6 +276,8 @@ the hud variables.
 
 void DLLEXPORT HUD_Init( void )
 {
+	gEngfuncs.Con_Printf( "MARKER: client HUD_Init, radarAPI version=%d\n", g_iRadarAPIVersion );
+
 	LoadMenuInterface();
 	InitInput();
 	gHUD.Init();
@@ -490,6 +495,35 @@ int DLLEXPORT HUD_MobilityInterface( mobile_engfuncs_t *mobileapi )
 	TOUCH_ADDDEFAULT( "cmd", "touch/gfx/cmdmenu", "exec touch/cmd/cmd", 0.100000, 0.248889, 0.200000, 0.426815, color, 2, 1.000000, 1 );
 	TOUCH_ADDDEFAULT( "radio", "touch/gfx/radio", "showvguimenu 38", 0.000000, 0.248889, 0.100000, 0.426815, color, 2, 1.000000, 0 );
 	TOUCH_ADDDEFAULT( "walk", "touch/gfx/walk", "+speed", 0.000000, 0.640000, 0.100000, 0.817926, color, 2, 1.000000, 0 );
+
+	return 0;
+}
+
+/*
+========================
+HUD_RadarInterface
+
+Called by the engine once at init with the renderer-side radar blur API.
+CHudRadarModern degrades to "no background blur" when the engine is older
+and never calls this at all.
+========================
+*/
+int DLLEXPORT HUD_RadarInterface( radar_engfuncs_t *radarapi )
+{
+	if( radarapi->version != RADAR_API_VERSION )
+	{
+		gEngfuncs.Con_Printf("Client Error: Radar API version mismatch. Got: %i, want: %i\n",
+			radarapi->version, RADAR_API_VERSION);
+		return 1;
+	}
+
+	g_iRadarAPIVersion = RADAR_API_VERSION;
+	gRadarAPI = *radarapi;
+
+	gEngfuncs.Con_Printf( "^2RadarAPI initialized ^7(ver. %i)\n", RADAR_API_VERSION);
+
+	if( gRadarAPI.pfnInitRadarCapture )
+		gRadarAPI.pfnInitRadarCapture();
 
 	return 0;
 }

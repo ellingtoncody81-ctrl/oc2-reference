@@ -402,6 +402,7 @@ void CHud :: Init( void )
 	m_Battery.Init();
 	m_StatusIcons.Init();
 	m_Radar.Init();
+	m_RadarModern.Init();   // registers itself with the HUD list
 	m_Scenario.Init();
 
 	// chat, death notice, status bars and other
