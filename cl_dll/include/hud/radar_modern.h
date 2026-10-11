@@ -52,11 +52,11 @@ private:
 	// Must run before DrawOverviewLayer() and CalcPoint().
 	void UpdateRadarTransform( int cx, int cy, int radius );
 
-	// Rotates a screen point about the radar centre so the direction the
-	// player is looking at ends up pointing up. The map tiles and the
-	// blips both go through this, which is what keeps them locked together
-	// while the player turns.
-	void ApplyRadarRotation( float &x, float &y ) const;
+	// World position -> fractional tile index in the overview image.
+	// Reverse engineered from CHudRadarModern::CalcPoint step 1; the same
+	// expression appears verbatim in Draw's own instruction stream
+	// (VMLA/ VMLS on d10/d13 with 1/1024 from DAT_000c5050).
+	void WorldToTile( const Vector &vecWorld, float &tx, float &ty ) const;
 
 	void DrawOverviewLayer( int cx, int cy, int radius );
 	void DrawRadarDisc( int cx, int cy, int radius );
@@ -99,8 +99,16 @@ public:
 	//      is what keeps them locked together.
 	int   m_iOverviewTilesX;   // tile columns of the overview image
 	int   m_iOverviewTilesY;   // tile rows
-	float m_flPixelsPerWorld;  // screen pixels per world unit
-	bool  m_bRadarRotate;      // cl_radar_rotate: turn the map with the view
+	float m_flPixelsPerTile;   // screen pixels per overview tile
+
+	// Grid basis. The mobile build computes these as cos(theta) and
+	// sin(theta) from the player's pitch; theta == 0 is the neutral case
+	// and reduces to a plain north-up, unsquashed radar, which is what we
+	// use. Kept as members so the pitch term can be wired in without
+	// touching the mapping code again.
+	float m_flTileA;
+	float m_flTileB;
+	bool  m_bTileRotated;      // overview_t.rotated, or cl_radar_flip bit 1
 };
 
 extern CHudRadarModern gHudRadarModern;
