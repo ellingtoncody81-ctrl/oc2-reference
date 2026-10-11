@@ -47,7 +47,13 @@ public:
 private:
 	void LoadSprites();
 	void LoadOverview( const char *pszMapName );
+
+	// Recomputes the world<->radar scale from the overview description.
+	// Must run before DrawOverviewLayer() and CalcPoint().
+	void UpdateRadarTransform( int cx, int cy, int radius );
+
 	void DrawOverviewLayer( int cx, int cy, int radius );
+	void DrawRadarDisc( int cx, int cy, int radius );
 	void DrawBlurredBackground( int cx, int cy, int size );
 	void DrawRadarMask( int cx, int cy, int radius );
 	void DrawRadarFrame( int cx, int cy, int radius, int r, int g, int b, int a );
@@ -79,6 +85,14 @@ public:
 	int   m_iCenterX;
 	int   m_iCenterY;
 	int   m_iRadius;
+
+	// ---- overview -> radar transform, refreshed every frame by
+	//      UpdateRadarTransform(). m_flPixelsPerWorld is the single number
+	//      both the background tiles and the player blips go through, which
+	//      is what keeps them locked together.
+	int   m_iOverviewTilesX;   // tile columns of the overview image
+	int   m_iOverviewTilesY;   // tile rows
+	float m_flPixelsPerWorld;  // screen pixels per world unit
 };
 
 extern CHudRadarModern gHudRadarModern;
