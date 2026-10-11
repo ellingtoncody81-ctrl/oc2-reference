@@ -52,8 +52,15 @@ private:
 	// Must run before DrawOverviewLayer() and CalcPoint().
 	void UpdateRadarTransform( int cx, int cy, int radius );
 
+	// Rotates a screen point about the radar centre so the direction the
+	// player is looking at ends up pointing up. The map tiles and the
+	// blips both go through this, which is what keeps them locked together
+	// while the player turns.
+	void ApplyRadarRotation( float &x, float &y ) const;
+
 	void DrawOverviewLayer( int cx, int cy, int radius );
 	void DrawRadarDisc( int cx, int cy, int radius );
+	void DrawSelfMarker( int cx, int cy, int radius );
 	void DrawBlurredBackground( int cx, int cy, int size );
 	void DrawRadarMask( int cx, int cy, int radius );
 	void DrawRadarFrame( int cx, int cy, int radius, int r, int g, int b, int a );
@@ -93,6 +100,7 @@ public:
 	int   m_iOverviewTilesX;   // tile columns of the overview image
 	int   m_iOverviewTilesY;   // tile rows
 	float m_flPixelsPerWorld;  // screen pixels per world unit
+	bool  m_bRadarRotate;      // cl_radar_rotate: turn the map with the view
 };
 
 extern CHudRadarModern gHudRadarModern;
