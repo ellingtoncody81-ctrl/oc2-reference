@@ -58,6 +58,13 @@ static cvar_t *s_cl_radar_modern     = NULL;
 static cvar_t *s_cl_radar_debug      = NULL;
 static float  s_flRadarViewFraction  = 1.0f;
 static cvar_t *s_cl_radar_view        = NULL;
+// Orientation of the overview image, as a bitmask:
+//   bit 0 - mirror world X (map drawn east-left instead of east-right)
+//   bit 1 - mirror world Y (map drawn south-up instead of south-down)
+// The overview description only gives the image origin and zoom, not the
+// image handedness, so this stays user adjustable. 0 = standard radar
+// convention: +X right, +Y up.
+static cvar_t *s_cl_radar_flip       = NULL;
 
 // sprite slots live in a plain table so LoadSprites() can fill them without
 // needing member-pointer gymnastics
@@ -102,9 +109,10 @@ int CHudRadarModern::Init( void )
 	s_cl_blur_update_rate = CVAR_CREATE( "cl_blur_update_rate", "0.5", FCVAR_ARCHIVE );
 	s_cl_radar_modern     = CVAR_CREATE( "cl_radar_modern", "1", FCVAR_ARCHIVE );
 	s_cl_radar_debug      = CVAR_CREATE( "cl_radar_debug", "1", FCVAR_ARCHIVE );
-	// how much of the map the radar window covers (1.0 = whole map, zoomed in
-	// only means the radar shows a larger scale). Smaller = see more.
+	// how much of the map the radar window covers (1.0 = whole map width,
+	// smaller = see more of it)
 	s_cl_radar_view       = CVAR_CREATE( "cl_radar_view", "1", FCVAR_ARCHIVE );
+	s_cl_radar_flip       = CVAR_CREATE( "cl_radar_flip", "0", FCVAR_ARCHIVE );
 
 	m_bEnabled = true;
 
@@ -127,6 +135,9 @@ int CHudRadarModern::Init( void )
 	m_bSpritesLoaded = false;
 	m_bTriedLoad     = false;
 	m_bOverviewValid = false;
+	m_iOverviewTilesX = 0;
+	m_iOverviewTilesY = 0;
+	m_flPixelsPerWorld = 0.0f;
 	memset( m_szMapName, 0, sizeof( m_szMapName ) );
 	memset( &m_OverviewData, 0, sizeof( m_OverviewData ) );
 
@@ -211,36 +222,98 @@ void CHudRadarModern::SetLegacyState( int iPlayerNum )
 
 /*
 ========================
+UpdateRadarTransform
+
+The one place that turns the overview description into a screen scale.
+
+CHudSpectator::DrawOverviewLayer shows how GoldSrc lays the overview image
+over the world: the image is 2*4096/zoom world units wide and
+2*4096/(zoom*aspect) tall. The tiled sprite is a MAPSPRITE_SIZE (128 px)
+grid, so the whole image is (tilesX*128) x (tilesY*128) overview pixels and
+
+    overview pixels per world unit = (tilesX * 128) * zoom / 8192
+    world units per overview pixel = 8192 / ((tilesX * 128) * zoom)
+
+The radar shows a *window* of the map, not the whole map: the window is
+2*radius*view pixels wide, centred on the player, which gives
+
+    screen pixels per world unit = 2 * radius * view * zoom / 8192
+
+Note how tilesX cancels out - the scale follows from zoom alone, so the
+same numbers work for any overview resolution.
+========================
+*/
+void CHudRadarModern::UpdateRadarTransform( int cx, int cy, int radius )
+{
+	m_iOverviewTilesX = 0;
+	m_iOverviewTilesY = 0;
+	m_flPixelsPerWorld = 0.0f;
+
+	model_t *pSprite = gHUD.m_Spectator.GetMapSprite();
+	if( !pSprite || pSprite->numframes <= 0 )
+		return;
+
+	int i = (int)sqrt( (float)( pSprite->numframes / (4 * 3) ) );
+	if( i < 1 )
+		i = 1;
+
+	m_iOverviewTilesX = i * 4;
+	m_iOverviewTilesY = i * 3;
+
+	float flZoom = m_OverviewData.zoom;
+	if( flZoom <= 0.0f )
+		flZoom = 1.0f;
+
+	float flView = s_flRadarViewFraction;
+	if( flView <= 0.0f || flView > 1.0f )
+		flView = 1.0f;
+
+	m_flPixelsPerWorld = ( (float)radius * 2.0f * flZoom * flView ) / 8192.0f;
+}
+
+/*
+========================
 CalcPoint
 
-World -> radar pixel mapping, same shape as CHudRadar::WorldToRadar:
-scale the planar delta, rotate it into view space and clip onto the
-circle. Returns true when the point had to be clipped.
+World -> radar pixel, north-up and player-centred. This is the transform
+derived from the overview description, so blips land exactly on the tile
+they belong to - unlike CHudRadar::WorldToRadar, which works in its own
+fixed scale and rotates with the view angle.
+
+Returns true when the point had to be clipped onto the circle.
 ========================
 */
 bool CHudRadarModern::CalcPoint( const Vector &vecWorld, int &x, int &y, int &radius )
 {
-	Vector2D diff = vecWorld.Make2D() - gHUD.m_vecOrigin.Make2D();
-
-	// supply epsilons to avoid divide-by-zero, like the legacy radar
-	if( diff.x == 0 ) diff.x = 0.00001f;
-	if( diff.y == 0 ) diff.y = 0.00001f;
-
-	float flOffset = DEG2RAD( gHUD.m_vecAngles.y - RAD2DEG( atan2f( diff.y, diff.x ) ) );
-
 	radius = m_iRadius;
 
-	float iRadius = min( diff.Length() / RADAR_SCALE, (float)m_iRadius );
+	if( m_flPixelsPerWorld <= 0.0f )
+	{
+		// no overview: fall back to "point is at the centre"
+		x = m_iCenterX;
+		y = m_iCenterY;
+		return false;
+	}
 
-	float fx = (float)( iRadius * sinf( flOffset ) );
-	float fy = (float)( iRadius * -cosf( flOffset ) );
+	int iFlip = s_cl_radar_flip ? (int)s_cl_radar_flip->value : 0;
 
-	bool bClipped = ( diff.Length() / RADAR_SCALE ) > (float)m_iRadius;
+	float fx = ( vecWorld[0] - gHUD.m_vecOrigin[0] ) * m_flPixelsPerWorld;
+	float fy = ( vecWorld[1] - gHUD.m_vecOrigin[1] ) * m_flPixelsPerWorld;
+
+	if( iFlip & 1 )
+		fx = -fx;
+
+	// standard radar orientation: world +Y is up, screen Y grows downwards
+	if( !( iFlip & 2 ) )
+		fy = -fy;
 
 	x = m_iCenterX + (int)fx;
 	y = m_iCenterY + (int)fy;
 
-	return bClipped;
+	float flDX = (float)( x - m_iCenterX );
+	float flDY = (float)( y - m_iCenterY );
+
+	return ( flDX * flDX + flDY * flDY ) > (float)( m_iRadius * m_iRadius );
 }
 
 /*
@@ -300,95 +373,136 @@ void CHudRadarModern::LoadOverview( const char *pszMapName )
 
 /*
 ========================
+DrawRadarDisc
+
+Flat fill inside the circle. Everything the map does not cover - and the
+outside of the overview image - shows this instead of the game behind the
+HUD. The mobile build gets that area from its blurred background capture;
+this keeps the shape correct when blurring is off.
+========================
+*/
+void CHudRadarModern::DrawRadarDisc( int cx, int cy, int radius )
+{
+	int i;
+	const int kSegs = 48;
+	float flStep = ( 2.0f * 3.14159265358979f ) / kSegs;
+
+	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
+	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
+	gEngfuncs.pTriAPI->Color4ub( 210, 210, 210, 235 );
+	gEngfuncs.pTriAPI->Begin( TRI_TRIANGLES );
+
+	float flPrevX = cx + (float)radius;
+	float flPrevY = cy;
+
+	for( i = 1; i <= kSegs; i++ )
+	{
+		float flAng = flStep * i;
+		float flX = cx + cosf( flAng ) * (float)radius;
+		float flY = cy + sinf( flAng ) * (float)radius;
+
+		gEngfuncs.pTriAPI->Vertex3f( cx, cy, 0 );
+		gEngfuncs.pTriAPI->Vertex3f( flPrevX, flPrevY, 0 );
+		gEngfuncs.pTriAPI->Vertex3f( flX, flY, 0 );
+
+		flPrevX = flX;
+		flPrevY = flY;
+	}
+
+	gEngfuncs.pTriAPI->End();
+}
+
+/*
+========================
 DrawOverviewLayer
 
-Ported from CHudSpectator::DrawOverviewLayer, which is the same tiled
-blit the mobile build performs in its Draw() (numframes/(4*3), sqrt,
-xTiles*4 by yTiles*3). Difference: we project into 2D screen space around
-the radar centre instead of a skybox, and clip to the radar circle.
+The tiled overview blit, but anchored on the *player* instead of the radar
+rectangle, so only the part of the map around the player is on screen and
+it scrolls as the player walks. This is the CS:GO behaviour the mobile
+build reproduces.
+
+Tile grid and frame order are identical to CHudSpectator::DrawOverviewLayer
+(n = sqrt(numframes/12), then n*4 columns by n*3 rows, frames row major);
+only the anchor differs.
 ========================
 */
 void CHudRadarModern::DrawOverviewLayer( int cx, int cy, int radius )
 {
-	// CHudSpectator already loaded the overview image into a sprite whose
-	// frames are the individual tiles ("each tile is a sprite frame").
 	model_t *pSprite = gHUD.m_Spectator.GetMapSprite();
 
-	if( !pSprite || pSprite->numframes <= 0 )
+	if( !pSprite || pSprite->numframes <= 0 || m_flPixelsPerWorld <= 0.0f )
 		return;
 
-	int i = (int)sqrt( (float)( pSprite->numframes / (4 * 3) ) );
-	if( i < 1 )
-		i = 1;
-	int xTiles = i * 4;
-	int yTiles = i * 3;
+	int xTiles = m_iOverviewTilesX;
+	int yTiles = m_iOverviewTilesY;
+	if( xTiles < 1 || yTiles < 1 )
+		return;
 
-	float flZoom = m_OverviewData.zoom;
-	if( flZoom <= 0.0f )
-		flZoom = 1.0f;
+	int iFlip = s_cl_radar_flip ? (int)s_cl_radar_flip->value : 0;
 
-	float flXs = m_OverviewData.origin[0];
-	float flYs = m_OverviewData.origin[1];
+	float flOx = m_OverviewData.origin[0];
+	float flOy = m_OverviewData.origin[1];
 
-	// The overview sprite covers the whole map, whose world half-extent is
-	// 4096/zoom (CHudSpectator::DrawOverviewLayer). The radar only shows a
-	// window around the player, so scale the world->pixel factor by how much
-	// of the map that window is (RadarViewFraction of the full width).
-	const float kView = 4096.0f;
-	float flMapHalf = kView / flZoom;                  // world units, map half size
-	float flPxPerWorld = ( (float)radius * 2.0f * s_flRadarViewFraction ) / ( 2.0f * flMapHalf );
+	// top-left corner of the overview image in screen space: back the map
+	// up by the player's distance from the image origin
+	float flImageX = (float)cx - ( gHUD.m_vecOrigin[0] - flOx ) * m_flPixelsPerWorld;
+	float flImageY = (float)cy - ( gHUD.m_vecOrigin[1] - flOy ) * m_flPixelsPerWorld;
 
-	// tiles exactly span the radar diameter
-	float xStep = ( (float)radius * 2.0f ) / (float)xTiles;
-	float yStep = ( (float)radius * 2.0f ) / (float)yTiles;
+	if( iFlip & 1 )
+		flImageX = (float)cx + ( gHUD.m_vecOrigin[0] - flOx ) * m_flPixelsPerWorld;
 
-	// centre the window on the player: the map point under the player must
-	// land on the radar centre, so the grid origin sits one radius back.
-	float x = cx - radius - ( gHUD.m_vecOrigin[0] - flXs ) * flPxPerWorld;
-	float y = cy - radius - ( gHUD.m_vecOrigin[1] - flYs ) * flPxPerWorld;
+	if( !( iFlip & 2 ) )
+		flImageY = (float)cy + ( gHUD.m_vecOrigin[1] - flOy ) * m_flPixelsPerWorld;
 
-	if( m_OverviewData.rotated )
-	{
-		float tmp = x - cx;
-		x = cx + ( y - cy );
-		y = cy - tmp;
-	}
+	// one tile on screen: the window is 2*radius*view wide and the image is
+	// xTiles tiles across, and 128 px tiles are square, so x and y steps match
+	float flView = s_flRadarViewFraction;
+	if( flView <= 0.0f || flView > 1.0f )
+		flView = 1.0f;
 
-	int frame = 0;
-	int ix, iy;
+	float flTile = ( (float)radius * 2.0f * flView ) / (float)xTiles;
 
-	// remember the row origin so every row restarts from the same column
-	const float flRowX = x;
+	// tile indices that cover the radar square, clamped to the image so a
+	// player standing near a map edge simply runs out of map
+	int firstX = (int)floorf( ( (float)cx - (float)radius - flImageX ) / flTile );
+	int firstY = (int)floorf( ( (float)cy - (float)radius - flImageY ) / flTile );
+	int lastX  = (int)ceilf ( ( (float)cx + (float)radius - flImageX ) / flTile );
+	int lastY  = (int)ceilf ( ( (float)cy + (float)radius - flImageY ) / flTile );
+
+	if( firstX < 0 ) firstX = 0;
+	if( firstY < 0 ) firstY = 0;
+	if( lastX > xTiles ) lastX = xTiles;
+	if( lastY > yTiles ) lastY = yTiles;
 
 	gEngfuncs.pTriAPI->RenderMode( kRenderTransTexture );
 	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
-	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 0.85f );
+	gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
 
-	for( iy = 0; iy < yTiles; iy++ )
+	for( int ty = firstY; ty < lastY; ty++ )
 	{
-		float ty = y;
+		float y = flImageY + (float)ty * flTile;
 
-		for( ix = 0; ix < xTiles; ix++ )
+		for( int tx = firstX; tx < lastX; tx++ )
 		{
+			float x = flImageX + (float)tx * flTile;
+			int frame = ty * xTiles + tx;
+
+			if( frame < 0 || frame >= pSprite->numframes )
+				continue;
+
 			gEngfuncs.pTriAPI->SpriteTexture( pSprite, frame );
 
 			gEngfuncs.pTriAPI->Begin( TRI_QUADS );
 			gEngfuncs.pTriAPI->TexCoord2f( 0, 0 );
-			gEngfuncs.pTriAPI->Vertex3f( x, ty, 0 );
+			gEngfuncs.pTriAPI->Vertex3f( x, y, 0 );
 			gEngfuncs.pTriAPI->TexCoord2f( 1, 0 );
-			gEngfuncs.pTriAPI->Vertex3f( x + xStep, ty, 0 );
+			gEngfuncs.pTriAPI->Vertex3f( x + flTile, y, 0 );
 			gEngfuncs.pTriAPI->TexCoord2f( 1, 1 );
-			gEngfuncs.pTriAPI->Vertex3f( x + xStep, ty + yStep, 0 );
+			gEngfuncs.pTriAPI->Vertex3f( x + flTile, y + flTile, 0 );
 			gEngfuncs.pTriAPI->TexCoord2f( 0, 1 );
-			gEngfuncs.pTriAPI->Vertex3f( x, ty + yStep, 0 );
+			gEngfuncs.pTriAPI->Vertex3f( x, y + flTile, 0 );
 			gEngfuncs.pTriAPI->End();
-
-			frame++;
-			x += xStep;
 		}
-
-		x = flRowX;
-		y += yStep;
 	}
 
 	gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
@@ -573,7 +687,7 @@ int CHudRadarModern::Draw( float flTime )
 	//        exactly like the mobile build's Reset()
 	LoadOverview( gEngfuncs.pfnGetLevelName() );
 
-	// ---- map tiles
+	// ---- how much of the map the window covers, and the resulting scale
 	if( s_cl_radar_view )
 	{
 		s_flRadarViewFraction = s_cl_radar_view->value;
@@ -581,6 +695,14 @@ int CHudRadarModern::Draw( float flTime )
 			s_flRadarViewFraction = 1.0f;
 	}
 
+	// everything below shares this one transform
+	UpdateRadarTransform( m_iCenterX, m_iCenterY, m_iRadius );
+
+	// flat disc first, so map-less areas read as background instead of
+	// showing the game through the HUD
+	DrawRadarDisc( m_iCenterX, m_iCenterY, m_iRadius );
+
+	// ---- map tiles, anchored on the player
 	if( m_bOverviewValid )
 		DrawOverviewLayer( m_iCenterX, m_iCenterY, m_iRadius );
 
@@ -591,11 +713,16 @@ int CHudRadarModern::Draw( float flTime )
 		int nFrames = gHUD.m_Spectator.GetMapSprite()
 			? gHUD.m_Spectator.GetMapSprite()->numframes : -1;
 		snprintf( szDbg, sizeof( szDbg ),
-			"radar: valid=%d frames=%d zoom=%g org=%g,%g pl=%g,%g view=%g r=%d c=%d,%d",
-			m_bOverviewValid, nFrames, m_OverviewData.zoom,
+			"radar: valid=%d frames=%d tiles=%dx%d zoom=%g org=%g,%g pl=%g,%g "
+			"px/w=%g view=%g flip=%d r=%d c=%d,%d",
+			m_bOverviewValid, nFrames,
+			m_iOverviewTilesX, m_iOverviewTilesY,
+			m_OverviewData.zoom,
 			m_OverviewData.origin[0], m_OverviewData.origin[1],
 			gHUD.m_vecOrigin[0], gHUD.m_vecOrigin[1],
-			s_flRadarViewFraction, m_iRadius, m_iCenterX, m_iCenterY );
+			m_flPixelsPerWorld, s_flRadarViewFraction,
+			s_cl_radar_flip ? (int)s_cl_radar_flip->value : 0,
+			m_iRadius, m_iCenterX, m_iCenterY );
 		DrawUtils::DrawConsoleString( 4, 260, szDbg );
 	}
 
