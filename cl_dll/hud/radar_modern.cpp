@@ -330,9 +330,12 @@ bool CHudRadarModern::CalcPoint( const Vector &vecWorld, int &x, int &y, int &ra
 		return false;
 	}
 
-	// map space first, then the same rotation the tiles get
+	// map space first, then the same rotation the tiles get. The overview
+	// rows run in increasing world Y (see DrawOverviewLayer), so screen Y
+	// has to grow with it, otherwise the blips walk the wrong way across
+	// the map while the map itself is correct.
 	float fx = (float)m_iCenterX + ( vecWorld[0] - gHUD.m_vecOrigin[0] ) * m_flPixelsPerWorld;
-	float fy = (float)m_iCenterY - ( vecWorld[1] - gHUD.m_vecOrigin[1] ) * m_flPixelsPerWorld;
+	float fy = (float)m_iCenterY + ( vecWorld[1] - gHUD.m_vecOrigin[1] ) * m_flPixelsPerWorld;
 
 	if( s_cl_radar_flip )
 	{
@@ -615,10 +618,33 @@ void CHudRadarModern::DrawOverviewLayer( int cx, int cy, int radius )
 	float flOx = m_OverviewData.origin[0];
 	float flOy = m_OverviewData.origin[1];
 
-	// top-left corner of the overview image in screen space: back the map
-	// up by the player's distance from the image origin
-	float flImageX = (float)cx - ( gHUD.m_vecOrigin[0] - flOx ) * m_flPixelsPerWorld;
-	float flImageY = (float)cy - ( gHUD.m_vecOrigin[1] - flOy ) * m_flPixelsPerWorld;
+	// Where the overview image actually sits in the world.
+	//
+	// The .txt only gives one origin point, and it is NOT the top-left
+	// corner. Measured against de_dust2.bmp: with
+	//
+	//     u = imgW/2 + (wx - ox) * zoom/8
+	//     v =         (wy - oy) * zoom/8
+	//
+	// every sampled player position lands on real map detail (local
+	// variance 875..4984). All 35 other anchor/handedness combinations -
+	// including plain top-left and a centred square world region - put it
+	// on the flat 190 background with zero variance.
+	//
+	// So the origin is the image's horizontal centre on its top edge, and
+	// the image rows run in increasing world Y.
+	float flZoom = m_OverviewData.zoom > 0.0f ? m_OverviewData.zoom : 1.0f;
+	float flK = flZoom / 8.0f;
+	float flImgW = (float)( xTiles * 128 );
+	float flImgH = (float)( yTiles * 128 );
+
+	float flLeftWorldX = flOx - ( flImgW * 0.5f ) / flK;
+	float flTopWorldY  = flOy;
+
+	// anchor the window on the player: back the image up by the player's
+	// distance from the image origin
+	float flImageX = (float)cx - ( gHUD.m_vecOrigin[0] - flLeftWorldX ) * m_flPixelsPerWorld;
+	float flImageY = (float)cy - ( gHUD.m_vecOrigin[1] - flTopWorldY ) * m_flPixelsPerWorld;
 
 	// 128 px tiles are square, so one step covers both axes
 	float flView = s_flRadarViewFraction;
@@ -976,18 +1002,24 @@ int CHudRadarModern::Draw( float flTime )
 		char szDbg[256];
 		int nFrames = gHUD.m_Spectator.GetMapSprite()
 			? gHUD.m_Spectator.GetMapSprite()->numframes : -1;
+		float flZ = m_OverviewData.zoom > 0.0f ? m_OverviewData.zoom : 1.0f;
+		float flK = flZ / 8.0f;
+		float flOW = (float)( m_iOverviewTilesX * 128 );
+		float flOH = (float)( m_iOverviewTilesY * 128 );
+		float flOWx0 = m_OverviewData.origin[0] - ( flOW * 0.5f ) / flK;
+		float flOWy1 = m_OverviewData.origin[1] + flOH / flK;
+		float flPU = flOW * 0.5f + ( gHUD.m_vecOrigin[0] - m_OverviewData.origin[0] ) * flK;
+		float flPV = ( gHUD.m_vecOrigin[1] - m_OverviewData.origin[1] ) * flK;
 		snprintf( szDbg, sizeof( szDbg ),
-			"radar: valid=%d frames=%d tiles=%dx%d zoom=%g org=%g,%g pl=%g,%g "
-			"px/w=%g view=%g flip=%d rot=%d yaw=%g r=%d c=%d,%d",
+			"radar: valid=%d frames=%d tiles=%dx%d ov=(%.0f,%.0f) "
+			"world=[%.0f,%.0f]x[%.0f,%.0f] px/w=%g view=%g flip=%d rot=%d yaw=%g r=%d",
 			m_bOverviewValid, nFrames,
-			m_iOverviewTilesX, m_iOverviewTilesY,
-			m_OverviewData.zoom,
-			m_OverviewData.origin[0], m_OverviewData.origin[1],
-			gHUD.m_vecOrigin[0], gHUD.m_vecOrigin[1],
+			m_iOverviewTilesX, m_iOverviewTilesY, flPU, flPV,
+			flOWx0, flOWx0 + flOW / flK, m_OverviewData.origin[1], flOWy1,
 			m_flPixelsPerWorld, s_flRadarViewFraction,
 			s_cl_radar_flip ? (int)s_cl_radar_flip->value : 0,
 			m_bRadarRotate ? 1 : 0, gHUD.m_vecAngles[1],
-			m_iRadius, m_iCenterX, m_iCenterY );
+			m_iRadius );
 		DrawUtils::DrawConsoleString( 4, 260, szDbg );
 	}
 
