@@ -833,7 +833,15 @@ void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 	// whole point of this marker is to show where the player sits on the
 	// radar, and a missing hud.txt entry used to leave the centre empty.
 	int iSize = max( 5, radius / 12 );
-	float flAng = DEG2RAD( gHUD.m_vecAngles[1] ) + 1.5707963f;
+
+	// The arrow has to point the way the player faces *on this radar*. With
+	// cl_radar_rotate 1 the grid basis already maps world +X to screen up, so
+	// yaw 0 (facing +X) must draw the tip at the top; with the radar locked
+	// north-up, world +X is screen right instead and the whole thing shifts
+	// by a quarter turn.
+	float flYaw = DEG2RAD( gHUD.m_vecAngles[1] );
+	bool bRotate = !( s_cl_radar_rotate && s_cl_radar_rotate->value == 0.0f );
+	float flAng = flYaw + ( bRotate ? -1.5707963f : 1.5707963f );
 	float flTipX = cx + cosf( flAng ) * (float)iSize * 1.6f;
 	float flTipY = cy + sinf( flAng ) * (float)iSize * 1.6f;
 	float flBX = cx + cosf( flAng + 2.0944f ) * (float)iSize;
