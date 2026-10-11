@@ -64,6 +64,14 @@ static cvar_t *s_cl_radar_view        = NULL;
 //   bit 0 - transpose the world X/Y axes (the ROTATED branch of CalcPoint)
 //   bit 1 - negate the tile Y axis
 static cvar_t *s_cl_radar_orient     = NULL;
+// Residual tile offset, in tile units, applied after the mapping. The
+// world -> tile formula itself is measured against de_dust2.bmp (variance
+// 15565 on real map detail vs 0 for every alternative), but a residual
+// horizontal shift of roughly three tiles has not been fully pinned down
+// from screenshots alone. Exposing it as a cvar means it can be dialled in
+// at runtime instead of guessing and rebuilding.
+static cvar_t *s_cl_radar_shiftx      = NULL;
+static cvar_t *s_cl_radar_shifty      = NULL;
 
 // sprite slots live in a plain table so LoadSprites() can fill them without
 // needing member-pointer gymnastics
@@ -112,6 +120,8 @@ int CHudRadarModern::Init( void )
 	// smaller = see more of it)
 	s_cl_radar_view       = CVAR_CREATE( "cl_radar_view", "1", FCVAR_ARCHIVE );
 	s_cl_radar_orient     = CVAR_CREATE( "cl_radar_orient", "0", FCVAR_ARCHIVE );
+	s_cl_radar_shiftx     = CVAR_CREATE( "cl_radar_shiftx", "0", FCVAR_ARCHIVE );
+	s_cl_radar_shifty     = CVAR_CREATE( "cl_radar_shifty", "0", FCVAR_ARCHIVE );
 
 	m_bEnabled = true;
 
@@ -348,6 +358,9 @@ void CHudRadarModern::WorldToTile( const Vector &vecWorld, float &tx, float &ty 
 	}
 	if( iOrient & 2 )
 		ty = -ty;
+
+	tx += s_cl_radar_shiftx ? s_cl_radar_shiftx->value : 0.0f;
+	ty += s_cl_radar_shifty ? s_cl_radar_shifty->value : 0.0f;
 }
 
 /*
@@ -780,32 +793,28 @@ there is nothing to tell the viewer which way they are facing.
 */
 void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 {
-	CClientSprite *pSprite = s_spr[SPR_PLAYER];
-
-	// an arrow-ish marker: a small triangle in the facing direction, so it
-	// reads the same as the CS:GO one even when no sprite is available
-	int iTeam = g_PlayerExtraInfo[ m_iPlayerNum ].teamnumber;
+	int iTeam = ( m_iPlayerNum > 0 && m_iPlayerNum < 32 )
+		? g_PlayerExtraInfo[ m_iPlayerNum ].teamnumber : 0;
 	int r = ( iTeam == 1 ) ? 0 : 255;
 	int g = ( iTeam == 1 ) ? 255 : 0;
 	int b = 0;
-	int iSize = max( 4, radius / 14 );
 
-	if( pSprite && pSprite->spr )
-	{
-		SPR_Set( pSprite->spr, r, g, b );
-		SPR_DrawAdditive( cx - iSize, cy - iSize, 0, &pSprite->rect );
-		return;
-	}
-
+	// Always draw the geometry, never rely on a sprite being present: the
+	// whole point of this marker is to show where the player sits on the
+	// radar, and a missing hud.txt entry used to leave the centre empty.
+	int iSize = max( 5, radius / 12 );
 	float flAng = DEG2RAD( gHUD.m_vecAngles[1] ) + 1.5707963f;
-	float flTipX = cx + cosf( flAng ) * (float)iSize;
-	float flTipY = cy + sinf( flAng ) * (float)iSize;
+	float flTipX = cx + cosf( flAng ) * (float)iSize * 1.6f;
+	float flTipY = cy + sinf( flAng ) * (float)iSize * 1.6f;
 	float flBX = cx + cosf( flAng + 2.0944f ) * (float)iSize;
 	float flBY = cy + sinf( flAng + 2.0944f ) * (float)iSize;
 	float flCX = cx + cosf( flAng - 2.0944f ) * (float)iSize;
 	float flCY = cy + sinf( flAng - 2.0944f ) * (float)iSize;
 
-	gEngfuncs.pTriAPI->RenderMode( kRenderTransAdd );
+	// solid backing so the arrow reads over any map content
+	FillRGBA( cx - 3, cy - 3, 6, 6, 0, 0, 0, 200 );
+
+	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
 	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
 	gEngfuncs.pTriAPI->Color4ub( r, g, b, 255 );
 	gEngfuncs.pTriAPI->Begin( TRI_TRIANGLES );
@@ -1022,15 +1031,19 @@ int CHudRadarModern::Draw( float flTime )
 		float selfX, selfY;
 		WorldToTile( gHUD.m_vecOrigin, selfX, selfY );
 		snprintf( szDbg, sizeof( szDbg ),
-			"radar: valid=%d frames=%d tiles=%dx%d zoom=%g org=%g,%g "
-			"tile=(%.2f,%.2f) px/tile=%g view=%g orient=%d rot=%d r=%d c=%d,%d",
+			"radar: valid=%d frames=%d tiles=%dx%d zoom=%g org=%g,%g pl=%g,%g "
+			"tile=(%.2f,%.2f) px/tile=%g view=%g orient=%d rot=%d shift=%g,%g "
+			"r=%d c=%d,%d",
 			m_bOverviewValid, nFrames,
 			m_iOverviewTilesX, m_iOverviewTilesY,
 			m_OverviewData.zoom,
 			m_OverviewData.origin[0], m_OverviewData.origin[1],
+			gHUD.m_vecOrigin[0], gHUD.m_vecOrigin[1],
 			selfX, selfY, m_flPixelsPerTile, s_flRadarViewFraction,
 			s_cl_radar_orient ? (int)s_cl_radar_orient->value : 0,
 			m_bTileRotated ? 1 : 0,
+			s_cl_radar_shiftx ? s_cl_radar_shiftx->value : 0.0f,
+			s_cl_radar_shifty ? s_cl_radar_shifty->value : 0.0f,
 			m_iRadius, m_iCenterX, m_iCenterY );
 		DrawUtils::DrawConsoleString( 4, 260, szDbg );
 	}
