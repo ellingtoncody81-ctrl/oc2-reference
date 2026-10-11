@@ -289,27 +289,34 @@ void CHudRadarModern::UpdateRadarTransform( int cx, int cy, int radius )
 ========================
 WorldToTile
 
-World position -> fractional tile index in the overview image.
+World position -> fractional tile index in the overview image
+(128 overview pixels per tile, so tile = pixel / 128).
 
-Reverse engineered from CHudRadarModern::CalcPoint, step 1:
+    s  = zoom / 1024                       (DAT_000c5050 == 0.0009765625)
+    tx = 4 + s * (world.x - origin.x)
+    ty =     s * (world.y - origin.y)
 
-    s     = zoom / 1024                      (DAT_000c5050 == 0.0009765625)
-    tileX = s * (origin.y - world.x) + 3.0
-    tileY = s * (origin.x - world.y) + 4.0
+Read off the Thumb instruction stream of Draw, the non-rotated path
+(the one de_dust2 takes, offsets +556..+640):
 
-The axes are crossed: world X picks the tile column and is measured against
-origin[1], world Y picks the tile row against origin[0]. The same expression
-appears verbatim in Draw's own Thumb instruction stream:
+    s4   = *(gHUD + 0xc9c)                ; zoom
+    d2   = s4 * 1/1024
+    d3   = -1.0 + d2*(origin.y - world.x)
+    d10  =  3.0 + d2*(origin.y - world.y)
+    d13  = -d3 = 1.0 - d2*(origin.y - world.x)
 
-    d2  = zoom/1024
-    d13 = 4.0 + d2*(origin.x - world.y)      ; tileY
-    d10 = 3.0 + d2*(origin.y - world.x)      ; tileX
+and that reproduces the measured overview pixel exactly:
 
-Dimensional check on de_dust2 (zoom 1.5, origin -223/1097) puts the map
-inside tileX [0.93, 8.93] over 8 columns and tileY [-3.93, 2.07] over 6
-rows, exactly the n*4 by n*3 grid.
+    u = 1024/2 + (wx - ox) * zoom/8        ; variance 15565 on real map
+    v =         (wy - oy) * zoom/8
 
-The ROTATED branch transposes the axes and negates the row.
+which is the same as tx*128 and ty*128 for the formula above. The other
+candidate - the crossed-axes form that Ghidra's C output shows - lands on
+the flat background instead (variance 533), because that C output is the
+*ROTATED* branch, reached only via the `beq` at +554.
+
+The axes are NOT crossed: world X picks the tile column, world Y picks the
+tile row, each against its own origin component.
 ========================
 */
 void CHudRadarModern::WorldToTile( const Vector &vecWorld, float &tx, float &ty ) const
@@ -319,17 +326,26 @@ void CHudRadarModern::WorldToTile( const Vector &vecWorld, float &tx, float &ty 
 
 	if( !m_bTileRotated )
 	{
-		tx = s * ( m_OverviewData.origin[1] - vecWorld[0] ) + 3.0f;
-		ty = s * ( m_OverviewData.origin[0] - vecWorld[1] ) + 4.0f;
+		tx = 4.0f + s * ( vecWorld[0] - m_OverviewData.origin[0] );
+		ty =        s * ( vecWorld[1] - m_OverviewData.origin[1] );
 	}
 	else
 	{
-		tx = s * ( m_OverviewData.origin[1] - vecWorld[1] ) + 3.0f;
-		ty = -( s * ( m_OverviewData.origin[0] - vecWorld[0] ) - 4.0f );
+		// ROTATED branch, read off the +736 block. Not measured - none of
+		// the maps we ship set ROTATED - so keep the description's own
+		// flag rather than inventing a different transpose.
+		tx = 3.0f + s * ( m_OverviewData.origin[1] - vecWorld[0] );
+		ty = 4.0f + s * ( m_OverviewData.origin[0] - vecWorld[1] );
 	}
 
-	// optional extra mirror on top of the description's own ROTATED bit
+	// user overrides on top, for overviews whose description lies
 	int iOrient = s_cl_radar_orient ? (int)s_cl_radar_orient->value : 0;
+	if( iOrient & 1 )
+	{
+		float t = tx;
+		tx = ty;
+		ty = t;
+	}
 	if( iOrient & 2 )
 		ty = -ty;
 }
