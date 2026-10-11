@@ -382,19 +382,14 @@ UpdateRadarTransform.
 */
 void CHudRadarModern::WorldToTile( const Vector &vecWorld, float &tx, float &ty ) const
 {
-	if( m_bBoundsValid )
-	{
-		tx = ( vecWorld[0] - m_flMapMinX ) * m_flTilesPerUnitX;
-		ty = ( m_flMapMaxY - vecWorld[1] ) * m_flTilesPerUnitY;
-	}
-	else
-	{
-		float flZoom = m_OverviewData.zoom > 0.0f ? m_OverviewData.zoom : 1.0f;
-		float s = flZoom * ( 1.0f / 1024.0f );
+	float flZoom = m_OverviewData.zoom > 0.0f ? m_OverviewData.zoom : 1.0f;
+	float s = flZoom * ( 1.0f / 1024.0f );
 
-		tx = 4.0f + s * ( vecWorld[0] - m_OverviewData.origin[0] );
-		ty =        s * ( vecWorld[1] - m_OverviewData.origin[1] );
-	}
+	// crossed and negated - see the instruction listing above.
+	//   0x4258  vmls.f64 d13,d2,d0   d13 = 4.0 + s*O1 - s*world.y  (tile column)
+	//   0x425c  vmls.f64 d10,d2,d1   d10 = 3.0 + s*O2 - s*world.x  (tile row)
+	tx = 4.0f + s * ( m_OverviewData.origin[1] - vecWorld[1] );
+	ty = 3.0f + s * ( m_OverviewData.origin[0] - vecWorld[0] );
 
 	if( m_bTileRotated )
 	{
@@ -403,8 +398,14 @@ void CHudRadarModern::WorldToTile( const Vector &vecWorld, float &tx, float &ty 
 		ty = t;
 	}
 
-	// user overrides on top, for overviews whose description lies
+	// user override, for overviews whose description lies about the crossing
 	int iOrient = s_cl_radar_orient ? (int)s_cl_radar_orient->value : 0;
+	if( iOrient & 1 )
+	{
+		float t = tx;
+		tx = ty;
+		ty = t;
+	}
 	if( iOrient & 2 )
 		ty = -ty;
 
