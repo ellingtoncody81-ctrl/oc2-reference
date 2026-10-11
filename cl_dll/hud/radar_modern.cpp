@@ -880,9 +880,11 @@ void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 {
 	int iTeam = ( m_iPlayerNum > 0 && m_iPlayerNum < 32 )
 		? g_PlayerExtraInfo[ m_iPlayerNum ].teamnumber : 0;
-	int r = ( iTeam == 1 ) ? 0 : 255;
-	int g = ( iTeam == 1 ) ? 255 : 0;
-	int b = 0;
+	// same blue/yellow scheme as DrawPlayerBlip, so the arrow reads as "you"
+	// in whichever of the two colours matches the player's own team
+	int r = ( iTeam == 1 ) ? 0   : 255;
+	int g = ( iTeam == 1 ) ? 120 : 220;
+	int b = ( iTeam == 1 ) ? 255 : 0;
 
 	// Always draw the geometry, never rely on a sprite being present: the
 	// whole point of this marker is to show where the player sits on the
@@ -1083,9 +1085,12 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, int tea
 
 	bool bFriend = ( team == g_PlayerExtraInfo[ m_iPlayerNum ].teamnumber );
 
-	int r = bFriend ? 0 : 255;
-	int g = bFriend ? 255 : 0;
-	int b = 0;
+	// Teammates blue, enemies yellow. The sprite sheets are named iplayerblue /
+	// iplayerred but SPR_Set modulates whatever is bound, so the RGB passed
+	// here is what actually shows; the slot only picks a shape.
+	int r = bFriend ? 0   : 255;
+	int g = bFriend ? 120 : 220;
+	int b = bFriend ? 255 : 0;
 
 	CClientSprite *pSprite = bFriend ? s_spr[SPR_PLAYER_BLUE] : s_spr[SPR_PLAYER_RED];
 
@@ -1094,7 +1099,16 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, int tea
 	// that field, so it stays (0,0,0) and every blip piled up on the same
 	// map pixel a third of the way up from the centre. The live entity is
 	// the only populated source, same as CHudSpectator uses.
-	CalcPoint( pEnt->origin, x, y, radius );
+	//
+	// The return value is the out-of-circle flag. It used to be dropped,
+	// so players standing beyond the radar window still got a blip drawn
+	// on the game world at large - visibly, as green squares floating off
+	// the HUD (screenshot: one near the crate at the bottom left). The
+	// mobile build stops at the circle, so anything outside is simply not
+	// drawn; the map tiles themselves are already clipped the same way in
+	// DrawOverviewLayer.
+	if( CalcPoint( pEnt->origin, x, y, radius ) )
+		return;
 
 	if( pSprite && pSprite->spr )
 	{
