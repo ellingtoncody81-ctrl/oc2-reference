@@ -41,6 +41,22 @@ extern int g_iRadarAPIVersion;
 #define BLIP_SIZE            20
 #define RADAR_SCALE          32.0f	// same as CHudRadar::WorldToRadar
 
+/*
+How much of the map the radar window covers.
+
+The mobile build lays the overview out at 80% of the screen: the constants
+recovered from Draw are 819.2 and -614.4, i.e. 1024x768 * 0.8. Its radar
+circle is cl_newradar_size of the screen height, so in that same design space
+the diameter is 2 * 0.175 * 768 = 268.8 against an 819.2 wide overview:
+
+    268.8 / 819.2 = 0.328125
+
+so the window is a bit under a third of the map, not the whole thing.
+Showing the full 1024 px in a 378 px circle pinned every tile inside the
+disc, which is why the map appeared frozen while walking.
+*/
+#define RADAR_MAP_FRACTION   0.328125f
+
 CHudRadarModern gHudRadarModern;
 
 // the six cvars recovered from the mobile build's constructor, plus the
@@ -327,11 +343,14 @@ void CHudRadarModern::UpdateRadarTransform( int cx, int cy, int radius )
 	if( flView <= 0.0f || flView > 1.0f )
 		flView = 1.0f;
 
-	// The window is 2*radius*view pixels wide and spans the whole map
-	// width, i.e. m_iOverviewTilesX tiles, so one tile is that divided by
-	// the column count. This is the only free scale parameter - the world
-	// to tile mapping itself is fixed by the bitmap.
-	m_flPixelsPerTile = ( (float)radius * 2.0f * flView ) / (float)m_iOverviewTilesX;
+	// The window covers RADAR_MAP_FRACTION of the map width (see the define),
+	// scaled by cl_radar_view. On 1080p that is 2.625 of de_dust2's 8 columns
+	// across 378 px, i.e. 144 px per tile instead of 47.
+	float flFraction = RADAR_MAP_FRACTION * flView;
+	if( flFraction <= 0.0f || flFraction > 4.0f )
+		flFraction = RADAR_MAP_FRACTION;
+
+	m_flPixelsPerTile = ( (float)radius * 2.0f ) / ( (float)m_iOverviewTilesX * flFraction );
 }
 
 /*
@@ -852,13 +871,30 @@ void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 	// solid backing so the arrow reads over any map content
 	FillRGBA( cx - 3, cy - 3, 6, 6, 0, 0, 0, 200 );
 
+	// Same trap as DrawRadarDisc: whatever texture the previous HUD element
+	// left bound is still active in kRenderTransAlpha, and these vertices
+	// carry no texcoords, so the arrow was being modulated by a random texel
+	// of the overview and vanished against it. Bind the white texture and
+	// give every vertex a coordinate inside it.
+	if( gHUD.m_WhiteTex )
+	{
+		gRenderAPI.GL_SelectTexture( 0 );
+		gRenderAPI.GL_Bind( 0, gHUD.m_WhiteTex );
+	}
+
 	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
 	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
 	gEngfuncs.pTriAPI->Color4ub( r, g, b, 255 );
 	gEngfuncs.pTriAPI->Begin( TRI_TRIANGLES );
-	gEngfuncs.pTriAPI->Vertex3f( flTipX, flTipY, 0 );
-	gEngfuncs.pTriAPI->Vertex3f( flBX, flBY, 0 );
-	gEngfuncs.pTriAPI->Vertex3f( flCX, flCY, 0 );
+
+	float flPX[3] = { flTipX, flBX, flCX };
+	float flPY[3] = { flTipY, flBY, flCY };
+	for( int i = 0; i < 3; i++ )
+	{
+		gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
+		gEngfuncs.pTriAPI->Vertex3f( flPX[i], flPY[i], 0 );
+	}
+
 	gEngfuncs.pTriAPI->End();
 }
 
@@ -926,22 +962,38 @@ void CHudRadarModern::DrawRadarFrame( int cx, int cy, int radius, int r, int g, 
 	int x1 = cx + radius, y1 = cy + radius;
 	int t  = max( 1, radius / 32 );
 
+	// untextured, but still has to be told so: the last bound texture is
+	// still live here and would tint the whole frame
+	if( gHUD.m_WhiteTex )
+	{
+		gRenderAPI.GL_SelectTexture( 0 );
+		gRenderAPI.GL_Bind( 0, gHUD.m_WhiteTex );
+	}
+
 	gEngfuncs.pTriAPI->RenderMode( kRenderTransAdd );
 	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
 	gEngfuncs.pTriAPI->Color4ub( r, g, b, a );
 
 	gEngfuncs.pTriAPI->Begin( TRI_QUADS );
 	// top
+	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
 	gEngfuncs.pTriAPI->Vertex3f( x0, y0, 0 );            gEngfuncs.pTriAPI->Vertex3f( x1, y0 + t, 0 );
+	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
 	gEngfuncs.pTriAPI->Vertex3f( x1, y0, 0 );            gEngfuncs.pTriAPI->Vertex3f( x0, y0 + t, 0 );
 	// bottom
+	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
 	gEngfuncs.pTriAPI->Vertex3f( x0, y1 - t, 0 );        gEngfuncs.pTriAPI->Vertex3f( x1, y1, 0 );
+	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
 	gEngfuncs.pTriAPI->Vertex3f( x1, y1 - t, 0 );        gEngfuncs.pTriAPI->Vertex3f( x0, y1, 0 );
 	// left
+	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
 	gEngfuncs.pTriAPI->Vertex3f( x0, y0 + t, 0 );        gEngfuncs.pTriAPI->Vertex3f( x0 + t, y1 - t, 0 );
+	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
 	gEngfuncs.pTriAPI->Vertex3f( x0 + t, y0 + t, 0 );    gEngfuncs.pTriAPI->Vertex3f( x0, y1 - t, 0 );
 	// right
+	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
 	gEngfuncs.pTriAPI->Vertex3f( x1 - t, y0 + t, 0 );    gEngfuncs.pTriAPI->Vertex3f( x1, y1 - t, 0 );
+	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
 	gEngfuncs.pTriAPI->Vertex3f( x1 - t, y1 - t, 0 );    gEngfuncs.pTriAPI->Vertex3f( x1, y0 + t, 0 );
 	gEngfuncs.pTriAPI->End();
 }
@@ -967,6 +1019,10 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, int tea
 	if( i == m_iPlayerNum || g_PlayerExtraInfo[i].dead )
 		return;
 
+	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
+	if( !pEnt || !pEnt->player )
+		return;
+
 	bool bFriend = ( team == g_PlayerExtraInfo[ m_iPlayerNum ].teamnumber );
 
 	int r = bFriend ? 0 : 255;
@@ -976,7 +1032,11 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, int tea
 	CClientSprite *pSprite = bFriend ? s_spr[SPR_PLAYER_BLUE] : s_spr[SPR_PLAYER_RED];
 
 	int x, y;
-	CalcPoint( g_PlayerExtraInfo[i].origin, x, y, radius );
+	// NOT g_PlayerExtraInfo[i].origin: nothing in this client ever writes
+	// that field, so it stays (0,0,0) and every blip piled up on the same
+	// map pixel a third of the way up from the centre. The live entity is
+	// the only populated source, same as CHudSpectator uses.
+	CalcPoint( pEnt->origin, x, y, radius );
 
 	if( pSprite && pSprite->spr )
 	{
