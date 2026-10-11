@@ -65,7 +65,7 @@ private:
 	void DrawRadarMask( int cx, int cy, int radius );
 	void DrawRadarFrame( int cx, int cy, int radius, int r, int g, int b, int a );
 	void DrawWarningFrame( int cx, int cy, int radius, float flTime );
-	void DrawPlayerBlip( int cx, int cy, int radius, int i, int team, float flTime );
+	void DrawPlayerBlip( int cx, int cy, int radius, int i, float flTime );
 	bool  CalcPoint( const Vector &vecWorld, int &x, int &y, int &radius );
 
 public:
