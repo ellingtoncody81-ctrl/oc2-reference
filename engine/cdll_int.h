@@ -107,6 +107,16 @@ typedef struct hud_player_info_s
 	short		topcolor;
 	short		bottomcolor;
 
+	// Team as published by the server in the player info string, as a small
+	// integer (0 unassigned, 1 TERRORIST, 2 CT in stock CS). -1 when the key
+	// is absent.
+	//
+	// There is no other way for a client dll to learn this: GoldSrc game
+	// messages (gmsgTeamInfo / gmsgScoreInfo) are not forwarded by this
+	// engine, and entity_state.team is never filled in on either side. The
+	// scoreboard colour keys and spectator_mode go through the same gap.
+	short		team;
+
 	uint64_t	m_nSteamID;
 } hud_player_info_t;
 
