@@ -291,10 +291,48 @@ void CHudRadarModern::UpdateRadarTransform( int cx, int cy, int radius )
 	m_flPixelsPerTile = 0.0f;
 	m_bBoundsValid = false;
 
-	// Grid basis. With the radar locked to the player's facing, a yaw of 0
-	// (looking down +X) has to put east up and north to the right, which is
-	// (sin, -cos). cl_radar_rotate 0 falls back to plain north-up.
-	float flYaw = DEG2RAD( gHUD.m_vecAngles[1] );
+	// Overview handedness. The mobile build reads this one flag for BOTH the
+	// tile axes (WorldToTile) and the rotation angle below, so it has to be
+	// settled before the basis is computed.
+	int iOrient = s_cl_radar_orient ? (int)s_cl_radar_orient->value : 0;
+	m_bTileRotated = ( m_OverviewData.rotated != 0 ) || ( ( iOrient & 1 ) != 0 );
+
+	/*
+	========================
+	Grid basis
+
+	========================
+	The angle is NOT the bare view yaw. CalcPoint builds it like this
+	(0x4c52..0x4c82 of CHudRadarModern::CalcPoint):
+
+	    0x4c52  ldrb  r0,[r11,#0x130]   ; the overview's rotated flag
+	    0x4c56  vldr  s2,[r9,#0x28]    ; gHUD view yaw
+	    0x4c60  vadd  s0,s2,s0         ; + 90
+	    0x4c6c  vmul  d0,d0,d1         ; * DEG2RAD, 0.0174532925
+	    0x4c74  beq  0x4c86            ; skip the next two when NOT rotated
+	    0x4c7e  vadd  d0,d0,d1         ; - pi/2, 1.5707963268
+	    0x4c82  vcvt  s28,d0
+
+	so a = yaw + 90deg for a plain overview and a = yaw for a rotated one.
+	The basis keeps the same (sin a, -cos a) shape - only the angle was wrong.
+
+	That 90 degrees is the whole "turning feels wrong" bug. Checked by
+	running the transform rather than by eye: take a world point 100 units
+	north of the player and push its tile delta (-dy, -dx) through the basis.
+	With a = yaw it lands on (0,+100) at yaw 0 and (-100,0) at yaw 90 - the
+	map is simply rotated a quarter turn off, so walking forward slides the
+	map sideways. With a = yaw + 90 it lands on (-100,0) at yaw 0 and
+	(0,-100) at yaw 90, i.e. the point you are facing sits straight above the
+	player at every yaw.
+
+	cl_radar_rotate 0 keeps the raw tile orientation, for comparing the
+	drawing against the overview bitmap directly.
+	========================
+	*/
+	float flAngle = DEG2RAD( gHUD.m_vecAngles[1] );
+	if( !m_bTileRotated )
+		flAngle += (float)( M_PI * 0.5 );
+
 	if( s_cl_radar_rotate && s_cl_radar_rotate->value == 0.0f )
 	{
 		m_flTileA = 1.0f;
@@ -302,12 +340,9 @@ void CHudRadarModern::UpdateRadarTransform( int cx, int cy, int radius )
 	}
 	else
 	{
-		m_flTileA =  sinf( flYaw );
-		m_flTileB = -cosf( flYaw );
+		m_flTileA =  sinf( flAngle );
+		m_flTileB = -cosf( flAngle );
 	}
-
-	int iOrient = s_cl_radar_orient ? (int)s_cl_radar_orient->value : 0;
-	m_bTileRotated = ( m_OverviewData.rotated != 0 ) || ( ( iOrient & 1 ) != 0 );
 
 	model_t *pSprite = gHUD.m_Spectator.GetMapSprite();
 	if( !pSprite || pSprite->numframes <= 0 )
@@ -854,18 +889,20 @@ void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 	// radar, and a missing hud.txt entry used to leave the centre empty.
 	int iSize = max( 5, radius / 12 );
 
-	// The arrow lives in the same frame as the map, so take the facing
-	// direction in grid space and push it through the grid basis rather than
-	// recomputing an angle: dx is east, dy is south (ty counts down from the
-	// map's north edge), and the basis is the one CalcPoint and
-	// DrawOverviewLayer already use. With the radar locked to the view that
-	// comes out as exactly (0,-1) - the map spins, the arrow stays up, which
-	// is the CS:GO behaviour. Recomputing the angle independently meant the
-	// arrow turned by exactly the same amount as the map, so relative to the
-	// map it never moved at all.
+	// The arrow lives in the same frame as the map, so push the facing
+	// direction through the grid basis rather than recomputing an angle -
+	// that way it can never drift relative to the map.
+	//
+	// The direction has to be expressed in TILE space, not world space. The
+	// verified mapping is dtx ~ -dy and dty ~ -dx (column takes world y, row
+	// takes world x, both negated), so facing (cos yaw, sin yaw) in world
+	// becomes (-sin yaw, -cos yaw) in tile space. Fed through the same basis
+	// the background uses that collapses to exactly (0,-1) at every yaw: the
+	// arrow stays up while the map turns underneath it. Using the world-space
+	// vector instead lands it on (1,0) - pointing right, permanently.
 	float flYaw = DEG2RAD( gHUD.m_vecAngles[1] );
-	float flFDX =  cosf( flYaw );		// east component of the facing
-	float flFDY = -sinf( flYaw );		// south component
+	float flFDX = -sinf( flYaw );		// tile-space facing, column axis
+	float flFDY = -cosf( flYaw );		// tile-space facing, row axis
 
 	float flAX = flFDX * m_flTileA - flFDY * m_flTileB;
 	float flAY = flFDX * m_flTileB + flFDY * m_flTileA;
