@@ -423,14 +423,27 @@ void CHudRadarModern::WorldToTile( const Vector &vecWorld, float &tx, float &ty 
 	// crossed and negated - see the instruction listing above.
 	//   0x4258  vmls.f64 d13,d2,d0   d13 = 4.0 + s*O1 - s*world.y  (tile column)
 	//   0x425c  vmls.f64 d10,d2,d1   d10 = 3.0 + s*O2 - s*world.x  (tile row)
-	tx = 4.0f + s * ( m_OverviewData.origin[1] - vecWorld[1] );
-	ty = 3.0f + s * ( m_OverviewData.origin[0] - vecWorld[0] );
-
 	if( m_bTileRotated )
 	{
-		float t = tx;
-		tx = ty;
-		ty = t;
+		// ROTATED overview stores the image turned a quarter turn, so the column
+		// takes world.x instead of world.y AND its sign flips; the row takes
+		// world.y. It is not a plain swap of the two.
+		//
+		// Cross-checked against NextClient's RadarView_ComputeTransform
+		// (nextclient/client_mini/src/hud/radar/render/RadarView.cpp:138-142),
+		// which expresses the same thing as "offset = -offset.Perp()" with
+		// Perp(v) = {-y, x}: rotating the centre offset a quarter turn is not the
+		// same as exchanging its two components. Replicating that transform and
+		// running it over de_dust2's real parameters reproduces these three lines
+		// exactly at every sampled world point, and its own unit test
+		// (RadarViewTests.cpp: RotatedOverviewProjectsMarkersConsistently) passes.
+		tx = 4.0f + s * ( vecWorld[0] - m_OverviewData.origin[0] );
+		ty = 3.0f + s * ( m_OverviewData.origin[1] - vecWorld[1] );
+	}
+	else
+	{
+		tx = 4.0f + s * ( m_OverviewData.origin[1] - vecWorld[1] );
+		ty = 3.0f + s * ( m_OverviewData.origin[0] - vecWorld[0] );
 	}
 
 	// user override, for overviews whose description lies about the crossing
@@ -446,6 +459,30 @@ void CHudRadarModern::WorldToTile( const Vector &vecWorld, float &tx, float &ty 
 
 	tx += s_cl_radar_shiftx ? s_cl_radar_shiftx->value : 0.0f;
 	ty += s_cl_radar_shifty ? s_cl_radar_shifty->value : 0.0f;
+}
+
+/*
+========================
+WorldDirToTileDir
+
+The derivative of WorldToTile: same axis pairing, same signs, no constants and
+no zoom. The self marker uses it instead of a hand written facing vector so the
+two can never disagree - the ROTATED overview re-pairs the axes and flips a
+sign, and a hardcoded vector then pins the arrow to (-1,0) at every yaw.
+========================
+*/
+void CHudRadarModern::WorldDirToTileDir( float dx, float dy, float &tx, float &ty ) const
+{
+	if( m_bTileRotated )
+	{
+		tx = dx;
+		ty = -dy;
+	}
+	else
+	{
+		tx = -dy;
+		ty = -dx;
+	}
 }
 
 /*
@@ -540,15 +577,6 @@ void CHudRadarModern::LoadOverview( const char *pszMapName )
 	{
 		m_bOverviewValid = true;
 		m_OverviewData    = gHUD.m_Spectator.m_OverviewData;
-
-		// A rotated overview is stored turned 90 degrees; the CS:GO radar
-		// path below assumes the standard north-up image, so say so instead
-		// of silently drawing the map sideways.
-		if( m_OverviewData.rotated )
-		{
-			gEngfuncs.Con_Printf( "radar: overview '%s' is ROTATED, "
-				"drawn north-up anyway (unsupported)\n", m_szMapName );
-		}
 	}
 	else
 	{
@@ -894,16 +922,16 @@ void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 	// direction through the grid basis rather than recomputing an angle -
 	// that way it can never drift relative to the map.
 	//
-	// The direction has to be expressed in TILE space, not world space. The
-	// verified mapping is dtx ~ -dy and dty ~ -dx (column takes world y, row
-	// takes world x, both negated), so facing (cos yaw, sin yaw) in world
-	// becomes (-sin yaw, -cos yaw) in tile space. Fed through the same basis
-	// the background uses that collapses to exactly (0,-1) at every yaw: the
-	// arrow stays up while the map turns underneath it. Using the world-space
-	// vector instead lands it on (1,0) - pointing right, permanently.
+	// The facing has to be expressed in TILE space. Take it straight from the
+	// mapping itself (WorldDirToTileDir is the derivative of WorldToTile) instead
+	// of hardcoding it: on a ROTATED overview the column takes world.x with the
+	// opposite sign and the row takes world.y, so the old fixed vector
+	// (-sin yaw, -cos yaw) came out as (-1, 0) at EVERY yaw - the arrow pointed
+	// left no matter which way the player turned. Deriving it keeps the two in
+	// step by construction.
 	float flYaw = DEG2RAD( gHUD.m_vecAngles[1] );
-	float flFDX = -sinf( flYaw );		// tile-space facing, column axis
-	float flFDY = -cosf( flYaw );		// tile-space facing, row axis
+	float flFDX, flFDY;
+	WorldDirToTileDir( cosf( flYaw ), sinf( flYaw ), flFDX, flFDY );
 
 	float flAX = flFDX * m_flTileA - flFDY * m_flTileB;
 	float flAY = flFDX * m_flTileB + flFDY * m_flTileA;
