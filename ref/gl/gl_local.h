@@ -387,8 +387,10 @@ int GL_LoadTextureArray( const char **names, int flags );
 // ---- CS:GO radar background blur (gl_radar.c), see engine/radar_int.h
 extern convar_t *cl_radar_blur_resolution;
 void GL_InitRadarCapture( void );
-void GL_CaptureRadarBackground( int radius, int cx, int cy, int size );
+void GL_SetRadarCaptureParams( int blurRadius, int cx, int cy, int size );
+void GL_CaptureRadarBackground( void );
 unsigned int GL_GetRadarBackgroundTexture( void );
+int GL_GetRadarCaptureRect( int *x, int *y, int *w, int *h );
 void GL_BindRadarTexture( void );
 void GL_FreeRadarCapture( void );
 int GL_ApplyBoxBlur( const byte *src, byte *dst, int width, int height, int radius );

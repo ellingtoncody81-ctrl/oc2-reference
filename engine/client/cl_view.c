@@ -537,6 +537,11 @@ void V_PostRender( void )
 	ref.dllFuncs.R_AllowFog( false );
 	ref.dllFuncs.R_Set2DMode( true );
 
+	// Sample the radar backdrop while the buffer holds the 3D scene and
+	// nothing else. After this the HUD goes on top, and there is no later
+	// point in the frame where the radar is not in its own capture.
+	CL_RadarCapturePending();
+
 	if( cls.state == ca_active && cls.signon == SIGNONS && cls.scrshot_action != scrshot_mapshot )
 	{
 		SCR_TileClear();
