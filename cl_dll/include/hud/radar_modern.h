@@ -68,6 +68,9 @@ private:
 	// cannot drift away from the map again if the mapping is ever touched.
 	void WorldDirToTileDir( float dx, float dy, float &tx, float &ty ) const;
 
+	// Rebuilds m_aRadarEnemyVisible. Throttled; cheap to call every frame.
+	void UpdateEnemyVisibility( float flTime );
+
 	void DrawOverviewLayer( int cx, int cy, int radius );
 	void DrawRadarDisc( int cx, int cy, int radius );
 	void DrawSelfMarker( int cx, int cy, int radius );
@@ -119,6 +122,21 @@ public:
 	float m_flTileA;
 	float m_flTileB;
 	bool  m_bTileRotated;      // overview_t.rotated, or cl_radar_flip bit 1
+
+	// ---- enemy line-of-sight gating ---------------------------------------
+	// An enemy blip is only drawn when the local player can actually see that
+	// enemy: inside the view cone, and with a clear trace to the feet and to
+	// the head. Without this every enemy that ever entered the PVS stays on
+	// the radar for as long as its entity survives, which reads as "enemies
+	// are always visible in a radius around you".
+	//
+	// Modeled on NextClient's RadarVisibility (nextclient/client_mini/src/hud/
+	// radar/policy/Visibility.cpp): a 20 Hz sweep, view cone then trace.
+	// Their version also lends the eyes of teammates the server revealed; we
+	// have no such reveal on this server, so only the local player is a viewer.
+	bool  m_bRadarGating;                       // false = draw everything
+	bool  m_aRadarEnemyVisible[32];            // engine caps maxclients at 32
+	float m_flRadarVisNext;                      // throttled to 20 Hz
 
 	// ---- world -> overview mapping, rebuilt every frame from the BSP world
 	//      model bounds. The overview .txt zoom/origin are the CS spectator
