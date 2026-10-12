@@ -21,13 +21,13 @@ This file is placed under the Unlicense, like its mobility_int.h sibling.
 extern "C" {
 #endif
 
-#define RADAR_API_VERSION   2
+#define RADAR_API_VERSION   4
 #define RADAR_CLIENT_EXPORT "HUD_RadarInterface"
 
 // signatures of the renderer-side implementations (ref/gl/gl_radar.c);
 // resolved by name through GL_GetProcAddress, so both sides can share them
 typedef void  (*pfnInitRadarCapture)( void );
-typedef void  (*pfnCaptureRadarBackground)( int radius, int cx, int cy, int size );
+typedef void  (*pfnCaptureRadarBackground)( void );
 typedef unsigned int (*pfnGetRadarBackgroundTex)( void );
 typedef void  (*pfnBindRadarTexture)( void );
 typedef void  (*pfnFreeRadarCapture)( void );
@@ -46,13 +46,30 @@ typedef struct radar_engfuncs_s
 	// Allocate the 256 KB scratch buffer. Idempotent.
 	void (*pfnInitRadarCapture)( void );
 
-	// Read the on-screen block around (cx, cy) of the given size back,
-	// box-blur it with `radius` and upload it as a reusable texture.
-	// radius < 1 copies the pixels through unblurred.
-	void (*pfnCaptureRadarBackground)( int radius, int cx, int cy, int size );
+	// v4: the client registers where the radar is and how hard to blur, and
+	// the engine does the capture itself at the one point in the frame where
+	// the colour buffer still holds nothing but the 3D scene -- after the
+	// view render, before CL_DrawHUD.
+	//
+	// Capturing during the HUD pass cannot work. The only complete image
+	// available then is the previous frame, and the previous frame already
+	// has the radar composited at that exact spot, so the backdrop comes
+	// back as a blurred copy of the radar and looks like the flat plate it
+	// was meant to replace. The engine throttles this on
+	// cl_radar_blur_interval.
+	void (*pfnSetRadarCaptureParams)( int blurRadius, int cx, int cy, int size );
 
 	// Returns the GL texture holding the blurred background, 0 if none.
 	unsigned int (*pfnGetRadarBackgroundTexture)( void );
+
+	// v3: the screen rectangle (HUD coordinates, origin top-left) that the
+	// background texture actually covers. The capture is a res*res block
+	// centred on the radar, clamped to stay inside the framebuffer, so it is
+	// only equal to the requested window when that window fits. The client
+	// maps its quad through this rectangle instead of assuming it, which is
+	// what keeps the backdrop aligned when the radar sits near an edge.
+	// Returns 0 when nothing has been captured yet.
+	int (*pfnGetRadarCaptureRect)( int *x, int *y, int *w, int *h );
 
 	// glEnable + glBindTexture for the radar background, no-op if unset.
 	void (*pfnBindRadarTexture)( void );
