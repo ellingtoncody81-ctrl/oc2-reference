@@ -576,8 +576,10 @@ const ref_interface_t gReffuncs =
 
 	// CS:GO radar background blur (gl_radar.c)
 	GL_InitRadarCapture,
+	GL_SetRadarCaptureParams,
 	GL_CaptureRadarBackground,
 	GL_GetRadarBackgroundTexture,
+	GL_GetRadarCaptureRect,
 	GL_BindRadarTexture,
 	GL_FreeRadarCapture,
 	GL_ApplyBoxBlur,
