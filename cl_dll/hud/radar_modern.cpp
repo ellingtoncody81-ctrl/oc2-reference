@@ -24,6 +24,8 @@ Measurements taken from the decompiled binary:
 #include "csprite.h"
 #include "draw_util.h"
 #include "triangleapi.h"
+#include "event_api.h"		// EV_PlayerTrace and friends
+#include "pm_defs.h"			// PM_STUDIO_BOX / PM_GLASS_IGNORE / pmtrace_t
 #include "radar_int.h"
 #include "hud/radar_modern.h"
 
@@ -91,6 +93,9 @@ static cvar_t *s_cl_radar_shifty      = NULL;
 // Lock the radar to the player's facing (CS:GO behaviour). 0 = plain
 // north-up, which is handy for comparing against the overview bitmap.
 static cvar_t *s_cl_radar_rotate      = NULL;
+// Gate enemy blips behind a real line-of-sight test. 0 restores the old
+// behaviour (every live enemy entity is drawn wherever it is).
+static cvar_t *s_cl_radar_enemy_los    = NULL;
 // one-shot "no map bounds" complaint
 static bool    s_bWarnedNoBounds      = false;
 
@@ -144,6 +149,11 @@ int CHudRadarModern::Init( void )
 	s_cl_radar_shiftx     = CVAR_CREATE( "cl_radar_shiftx", "0", FCVAR_ARCHIVE );
 	s_cl_radar_shifty     = CVAR_CREATE( "cl_radar_shifty", "0", FCVAR_ARCHIVE );
 	s_cl_radar_rotate     = CVAR_CREATE( "cl_radar_rotate", "1", FCVAR_ARCHIVE );
+	s_cl_radar_enemy_los  = CVAR_CREATE( "cl_radar_enemy_los", "1", FCVAR_ARCHIVE );
+
+	m_bRadarGating = false;
+	memset( m_aRadarEnemyVisible, 0, sizeof( m_aRadarEnemyVisible ) );
+	m_flRadarVisNext = 0.0f;
 
 	m_bEnabled = true;
 
@@ -1101,6 +1111,128 @@ void CHudRadarModern::DrawWarningFrame( int cx, int cy, int radius, float flTime
 	DrawRadarFrame( cx, cy, radius, 255, 0, 0, iAlpha );
 }
 
+/*
+========================
+UpdateEnemyVisibility
+
+Decides which enemies the radar is allowed to show.
+
+Without this every enemy that ever entered the PVS stays on the radar for as
+long as its client entity survives, which reads as "enemies are permanently
+visible in a radius around you" - the map walls do not hide anything.
+
+Modeled on NextClient's RadarVisibility
+(nextclient/client_mini/src/hud/radar/policy/Visibility.cpp): a 20 Hz sweep,
+view cone first (cheap) then a trace (expensive). Their version also lends the
+eyes of teammates the server revealed; this server has no such reveal, so the
+local player is the only viewer.
+
+Two points are traced per enemy - the feet and just above eye level - because
+testing only the feet hides a player whose upper body is already exposed.
+========================
+*/
+void CHudRadarModern::UpdateEnemyVisibility( float flTime )
+{
+	if( !s_cl_radar_enemy_los || s_cl_radar_enemy_los->value == 0.0f )
+	{
+		m_bRadarGating = false;
+		return;
+	}
+
+	cl_entity_t *pLocal = gEngfuncs.GetLocalPlayer();
+	int iLocalTeam = ( m_iPlayerNum > 0 && m_iPlayerNum < 32 )
+		? g_PlayerInfoList[ m_iPlayerNum ].team : -1;
+
+	// Without a known team "enemy" is undefined, and a spectator has no PVS of
+	// their own, so both cases fall back to drawing everything.
+	if( !pLocal || iLocalTeam < 0 || gEngfuncs.IsSpectateOnly() )
+	{
+		m_bRadarGating = false;
+		return;
+	}
+
+	m_bRadarGating = true;
+
+	if( flTime < m_flRadarVisNext )
+		return;
+	m_flRadarVisNext = flTime + 0.05f;
+
+	memset( m_aRadarEnemyVisible, 0, sizeof( m_aRadarEnemyVisible ) );
+
+	// pm_shared hull table: 0 standing, 1 ducking. Eye heights are the values
+	// the player code uses; v_origin is not exported here and the view bob is
+	// a few units, which a wall is not going to care about.
+	vec3_t vecEye = pLocal->origin;
+	vecEye[2] += ( pLocal->curstate.usehull == 1 ) ? 12.0f : 8.0f;
+
+	vec3_t vecFwd;
+	AngleVectors( (const float *)&gHUD.m_vecAngles, vecFwd, NULL, NULL );
+
+	// m_iFOV is the 4:3 horizontal FOV. The cone is tested against a single
+	// point per target, so pad it - a widescreen aspect and a target sitting at
+	// the screen edge both fall outside fov/2 otherwise.
+	float flFov = ( gHUD.m_iFOV > 1 ) ? (float)gHUD.m_iFOV : 90.0f;
+	float flCosHalf = cosf( DEG2RAD( flFov * 0.5f + 10.0f ) );
+
+	// The PM state has to be armed before any trace, or every trace reports
+	// startsolid and nothing is ever visible.
+	gEngfuncs.pEventAPI->EV_SetUpPlayerPrediction( FALSE, TRUE );
+	gEngfuncs.pEventAPI->EV_PushPMStates();
+	gEngfuncs.pEventAPI->EV_SetTraceHull( 2 );
+
+	int iMax = gEngfuncs.GetMaxClients();
+	if( iMax > 32 )
+		iMax = 32;
+
+	for( int i = 1; i <= iMax; i++ )
+	{
+		if( i == m_iPlayerNum || i >= 32 || g_PlayerExtraInfo[i].dead )
+			continue;
+
+		// Teammates keep the ungated behaviour; this pass is enemies only.
+		if( g_PlayerInfoList[i].team == iLocalTeam )
+			continue;
+
+		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
+		if( !pEnt || !pEnt->player )
+			continue;
+
+		vec3_t vecTo;
+		VectorSubtract( pEnt->origin, vecEye, vecTo );
+		float flDist = VectorLength( vecTo );
+		if( flDist >= 1.0f )
+		{
+			float flDot = DotProduct( vecTo, vecFwd ) / flDist;
+			if( flDot < flCosHalf )
+				continue;
+		}
+
+		vec3_t vecTarget[2];
+		vecTarget[0] = pEnt->origin;
+		vecTarget[1] = vecTarget[0];
+		vecTarget[1][2] += 13.0f;   // just above the standing eye height
+
+		bool bClear = false;
+		for( int k = 0; k < 2 && !bClear; k++ )
+		{
+			pmtrace_t tr;
+			memset( &tr, 0, sizeof( tr ) );
+			// PM_STUDIO_BOX makes props clip by their bounding box instead of
+			// their studio hulls; PM_GLASS_IGNORE lets you see through windows,
+			// which is what the server's own visibility does.
+			gEngfuncs.pEventAPI->EV_PlayerTrace( vecEye, vecTarget[k],
+				PM_STUDIO_BOX | PM_GLASS_IGNORE, -1, &tr );
+			if( tr.fraction >= 0.99f && !tr.startsolid && !tr.allsolid )
+				bClear = true;
+		}
+
+		if( bClear )
+			m_aRadarEnemyVisible[i] = true;
+	}
+
+	gEngfuncs.pEventAPI->EV_PopPMStates();
+}
+
 void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float flTime )
 {
 	if( i == m_iPlayerNum || g_PlayerExtraInfo[i].dead )
@@ -1132,6 +1264,13 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	int iTheirTeam = g_PlayerInfoList[ i ].team;
 
 	bool bFriend = ( iLocalTeam >= 0 && iTheirTeam >= 0 && iTheirTeam == iLocalTeam );
+
+	// Line of sight. Without this the radar leaks the whole enemy roster
+	// through walls: the client keeps a live entity for anything that ever
+	// entered the PVS, so "is the entity there" says nothing about whether the
+	// player can see it. See UpdateEnemyVisibility.
+	if( !bFriend && m_bRadarGating && !m_aRadarEnemyVisible[i] )
+		return;
 
 	// Teammates blue, enemies red. The sprite sheets are named iplayerblue /
 	// iplayerred and this matches that convention; SPR_Set modulates whatever
@@ -1316,6 +1455,8 @@ int CHudRadarModern::Draw( float flTime )
 	DrawSelfMarker( m_iCenterX, m_iCenterY, m_iRadius );
 
 	// ---- player blips
+	UpdateEnemyVisibility( flTime );
+
 	for( int i = 1; i < 32; i++ )
 		DrawPlayerBlip( m_iCenterX, m_iCenterY, m_iRadius, i, flTime );
 
