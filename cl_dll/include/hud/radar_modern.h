@@ -58,6 +58,16 @@ private:
 	// (VMLA/ VMLS on d10/d13 with 1/1024 from DAT_000c5050).
 	void WorldToTile( const Vector &vecWorld, float &tx, float &ty ) const;
 
+	// World DIRECTION -> tile direction. Same axis pairing and signs as
+	// WorldToTile, minus the scale and the constants.
+	//
+	// The self marker must go through this instead of carrying its own
+	// hardcoded facing vector: the ROTATED overview changes which axis feeds
+	// which tile column and flips one sign, and a hardcoded vector silently
+	// pins the arrow to (-1,0) at every yaw. Deriving it here means the arrow
+	// cannot drift away from the map again if the mapping is ever touched.
+	void WorldDirToTileDir( float dx, float dy, float &tx, float &ty ) const;
+
 	void DrawOverviewLayer( int cx, int cy, int radius );
 	void DrawRadarDisc( int cx, int cy, int radius );
 	void DrawSelfMarker( int cx, int cy, int radius );
