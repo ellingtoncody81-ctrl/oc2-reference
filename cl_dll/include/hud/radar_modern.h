@@ -74,7 +74,7 @@ private:
 	void DrawOverviewLayer( int cx, int cy, int radius );
 	void DrawRadarDisc( int cx, int cy, int radius );
 	void DrawSelfMarker( int cx, int cy, int radius );
-	void DrawBlurredBackground( int cx, int cy, int size );
+	bool DrawBlurredBackground( int cx, int cy, int radius );
 	void DrawRadarMask( int cx, int cy, int radius );
 	void DrawRadarFrame( int cx, int cy, int radius, int r, int g, int b, int a );
 	void DrawWarningFrame( int cx, int cy, int radius, float flTime );

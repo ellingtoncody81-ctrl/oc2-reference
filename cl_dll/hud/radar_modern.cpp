@@ -72,6 +72,13 @@ static cvar_t *s_cl_radar_pos_x   = NULL;
 static cvar_t *s_cl_radar_pos_y   = NULL;
 static cvar_t *s_cl_blur_radar_bg = NULL;
 static cvar_t *s_cl_blur_update_rate = NULL;
+// Box-blur radius applied to the captured screen block. 0 or less picks a
+// fraction of the capture instead: the block is sized from the radar, so a
+// fixed pixel count would mean something different at every screen size.
+static cvar_t *s_cl_radar_blur_radius = NULL;
+// how opaque the blurred backdrop sits under the map. 0.59 matches the
+// 0x96 the mobile build uses.
+static cvar_t *s_cl_radar_blur_alpha = NULL;
 static cvar_t *s_cl_radar_modern     = NULL;
 static cvar_t *s_cl_radar_debug      = NULL;
 static float  s_flRadarViewFraction  = 1.0f;
@@ -135,11 +142,14 @@ int CHudRadarModern::Init( void )
 	s_cl_newradar_a       = CVAR_CREATE( "cl_newradar_a",    "0.75",  FCVAR_ARCHIVE );
 	s_cl_radar_pos_x      = CVAR_CREATE( "cl_radar_pos_x",   "0",     FCVAR_ARCHIVE );
 	s_cl_radar_pos_y      = CVAR_CREATE( "cl_radar_pos_y",   "0",     FCVAR_ARCHIVE );
-	// The blurred background needs a working engine-side FBO capture; while
-	// GL_CaptureRadarBackground yields nothing usable it draws an opaque
-	// black quad over the whole radar. Default it off.
-	s_cl_blur_radar_bg    = CVAR_CREATE( "cl_blur_radar_bg", "1",     FCVAR_ARCHIVE );
+	// The blurred background needs a working engine-side capture. It used to
+	// default off because the capture was broken; now that the chain works
+	// it defaults on, and falls back to the flat plate on its own whenever
+	// the engine has no texture to give (see DrawBlurredBackground).
+	s_cl_blur_radar_bg    = CVAR_CREATE( "cl_blur_radar_bg", "0",     FCVAR_ARCHIVE );
 	s_cl_blur_update_rate = CVAR_CREATE( "cl_blur_update_rate", "0.5", FCVAR_ARCHIVE );
+	s_cl_radar_blur_radius = CVAR_CREATE( "cl_radar_blur_radius", "0", FCVAR_ARCHIVE );
+	s_cl_radar_blur_alpha  = CVAR_CREATE( "cl_radar_blur_alpha", "0.59", FCVAR_ARCHIVE );
 	s_cl_radar_modern     = CVAR_CREATE( "cl_radar_modern", "1", FCVAR_ARCHIVE );
 	s_cl_radar_debug      = CVAR_CREATE( "cl_radar_debug", "1", FCVAR_ARCHIVE );
 	// how much of the map the radar window covers (1.0 = whole map width,
@@ -999,30 +1009,88 @@ void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 ========================
 DrawBlurredBackground
 
-The engine hands back a texture holding the screen area around the radar,
-already box-blurred. Drawing it with texture coordinates outside 0..1 gives
-the CS:GO soft, slightly oversized edge.
+Paints the engine's blurred copy of the screen behind the radar, clipped to
+the radar circle. Returns false when there is nothing to show yet, so the
+caller can fall back to the flat plate instead of leaving a hole.
+
+Three things this has to get right:
+
+  * BIND THE TEXTURE. The tri API carries whatever the previous HUD element
+    bound on unit 0. Without an explicit bind this quad samples that, which
+    is how the backdrop ended up "not working" with no error anywhere: the
+    capture was fine, the draw was reading someone else's texture.
+
+  * TRUST THE RECT, DON'T ASSUME IT. The engine captures a square block
+    centred on the radar and clamps it to stay inside the framebuffer, so it
+    is only the requested window when that window fits. The engine hands back
+    the rectangle it actually got; deriving it here instead would be a second
+    copy of the same coordinate arithmetic, and the Y flip between HUD and GL
+    origin is exactly the kind of thing that goes wrong silently.
+
+  * FLIP V. glReadPixels fills memory bottom-row first, so texture row 0 is
+    the BOTTOM of the captured region. Screen top is therefore v=1.
+
+The polygon is clipped to the circle with the same helper the map tiles use,
+so the backdrop and the map share one window edge instead of the map being
+round on a square backdrop.
 ========================
 */
-void CHudRadarModern::DrawBlurredBackground( int cx, int cy, int size )
+bool CHudRadarModern::DrawBlurredBackground( int cx, int cy, int radius )
 {
-	const float s = -0.1f;	// overscan, matches the original
-	const float e = 1.1f;
+	int rx = 0, ry = 0, rw = 0, rh = 0;
+	int i, n;
+	int iAlpha;
+	float inX[4], inY[4], inU[4], inV[4];
+	float outX[RADAR_CLIP_MAX], outY[RADAR_CLIP_MAX];
+	float outU[RADAR_CLIP_MAX], outV[RADAR_CLIP_MAX];
+
+	// an engine older than radar API v3 cannot report what it captured
+	if( !gRadarAPI.pfnGetRadarCaptureRect )
+		return false;
+
+	// 0 means "nothing captured yet", which is not the same as a black frame
+	if( !gRadarAPI.pfnGetRadarCaptureRect( &rx, &ry, &rw, &rh ) || rw < 1 || rh < 1 )
+		return false;
+
+	if( !gRadarAPI.pfnBindRadarTexture )
+		return false;
+
+	gRadarAPI.pfnBindRadarTexture();
+
+	// the captured block, mapped 1:1 onto the screen it came from
+	inX[0] = (float)rx;            inY[0] = (float)ry;        inU[0] = 0.0f; inV[0] = 1.0f;
+	inX[1] = (float)( rx + rw );   inY[1] = (float)ry;        inU[1] = 1.0f; inV[1] = 1.0f;
+	inX[2] = (float)( rx + rw );   inY[2] = (float)( ry + rh ); inU[2] = 1.0f; inV[2] = 0.0f;
+	inX[3] = (float)rx;            inY[3] = (float)( ry + rh ); inU[3] = 0.0f; inV[3] = 0.0f;
+
+	n = ClipPolyToCircle( inX, inY, inU, inV, 4,
+		outX, outY, outU, outV, (float)cx, (float)cy, (float)radius );
+	if( n < 3 )
+		return false;
+
+	iAlpha = s_cl_radar_blur_alpha ? (int)( s_cl_radar_blur_alpha->value * 255.0f ) : 150;
+	if( iAlpha < 0 )   iAlpha = 0;
+	if( iAlpha > 255 ) iAlpha = 255;
 
 	gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
 	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
-	gEngfuncs.pTriAPI->Color4ub( 255, 255, 255, 150 );	// original alpha 0x96
+	gEngfuncs.pTriAPI->Color4ub( 255, 255, 255, iAlpha );
 
-	gEngfuncs.pTriAPI->Begin( TRI_QUADS );
-	gEngfuncs.pTriAPI->TexCoord2f( s, s );
-	gEngfuncs.pTriAPI->Vertex3f( cx - size, cy - size, 0 );
-	gEngfuncs.pTriAPI->TexCoord2f( e, s );
-	gEngfuncs.pTriAPI->Vertex3f( cx + size, cy - size, 0 );
-	gEngfuncs.pTriAPI->TexCoord2f( e, e );
-	gEngfuncs.pTriAPI->Vertex3f( cx + size, cy + size, 0 );
-	gEngfuncs.pTriAPI->TexCoord2f( s, e );
-	gEngfuncs.pTriAPI->Vertex3f( cx - size, cy + size, 0 );
+	// the clipped result is convex, so a fan off the first vertex covers it
+	gEngfuncs.pTriAPI->Begin( TRI_TRIANGLES );
+
+	for( i = 1; i < n - 1; i++ )
+	{
+		gEngfuncs.pTriAPI->TexCoord2f( outU[0], outV[0] );
+		gEngfuncs.pTriAPI->Vertex3f( outX[0], outY[0], 0 );
+		gEngfuncs.pTriAPI->TexCoord2f( outU[i], outV[i] );
+		gEngfuncs.pTriAPI->Vertex3f( outX[i], outY[i], 0 );
+		gEngfuncs.pTriAPI->TexCoord2f( outU[i + 1], outV[i + 1] );
+		gEngfuncs.pTriAPI->Vertex3f( outX[i + 1], outY[i + 1], 0 );
+	}
+
 	gEngfuncs.pTriAPI->End();
+	return true;
 }
 
 /*
@@ -1054,10 +1122,14 @@ void CHudRadarModern::DrawRadarMask( int cx, int cy, int radius )
 
 void CHudRadarModern::DrawRadarFrame( int cx, int cy, int radius, int r, int g, int b, int a )
 {
-	// outline, not a filled block: a solid quad just hides the map behind it
-	int x0 = cx - radius, y0 = cy - radius;
-	int x1 = cx + radius, y1 = cy + radius;
-	int t  = max( 1, radius / 32 );
+	// A ring, not a rectangle. The disc underneath is round and the map tiles
+	// are clipped to the circle, so four straight edges left the corners of the
+	// outline hanging over nothing while cutting across the arc it was supposed
+	// to follow. Same 63 segments as DrawRadarMask so the two agree.
+	const int iSegments = RADAR_MASK_SEGMENTS;
+	const float flOuter = (float)radius;
+	const float flInner = flOuter - (float)max( 1, radius / 32 );
+	const float flStep = ( 2.0f * 3.14159265358979f ) / (float)iSegments;
 
 	// untextured, but still has to be told so: the last bound texture is
 	// still live here and would tint the whole frame
@@ -1072,26 +1144,28 @@ void CHudRadarModern::DrawRadarFrame( int cx, int cy, int radius, int r, int g, 
 	gEngfuncs.pTriAPI->Color4ub( r, g, b, a );
 
 	gEngfuncs.pTriAPI->Begin( TRI_QUADS );
-	// top
-	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
-	gEngfuncs.pTriAPI->Vertex3f( x0, y0, 0 );            gEngfuncs.pTriAPI->Vertex3f( x1, y0 + t, 0 );
-	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
-	gEngfuncs.pTriAPI->Vertex3f( x1, y0, 0 );            gEngfuncs.pTriAPI->Vertex3f( x0, y0 + t, 0 );
-	// bottom
-	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
-	gEngfuncs.pTriAPI->Vertex3f( x0, y1 - t, 0 );        gEngfuncs.pTriAPI->Vertex3f( x1, y1, 0 );
-	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
-	gEngfuncs.pTriAPI->Vertex3f( x1, y1 - t, 0 );        gEngfuncs.pTriAPI->Vertex3f( x0, y1, 0 );
-	// left
-	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
-	gEngfuncs.pTriAPI->Vertex3f( x0, y0 + t, 0 );        gEngfuncs.pTriAPI->Vertex3f( x0 + t, y1 - t, 0 );
-	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
-	gEngfuncs.pTriAPI->Vertex3f( x0 + t, y0 + t, 0 );    gEngfuncs.pTriAPI->Vertex3f( x0, y1 - t, 0 );
-	// right
-	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
-	gEngfuncs.pTriAPI->Vertex3f( x1 - t, y0 + t, 0 );    gEngfuncs.pTriAPI->Vertex3f( x1, y1 - t, 0 );
-	gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
-	gEngfuncs.pTriAPI->Vertex3f( x1 - t, y1 - t, 0 );    gEngfuncs.pTriAPI->Vertex3f( x1, y0 + t, 0 );
+
+	for( int i = 0; i < iSegments; i++ )
+	{
+		float f0 = flStep * (float)i;
+		float f1 = flStep * (float)( i + 1 );
+
+		float c0 = cosf( f0 ), s0 = sinf( f0 );
+		float c1 = cosf( f1 ), s1 = sinf( f1 );
+
+		gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
+		gEngfuncs.pTriAPI->Vertex3f( cx + c0 * flInner, cy + s0 * flInner, 0 );
+
+		gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
+		gEngfuncs.pTriAPI->Vertex3f( cx + c0 * flOuter, cy + s0 * flOuter, 0 );
+
+		gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
+		gEngfuncs.pTriAPI->Vertex3f( cx + c1 * flOuter, cy + s1 * flOuter, 0 );
+
+		gEngfuncs.pTriAPI->TexCoord2f( 0.5f, 0.5f );
+		gEngfuncs.pTriAPI->Vertex3f( cx + c1 * flInner, cy + s1 * flInner, 0 );
+	}
+
 	gEngfuncs.pTriAPI->End();
 }
 
@@ -1372,9 +1446,41 @@ int CHudRadarModern::Draw( float flTime )
 	// everything below shares this one transform
 	UpdateRadarTransform( m_iCenterX, m_iCenterY, m_iRadius );
 
+	// ---- background: the blurred copy of the screen behind the radar, or a
+	// flat plate when blur is unavailable. Exactly one of the two, and the
+	// background always goes down first -- it was previously drawn *after*
+	// the disc and the map tiles, which covered both.
+	//
+	// The capture reads the previous frame, so it is unaffected by whatever
+	// we draw this frame; throttle it because a readPixels plus a box blur is
+	// not free.
+	bool bHasBackground = false;
+
+	// Registration must NOT test for an existing background texture: the
+	// texture is created by the first capture, and the first capture only
+	// happens once the client has registered its parameters. Gating on the
+	// texture makes that a chicken-and-egg deadlock -- the feature can never
+	// switch itself on. DrawBlurredBackground reports whether it had
+	// anything to show, which is the only thing that should fall back to the
+	// flat plate.
+	if( g_iRadarAPIVersion >= 4
+		&& gRadarAPI.pfnSetRadarCaptureParams
+		&& s_cl_blur_radar_bg->value == 0.0f )
+	{
+		// Tell the engine where the radar is; it does the capture itself at
+		// the post-view hook, while the buffer still holds only the 3D
+		// scene. Capturing from here would read back a frame that already
+		// has the radar on it, which blurs the radar into its own backdrop.
+		int iBlur = s_cl_radar_blur_radius ? (int)s_cl_radar_blur_radius->value : 0;
+		gRadarAPI.pfnSetRadarCaptureParams( iBlur, m_iCenterX, m_iCenterY, m_iRadius );
+
+		bHasBackground = DrawBlurredBackground( m_iCenterX, m_iCenterY, m_iRadius );
+	}
+
 	// flat disc first, so map-less areas read as background instead of
 	// showing the game through the HUD
-	DrawRadarDisc( m_iCenterX, m_iCenterY, m_iRadius );
+	if( !bHasBackground )
+		DrawRadarDisc( m_iCenterX, m_iCenterY, m_iRadius );
 
 	// ---- map tiles, anchored on the player
 	if( m_bOverviewValid )
@@ -1409,22 +1515,8 @@ int CHudRadarModern::Draw( float flTime )
 		DrawUtils::DrawConsoleString( 4, 260, szDbg );
 	}
 
-	// ---- blurred screen background, throttled by cl_blur_update_rate
-	if( g_iRadarAPIVersion
-		&& gRadarAPI.pfnCaptureRadarBackground
-		&& gRadarAPI.pfnGetRadarBackgroundTexture
-		&& gRadarAPI.pfnGetRadarBackgroundTexture()
-		&& s_cl_blur_radar_bg->value == 0.0f )
-	{
-		float flInterval = s_cl_blur_update_rate ? s_cl_blur_update_rate->value : 0.5f;
-		if( flTime - m_flLastCapture >= flInterval )
-		{
-			gRadarAPI.pfnCaptureRadarBackground( 2, m_iCenterX, m_iCenterY, m_iRadius );
-			m_flLastCapture = flTime;
-		}
-
-		DrawBlurredBackground( m_iCenterX, m_iCenterY, m_iRadius );
-	}
+	// ---- blurred screen background: captured and painted at the top of this
+	// function, before the disc and the map tiles.
 
 	// ---- radar body
 	int r = (int)( m_pNewRadarR->value * 255 );
