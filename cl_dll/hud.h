@@ -1063,6 +1063,19 @@ public:
 	cvar_t *cl_bobamt_vert;
 	cvar_t *cl_bobamt_lat;
 	cvar_t *cl_bob_lower_amt;
+	cvar_t *viewmodel_bob_scale;
+	cvar_t *viewmodel_shift_left_amt;
+	cvar_t *viewmodel_shift_right_amt;
+	cvar_t *viewmodel_shift;
+	cvar_t *viewmodel_offset_x;
+	cvar_t *viewmodel_offset_y;
+	cvar_t *viewmodel_offset_z;
+	cvar_t *viewmodel_lag_scale;
+	cvar_t *viewmodel_lag_speed;
+	cvar_t *viewmodel_rollangle;
+	cvar_t *viewmodel_lag_scale_jump;
+	cvar_t *viewmodel_lag_scale_land;
+	cvar_t *viewmodel_lag_scale_crouch;
 
 	cvar_t* m_pCvarColor;
 	unsigned long m_iDefaultHUDColor;
