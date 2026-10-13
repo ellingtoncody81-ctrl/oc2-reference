@@ -27,6 +27,9 @@ See md/15-hud-module.md.
 
 namespace view_bob
 {
+	// GoldSrc has no separate "nothing" id: 0 is WEAPON_NONE.
+	const int kNoWeaponId = 0;
+
 	// cl_bobstyle. CS:GO only has the one bob, behind style 2.
 	enum
 	{
@@ -98,6 +101,7 @@ namespace view_bob
 		// GetMaxSpeed() on the active weapon. <= 0 means "no weapon", which
 		// is the branch that falls back to a fixed 150.
 		float weapon_max_speed;
+		int   weapon_id;          // kNoWeaponId when nothing is held
 
 		// GetInaccuracyCrouch() / GetInaccuracyStand() / GetInaccuracy().
 		// CS:GO reads these out of the item schema; see the note on

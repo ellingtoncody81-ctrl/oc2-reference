@@ -138,13 +138,26 @@ namespace view_bob
 		float accuracy_diff = 0.0f;
 		float gun_acc_pos = 0.0f;
 
-		bool have_weapon = input.weapon_max_speed > 0.0f;
+		// Whether a weapon is held, and the cycle length.
+		//
+		// These must not be the same test. The client's predicted weapon only
+		// knows its max speed for some classes -- a Glock reports 0 until you
+		// switch weapons and the client rebuilds it -- and gating the lateral
+		// bob on that value silently disables left/right sway for those guns.
+		// CS:GO cannot hit this because GetMaxSpeed() comes out of the item
+		// schema and is always populated.
+		bool have_weapon = input.weapon_max_speed > 0.0f
+			|| ( input.weapon_id != 0 && input.weapon_id != kNoWeaponId );
+
+		// A weapon we have no speed for falls back to CS:GO's own no-weapon
+		// cycle, which is the fixed 150 branch below.
+		float weapon_max_speed = input.weapon_max_speed > 0.0f ? input.weapon_max_speed : 150.0f;
 
 		if( have_weapon )
 		{
 			run_add_amt *= input.run_bob_scale;
 
-			bob_cycle = ( ( ( 1000.0f - input.weapon_max_speed ) / 3.5f ) * 0.001f ) * params.bob_cycle;
+			bob_cycle = ( ( ( 1000.0f - weapon_max_speed ) / 3.5f ) * 0.001f ) * params.bob_cycle;
 
 			// move the gun left or right based on the player's current accuracy
 			if( !input.in_reload && !input.is_elite )

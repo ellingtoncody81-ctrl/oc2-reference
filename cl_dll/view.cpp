@@ -82,6 +82,8 @@ cvar_t	*cl_bobup;
 cvar_t	*cl_waterdist;
 cvar_t	*cl_chasedist;
 cvar_t	*cl_weaponlag;
+cvar_t	*cl_wpn_sway_interp;
+cvar_t	*cl_wpn_sway_scale;
 cvar_t	*cl_quakeguns;
 
 // These cvars are not registered (so users can't cheat), so set the ->value field directly
@@ -172,6 +174,11 @@ static bool s_bPrevViewAngles = false;
 static float s_flLandKick = 0.0f;
 static float s_flFallTop = 0.0f;
 
+// weapon sway state, see V_CalcViewModelLag
+static float   s_flVmLagLastTime = -1.0f;
+static vec3_t  s_vmlagOffset = { 0.0f, 0.0f, 0.0f };
+static vec3_t  v_dummy_axis = { 0.0f, 0.0f, 0.0f };
+
 // viewmodel_bob_debug accumulator, see the bobdbg print in V_CalcNormalRefdef
 static bool s_bDbgPrimed = false;
 static bool s_bDbgGround = true;
@@ -180,6 +187,7 @@ static float s_flDbgMin = 0.0f, s_flDbgMax = 0.0f, s_flDbgJump = 0.0f, s_flDbgSu
 static float s_flDbgLastUsed = 0.0f, s_flDbgUsedJump = 0.0f;
 static float s_flDbgLastVert = 0.0f, s_flDbgVertJump = 0.0f;
 static float s_flDbgLastAir = 1.0f, s_flDbgAirJump = 0.0f;
+static float s_flDbgLastLat = 0.0f, s_flDbgLatJump = 0.0f;
 static int s_nDbgFrames = 0, s_nDbgStall = 0, s_nDbgFlips = 0;
 
 // from cs_wpn/cs_weapons.cpp -- the held weapon, straight out of the weapon
@@ -719,58 +727,146 @@ void V_CalcQuakeGuns()
 //==========================
 // V_CalcViewModelLag
 //==========================
+//
+// CS:GO's weapon sway, from
+// cstrike19_src/src/game/shared/predicted_viewmodel.cpp CalcViewModelLag().
+//
+// The original GoldSrc code -- and the GoldClient rewrite that replaced it --
+// compares this frame's forward vector against last frame's. That is a
+// one-frame difference: a fast flick produces a huge delta for a single frame
+// and then nothing, so the weapon snaps and then sits still. CS:GO instead
+// keeps a short history of the view angles and interpolates back a fixed
+// 100 ms, which is what makes the swing feel like inertia rather than a snap.
+//
+// One quirk is reproduced as written. AngleVectors() is called with null right
+// and up, so only the forward component of the lagged basis is computed and
+// vForwardDiff ends up (1 - fwd.x, 0, 0). The result is a pure forward push
+// proportional to how far the view has turned in the last interp seconds --
+// small and gentle, which is the look.
+namespace
+{
+	const int kVmLagHistory = 64;      // ~1 s at 60 fps, far more than interp needs
+
+	struct VmLagSample
+	{
+		float time;
+		float ang[3];
+	};
+
+	VmLagSample s_vmlag[kVmLagHistory];
+	int   s_vmlagHead = 0;
+	int   s_vmlagFill = 0;
+
+	void VmLagPush( float time, const vec3_t &ang )
+	{
+		s_vmlagHead = ( s_vmlagHead + 1 ) % kVmLagHistory;
+		s_vmlag[s_vmlagHead].time = time;
+		s_vmlag[s_vmlagHead].ang[PITCH] = ang[PITCH];
+		s_vmlag[s_vmlagHead].ang[YAW]   = ang[YAW];
+		s_vmlag[s_vmlagHead].ang[ROLL]  = ang[ROLL];
+
+		if( s_vmlagFill < kVmLagHistory )
+			s_vmlagFill++;
+	}
+
+	// The angles as they were interp seconds ago, linearly interpolated
+	// between the two samples that bracket that moment.
+	bool VmLagAt( float target, vec3_t &out )
+	{
+		if( s_vmlagFill < 2 )
+			return false;
+
+		for( int i = 0; i < s_vmlagFill; i++ )
+		{
+			const VmLagSample &newer = s_vmlag[( s_vmlagHead - i + kVmLagHistory ) % kVmLagHistory ];
+
+			if( i + 1 >= s_vmlagFill )
+				break;
+
+			const VmLagSample &older = s_vmlag[( s_vmlagHead - i - 1 + kVmLagHistory ) % kVmLagHistory];
+
+			if( newer.time <= target )
+			{
+				float span = newer.time - older.time;
+				float f = span > 0.0f ? ( target - older.time ) / span : 1.0f;
+
+				if( f < 0.0f ) f = 0.0f;
+				if( f > 1.0f ) f = 1.0f;
+
+				for( int k = 0; k < 3; k++ )
+				{
+					float a = older.ang[k];
+					float b = newer.ang[k];
+
+					// take the short way round 180 degrees
+					float d = b - a;
+					if( d > 180.0f )       d -= 360.0f;
+					else if( d < -180.0f )  d += 360.0f;
+
+					out[k] = a + d * f;
+				}
+
+				return true;
+			}
+		}
+
+		return false;
+	}
+}
+
 void V_CalcViewModelLag( ref_params_t *pparams, Vector &origin, Vector &angles )
 {
-	static Vector m_vecLastFacing;
+	float interp = cl_wpn_sway_interp->value;
 
-	if( cl_weaponlag->value <= 0.0f )
+	if( interp <= 0.0f )
 		return;
 
-	// Calculate our drift
-	Vector forward, right, up;
+	if( pparams->time == s_flVmLagLastTime )
+		return;                       // paused, keep the old offset
 
+	s_flVmLagLastTime = pparams->time;
+
+	VmLagPush( pparams->time, angles );
+
+	vec3_t lagged;
+
+	if( !VmLagAt( pparams->time - interp, lagged ) )
+		return;                       // not enough history yet
+
+	Vector forward, right, up;
 	AngleVectors( angles, forward, right, up );
 
-	if( pparams->frametime != 0.0f )	// not in paused
-	{
-		Vector vDifference = forward - m_vecLastFacing;
+	vec3_t angleDiff;
+	angleDiff[PITCH] = angles[PITCH] - lagged[PITCH];
+	angleDiff[YAW]   = angles[YAW]   - lagged[YAW];
+	angleDiff[ROLL]  = angles[ROLL]  - lagged[ROLL];
 
-		float flSpeed = 5.0f;
+	// CS:GO only fills the forward component; the other two stay zero.
+	vec3_t vLaggedForward;
+	AngleVectors( angleDiff, vLaggedForward, v_dummy_axis, v_dummy_axis );
 
-		// If we start to lag too far behind, we'll increase the "catch up" speed.
-		// Solves the problem with fast cl_yawspeed, m_yaw or joysticks rotating quickly.
-		// The old code would slam lastfacing with origin causing the viewmodel to pop to a new position
-		float flDiff = vDifference.Length();
-		if( flDiff > cl_weaponlag->value )
-			flSpeed *= flDiff / cl_weaponlag->value;
+	vLaggedForward[0] = -vLaggedForward[0];
+	vLaggedForward[1] = 0.0f;
+	vLaggedForward[2] = 0.0f;
 
-		// FIXME:  Needs to be predictable?
-		m_vecLastFacing = m_vecLastFacing + vDifference * ( flSpeed * pparams->frametime );
-		// Make sure it doesn't grow out of control!!!
-		m_vecLastFacing = m_vecLastFacing.Normalize();
-		origin = origin + flSpeed * -vDifference;
-	}
+	vec3_t vForwardDiff;
+	vForwardDiff[0] = 1.0f - vLaggedForward[0];
+	vForwardDiff[1] = 0.0f;
+	vForwardDiff[2] = 0.0f;
 
-	// this just breaks centered weapons on pitch changing
-	if( !cl_quakeguns->value )
-	{
-		AngleVectors( v_angles, forward, right, up );
+	vForwardDiff[0] *= cl_wpn_sway_scale->value;
 
-		float pitch = v_angles[PITCH];
+	s_vmlagOffset[0] =  forward[0] * vForwardDiff[0];
+	s_vmlagOffset[1] =  forward[1] * vForwardDiff[0];
+	s_vmlagOffset[2] =  forward[2] * vForwardDiff[0];
 
-		if( pitch > 180.0f )
-			pitch -= 360.0f;
-		else if( pitch < -180.0f )
-			pitch += 360.0f;
+	// The effect dies out as the view approaches vertical, where a forward
+	// push would just shove the weapon out of frame.
+	float flMult = bound( fabsf( up[2] ) - 0.02f, 0.0f, 1.0f );
 
-		pitch = -pitch;
-
-		// FIXME: These are the old settings that caused too many exposed polys on some models
-		origin = origin + forward * ( pitch * 0.035f )
-						+ right   * ( pitch * 0.03f  )
-						+ up      * ( pitch * 0.02f  );
-
-	}
+	origin[0] += s_vmlagOffset[0] * flMult;
+	origin[1] += s_vmlagOffset[1] * flMult;
+	origin[2] += s_vmlagOffset[2] * flMult;
 }
 
 /*
@@ -1043,6 +1139,7 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		in.zoomed           = false;
 		in.run_bob_scale    = 1.0f;
 		in.weapon_max_speed = flMaxSpeed;
+		in.weapon_id = iWeaponId;
 
 		// Accuracy drives the left/right drift. CS:GO composes it from the
 		// weapon's stand/crouch constants plus a movement term; ReGameDLL
@@ -1069,7 +1166,8 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		if( gHUD.viewmodel_bob_debug && gHUD.viewmodel_bob_debug->value != 0.0f )
 		{
 			float flSpd = sqrtf( in.vx * in.vx + in.vy * in.vy );
-			float flBobScaleDbg = gHUD.viewmodel_bob_scale ? gHUD.viewmodel_bob_scale->value : 1.0f;
+			int iWeaponIdDbg = in.weapon_id;
+			float flMaxSpeedDbg = in.weapon_max_speed;
 
 			if( !s_bDbgPrimed )
 			{
@@ -1096,6 +1194,11 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 			float flVertJump = fabsf( offsets.vertical - s_flDbgLastVert );
 			s_flDbgLastVert = offsets.vertical;
 
+			// the lateral is what "no sway" actually looks like, and it is
+			// gated on the weapon being present, so log the weapon too
+			float flLatJump = fabsf( offsets.lateral - s_flDbgLastLat );
+			s_flDbgLastLat = offsets.lateral;
+
 			float flAirJump = fabsf( s_BobState.air_mix - s_flDbgLastAir );
 			s_flDbgLastAir = s_BobState.air_mix;
 
@@ -1104,6 +1207,7 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 			if( flJump > s_flDbgJump ) s_flDbgJump = flJump;
 			if( flUsedJump > s_flDbgUsedJump ) s_flDbgUsedJump = flUsedJump;
 			if( flVertJump > s_flDbgVertJump ) s_flDbgVertJump = flVertJump;
+			if( flLatJump > s_flDbgLatJump ) s_flDbgLatJump = flLatJump;
 			if( flAirJump > s_flDbgAirJump ) s_flDbgAirJump = flAirJump;
 			s_flDbgSum += flSpd;
 			s_nDbgFrames++;
@@ -1119,19 +1223,20 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 			if( pparams->time >= s_flDbgWindow + 1.0f )
 			{
 				gEngfuncs.Con_Printf( "bobdbg: spd %.0f..%.0f avg %.0f | raw_d %.0f used_d %.0f | "
-					"SEEN vert_d %.2f air %.2f air_d %.2f | "
-					"flips %d | amp %.2f/%.2f sm %.0f gd %.2f\n",
+					"SEEN vert_d %.2f lat_d %.2f | "
+					"wp %d/%.0f air %.2f | flips %d | amp %.2f/%.2f\n",
 					s_flDbgMin, s_flDbgMax,
 					s_nDbgFrames ? s_flDbgSum / s_nDbgFrames : 0.0f,
 					s_flDbgJump, s_flDbgUsedJump,
-					s_flDbgVertJump, s_BobState.air_mix, s_flDbgAirJump,
+					s_flDbgVertJump, s_flDbgLatJump,
+					iWeaponIdDbg, flMaxSpeedDbg, s_BobState.air_mix,
 					s_nDbgFlips,
-					params.amt_vert, params.amt_lat,
-					params.speed_smooth, params.ground_delay );
+					params.amt_vert, params.amt_lat );
 
 				s_flDbgWindow = pparams->time;
 				s_flDbgMin = s_flDbgMax = s_flDbgJump = s_flDbgSum = 0.0f;
 				s_flDbgUsedJump = s_flDbgVertJump = s_flDbgAirJump = 0.0f;
+				s_flDbgLatJump = 0.0f;
 				s_nDbgFrames = s_nDbgStall = 0;
 			}
 		}
@@ -2200,5 +2305,11 @@ void V_Init (void)
 	cl_chasedist		= gEngfuncs.pfnRegisterVariable( "cl_chasedist","112", 0 );
 
 	cl_quakeguns		= gEngfuncs.pfnRegisterVariable( "cl_quakeguns", "0", FCVAR_ARCHIVE );
-	cl_weaponlag		= gEngfuncs.pfnRegisterVariable( "cl_weaponlag", "0", FCVAR_ARCHIVE );
+	cl_weaponlag			= gEngfuncs.pfnRegisterVariable( "cl_weaponlag", "0", FCVAR_ARCHIVE );
+
+	// CS:GO weapon sway, from predicted_viewmodel.cpp CalcViewModelLag().
+	// interp is how far back the view angles are sampled -- 0.1 is CS:GO's
+	// stock 100 ms -- and scale is the gain on the resulting forward push.
+	cl_wpn_sway_interp		= gEngfuncs.pfnRegisterVariable( "cl_wpn_sway_interp", "0.1", FCVAR_ARCHIVE );
+	cl_wpn_sway_scale		= gEngfuncs.pfnRegisterVariable( "cl_wpn_sway_scale", "1.6", FCVAR_ARCHIVE );
 }
