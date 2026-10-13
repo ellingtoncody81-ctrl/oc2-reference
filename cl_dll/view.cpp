@@ -159,7 +159,87 @@ void V_InterpolateAngles( float *start, float *end, float *output, float frac )
 // s_BobState is the CS:GO bob's persistent state, kept here so it sits next to
 // the classic bob it replaced rather than inside view_bob.cpp, which stays pure
 // math with no engine types.
-static view_bob::BobState s_BobState = { 0.0f, 0.0f, 0.0f };
+static view_bob::BobState s_BobState;
+// smoothed view model roll, see the viewmodel_rollangle block in
+// V_CalcNormalRefdef. Two axes because the binary feeds two different
+// usercmd components into it.
+static float s_flViewRollX = 0.0f;
+static float s_flViewRollY = 0.0f;
+static vec3_t s_vPrevViewAngles;
+static bool s_bPrevViewAngles = false;
+
+// landing kick state, see the viewmodel_lag_scale_land block
+static float s_flLandKick = 0.0f;
+static float s_flFallTop = 0.0f;
+
+// from cs_wpn/cs_weapons.cpp -- the held weapon, straight out of the weapon
+// code this client already predicts.
+extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload, float *max_speed );
+
+/*
+========================
+V_GetMovementInaccuracy
+
+CS:GO's accuracy has a movement term, and ReGameDLL already carries the same
+three tiers -- 0.2 for the rifles and most pistols, 0.15 for the MAC10, 0 for
+the UMP and MP5 -- in GetBaseAccuracy() (regamedll/dlls/weapons.cpp:53). That
+is the term that dominates: any movement at all pushes the gun to the right.
+========================
+*/
+static float V_GetMovementInaccuracy( int weapon_id )
+{
+	switch( weapon_id )
+	{
+	case WEAPON_M4A1:
+	case WEAPON_AK47:
+	case WEAPON_AUG:
+	case WEAPON_SG552:
+	case WEAPON_FAMAS:
+	case WEAPON_GALIL:
+	case WEAPON_M249:
+	case WEAPON_P90:
+	case WEAPON_TMP:
+		return 0.2f;
+
+	case WEAPON_MAC10:
+		return 0.15f;
+
+	case WEAPON_UMP45:
+	case WEAPON_MP5N:
+		return 0.0f;
+	}
+
+	return 0.0f;
+}
+
+/*
+========================
+V_IsSniperWeapon
+
+CS:GO reads GetWeaponType() == WEAPONTYPE_SNIPER_RIFLE to pick between the 18x
+and the 0.15x gain on the leftward accuracy shift. The GoldSrc weapon id list
+has no weapon type, so this is the sniper set by hand.
+========================
+*/
+static bool V_IsSniperWeapon( int weapon_id )
+{
+	switch( weapon_id )
+	{
+	case WEAPON_AWP:
+	case WEAPON_SCOUT:
+	case WEAPON_G3SG1:
+	case WEAPON_SG550:
+		return true;
+	}
+
+	return false;
+}
+
+// How much each round still in flight costs in accuracy. CS:GO reads this out
+// of the item schema too; this is the AK-47-shaped number and it only scales
+// the small "your spray is loosening" drift.
+static const float kShotAccuracyPenalty = 0.0012f;
+
 
 float V_CalcBob ( struct ref_params_s *pparams )
 {
@@ -902,27 +982,68 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 	float bobRoll    = - bob * 1;
 	float bobPitch   = - bob * 0.3;
 
-	if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
+if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 	{
 		view_bob::BobParams params;
 
-		params.bob_cycle = cl_bobcycle->value;
-		params.bob_up    = cl_bobup->value;
-		params.amt_vert  = gHUD.cl_bobamt_vert ? gHUD.cl_bobamt_vert->value : 0.13f;
-		params.amt_lat   = gHUD.cl_bobamt_lat  ? gHUD.cl_bobamt_lat->value  : 0.32f;
-		params.lower_amt = gHUD.cl_bob_lower_amt ? gHUD.cl_bob_lower_amt->value : 8.0f;
+		params.bob_cycle   = cl_bobcycle->value;
+		params.bob_up      = cl_bobup->value;
+		params.amt_vert    = gHUD.cl_bobamt_vert ? gHUD.cl_bobamt_vert->value : 0.9f;
+		params.amt_lat     = gHUD.cl_bobamt_lat  ? gHUD.cl_bobamt_lat->value  : 1.44f;
+		params.lower_amt   = gHUD.cl_bob_lower_amt ? gHUD.cl_bob_lower_amt->value : 7.0f;
+		params.shift_left  = gHUD.viewmodel_shift_left_amt  ? gHUD.viewmodel_shift_left_amt->value  : 1.5f;
+		params.shift_right = gHUD.viewmodel_shift_right_amt ? gHUD.viewmodel_shift_right_amt->value : 0.75f;
 
-		// onground arrives from V_SetRefParams already folded to 0/1
-		// (cl_view.c: fd->onground = (cl.local.onground != -1)), so testing
-		// against -1 would be true forever and the airborne scale would never
-		// engage. Anything non-zero counts as grounded.
-		vec3_t bobvel;
-		VectorCopy( pparams->simvel, bobvel );
-		bobvel[2] = 0.0f;
-		float bobSpeed = sqrtf( bobvel[0] * bobvel[0] + bobvel[1] * bobvel[1] );
+		// The held weapon, out of the weapon code this client already predicts.
+		// Falls back to CS:GO's no-weapon branch when nothing is in hand.
+		int iWeaponId = 0, iShotsFired = 0, iInReload = 0;
+		float flMaxSpeed = 0.0f;
 
-		view_bob::BobOffsets offsets = view_bob::StepBob( s_BobState, params,
-			pparams->time, bobSpeed, pparams->onground != 0 );
+		HUD_GetBobWeaponState( &iWeaponId, &iShotsFired, &iInReload, &flMaxSpeed );
+
+		// The line below prints on the first frame of the map, when nothing is
+		// held yet. Fire once more when a weapon shows up, so the weapon path is
+		// proven reachable rather than assumed -- "did not show up in 30 s" is
+		// not evidence that it does not exist.
+		static bool s_bLoggedWeapon = false;
+
+		if( !s_bLoggedWeapon && flMaxSpeed > 0.0f )
+		{
+			s_bLoggedWeapon = true;
+			gEngfuncs.Con_Printf( "viewbob: weapon path live (id=%d maxspeed=%g "
+				"shots=%d reload=%d sniper=%d)\n",
+				iWeaponId, flMaxSpeed, iShotsFired, iInReload,
+				(int)V_IsSniperWeapon( iWeaponId ) );
+		}
+
+		view_bob::BobInput in;
+
+		in.vx               = pparams->simvel[0];
+		in.vy               = pparams->simvel[1];
+		in.onground         = pparams->onground != 0;
+		in.ducking          = pparams->viewheight[2] < 0.0f;
+		in.in_reload        = iInReload != 0;
+		in.is_elite         = ( iWeaponId == WEAPON_ELITE );
+		in.sniper           = V_IsSniperWeapon( iWeaponId );
+		in.zoomed           = false;
+		in.run_bob_scale    = 1.0f;
+		in.weapon_max_speed = flMaxSpeed;
+
+		// Accuracy drives the left/right drift. CS:GO composes it from the
+		// weapon's stand/crouch constants plus a movement term; ReGameDLL
+		// already carries that movement term as GetBaseAccuracy() (0.2 / 0.15
+		// / 0), so that half is exact. The stand/crouch pair is a stock AK-47
+		// pair -- CS:GO reads the real per-weapon numbers out of the item
+		// schema, which is not in the local dump.
+		float flMoveInaccuracy = V_GetMovementInaccuracy( iWeaponId );
+
+		in.inaccuracy_stand  = view_bob::kInaccuracyStand;
+		in.inaccuracy_crouch = view_bob::kInaccuracyCrouch;
+		in.inaccuracy        = in.inaccuracy_stand + flMoveInaccuracy
+		                          + (float)iShotsFired * kShotAccuracyPenalty;
+
+		view_bob::BobOutput offsets = view_bob::StepBob( s_BobState, params, in,
+			pparams->time, pparams->frametime );
 
 		// one-shot so the log says which path actually ran
 		static bool s_bLoggedStyle = false;
@@ -930,21 +1051,39 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 		{
 			s_bLoggedStyle = true;
 			gEngfuncs.Con_Printf( "viewbob: cl_bobstyle=%d, CS:GO bob active "
-				"(cycle=%g vert=%g lat=%g lower=%g)\n",
-				(int)gHUD.cl_bobstyle->value, params.bob_cycle,
-				params.amt_vert, params.amt_lat, params.lower_amt );
+				"(cycle=%g up=%g vert=%g lat=%g lower=%g shift=%g/%g)\n",
+				(int)gHUD.cl_bobstyle->value, params.bob_cycle, params.bob_up,
+				params.amt_vert, params.amt_lat, params.lower_amt,
+				params.shift_left, params.shift_right );
 		}
 
-		view_bob::Placement placed = view_bob::PlaceBob( offsets );
+		// AddViewModelBobHelper(): the two bob scalars reach the view model
+		// through these. viewmodel_bob_scale trims all six together; 1.0 leaves
+		// CS:GO's own 0.4 / 0.1 / 0.2 untouched.
+		float flBobScale = gHUD.viewmodel_bob_scale ? gHUD.viewmodel_bob_scale->value : 1.0f;
 
-		bobForward = placed.forward;
-		bobUp      = placed.up;
-		bobSide    = placed.side;
-		bobYaw     = 0.0f;
-		bobRoll    = 0.0f;
-		bobPitch   = 0.0f;
+		bobForward = offsets.vertical * 0.4f * flBobScale;
+		bobUp      = offsets.vertical * 0.1f * flBobScale;
+		bobSide    = offsets.lateral  * 0.2f * flBobScale;
+		bobRoll    = offsets.vertical * 0.5f * flBobScale;
+		bobPitch   = -offsets.vertical * 0.4f * flBobScale;
+		bobYaw     = -offsets.lateral  * 0.3f * flBobScale;
+
+		// Safety net. A view model pulled far enough forward crosses the near
+		// plane and the weapon model fills the screen in flat grey, which reads
+		// as a hang rather than as a bug. CS:GO cannot hit this because it
+		// renders at 1/64 scale; a GoldSrc view model is a few units from the
+		// eye, so cl_bob_lower_amt can do it in one step. Nothing here should
+		// ever bind -- if it does, the amplitude cvars are wrong, not the clamp.
+		const float kMaxBobOffset = 3.0f;
+
+		bobForward = bound( bobForward, -kMaxBobOffset, kMaxBobOffset );
+		bobUp      = bound( bobUp,      -kMaxBobOffset, kMaxBobOffset );
+		bobSide    = bound( bobSide,    -kMaxBobOffset, kMaxBobOffset );
+		bobRoll    = bound( bobRoll,    -30.0f, 30.0f );
+		bobPitch   = bound( bobPitch,   -30.0f, 30.0f );
+		bobYaw     = bound( bobYaw,     -30.0f, 30.0f );
 	}
-
 	for ( i = 0; i < 3; i++ )
 	{
 		view->origin[ i ] += bobForward * pparams->forward[ i ];
@@ -1963,9 +2102,9 @@ void V_Init (void)
 	v_centermove		= gEngfuncs.pfnRegisterVariable( "v_centermove", "0.15", 0 );
 	v_centerspeed		= gEngfuncs.pfnRegisterVariable( "v_centerspeed","500", 0 );
 
-	cl_bobcycle			= gEngfuncs.pfnRegisterVariable( "cl_bobcycle","0.8", 0 );// best default for my experimental gun wag (sjb)
+	cl_bobcycle			= gEngfuncs.pfnRegisterVariable( "cl_bobcycle","0.98", FCVAR_ARCHIVE );
 	cl_bob				= gEngfuncs.pfnRegisterVariable( "cl_bob","0.01", FCVAR_ARCHIVE );// best default for my experimental gun wag (sjb)
-	cl_bobup			= gEngfuncs.pfnRegisterVariable( "cl_bobup","0.5", 0 );
+	cl_bobup			= gEngfuncs.pfnRegisterVariable( "cl_bobup","0.5", FCVAR_ARCHIVE );
 	cl_waterdist		= gEngfuncs.pfnRegisterVariable( "cl_waterdist","4", 0 );
 	cl_chasedist		= gEngfuncs.pfnRegisterVariable( "cl_chasedist","112", 0 );
 

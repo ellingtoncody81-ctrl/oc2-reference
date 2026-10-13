@@ -1,22 +1,24 @@
 /*
-view_bob.h - CS:GO style weapon bob
+view_bob.h - CS:GO view bob.
 
-Style 2 of the mobile build's bob. The classic Quake bob already in view.cpp is
-untouched; this is the separate path cl_bobstyle 2 selects.
+Transcribed from CS:GO's own source, not from a re-implementation:
 
-Transcribed from NextClient's view_bob package
-(nextclient/packages/gameplay/view/src/view_bob.cpp), which was itself
-reconstructed from the CSBTEM binary. The constants are not invented:
-bob_scale, the 620 units/s^2 speed follow limit and the -8/-7/+4 clamps all come
-from that binary.
+  D:\RLRLJYRSBJQRS\cstrike19_src\src\game\shared\cstrike15\weapon_csbase.cpp
+    3295-3306  the cvars and their stock values
+    3311-3500  CalcViewModelBobHelper()
+    3505-3529  AddViewModelBobHelper()
 
-The one deliberate deviation from the binary is the x1.25 on bob_cycle. NextClient
-says so in their own comment: it was not in their build and is there so CS 1.6's
-default cl_bobcycle of 0.8 lands on the right cadence. It is a fudge, not a
-recovered constant, and is kept as-is for parity.
+The bob this reproduces is the original; GoldClient and NextClient are both
+later forks of it and each drifts from CS:GO in ways that are visible:
+GoldClient adds an exponential speed smoother, a health>=45 gate and a 1.35
+cycle multiplier, and folds the final placement scale into the output. Those
+are NOT reproduced here.
 
-Verified bit for bit against the reference by view_bob_check.py before it was
-compiled; see md/15-hud-module.md.
+Pure math: no engine types, no globals, no cvars. The caller supplies the
+weapon profile and the accuracy numbers, so this file can be checked offline
+against a transcription of the source.
+
+See md/15-hud-module.md.
 */
 
 #pragma once
@@ -25,7 +27,7 @@ compiled; see md/15-hud-module.md.
 
 namespace view_bob
 {
-	// cl_bobstyle: 0 default Quake bob, 1 old-style sway, 2 this one
+	// cl_bobstyle. CS:GO only has the one bob, behind style 2.
 	enum
 	{
 		kStyleClassic = 0,
@@ -33,47 +35,76 @@ namespace view_bob
 		kStyleModern = 2
 	};
 
-	// units/s per second the bob's idea of the player's speed may change by.
-	// Without this the offsets jump on the first frame of a run.
-	const float kSpeedAccel = 620.0f;
+	// ---- cvars (weapon_csbase.cpp:3295-3306) ----
 
 	struct BobParams
 	{
-		float bob_cycle;    // cl_bobcycle, seconds per cycle; <= 0 disables the bob
-		float bob_up;       // cl_bobup, fraction of the cycle spent rising, (0, 1)
-		float amt_vert;     // cl_bobamt_vert, vertical amplitude
-		float amt_lat;      // cl_bobamt_lat, lateral amplitude
-		float lower_amt;    // cl_bob_lower_amt, speed-proportional lowering
+		float bob_cycle;    // cl_bobcycle            default 0.98
+		float bob_up;       // cl_bobup               default 0.5
+		float amt_vert;     // cl_bobamt_vert         default 0.25
+		float amt_lat;      // cl_bobamt_lat          default 0.4
+		float lower_amt;    // cl_bob_lower_amt       default 21
+		float shift_left;   // cl_viewmodel_shift_left_amt   default 1.5
+		float shift_right;  // cl_viewmodel_shift_right_amt  default 0.75
 	};
 
+	// ---- everything the helper needs that is not a cvar ----
+	struct BobInput
+	{
+		float vx, vy;          // player local velocity; the length is the speed
+
+		bool  onground;       // false == GetGroundEntity() == NULL
+		bool  ducking;        // m_bDucking || m_bDucked
+		bool  in_reload;      // m_bInReload, kills the accuracy shift
+		bool  is_elite;       // WEAPON_ELITE, also kills it
+		bool  sniper;         // GetWeaponType() == WEAPONTYPE_SNIPER_RIFLE
+		bool  zoomed;         // skips the run lowering while scoped
+		float run_bob_scale;  // GetRunBobScale(), 1.0 on the base class
+
+		// GetMaxSpeed() on the active weapon. <= 0 means "no weapon", which
+		// is the branch that falls back to a fixed 150.
+		float weapon_max_speed;
+
+		// GetInaccuracyCrouch() / GetInaccuracyStand() / GetInaccuracy().
+		// CS:GO reads these out of the item schema; see the note on
+		// kInaccuracyStand below for how we fill them here.
+		float inaccuracy_crouch;
+		float inaccuracy_stand;
+		float inaccuracy;
+	};
+
+	// ---- the two numbers the helper produces ----
+	struct BobOutput
+	{
+		float vertical;   // m_flVerticalBob, already clamped to [-7, 4]
+		float lateral;    // m_flLateralBob,  already clamped to [-8, 8]
+	};
+
+	// ---- persistent state ----
 	struct BobState
 	{
-		float bob_time;
-		float last_bob_time;
-		float last_speed;
+		float bob_time;        // m_flBobTime
+		float last_bob_time;   // m_flLastBobTime
+		float last_speed;      // m_flLastSpeed
+		float gun_acc_pos;     // m_flGunAccuracyPosition (lives on the weapon)
+
+		BobState()
+			: bob_time( 0.0f ), last_bob_time( 0.0f ),
+			  last_speed( 0.0f ), gun_acc_pos( 0.0f )
+		{
+		}
 	};
 
-	struct BobOffsets
-	{
-		float vert;         // raw vertical, world units, clamped to [-8, 4]
-		float hor;          // raw lateral, world units, clamped to [-7, 4]
-	};
+	// stock CS:GO stand/crouch inaccuracy. CS:GO reads these per weapon out of
+	// items_game.txt, which is not in the local dump -- these are AK-47's
+	// values and are the only numbers here that are not lifted from source.
+	// They only matter for the crouching half of the accuracy shift.
+	extern const float kInaccuracyStand;
+	extern const float kInaccuracyCrouch;
 
-	// time is absolute seconds, speed the horizontal speed in units/s.
-	// Fills the state so consecutive calls track speed instead of snapping to it.
-	BobOffsets StepBob( BobState &state, const BobParams &params,
-	                    float time, float speed, bool onground );
-
-	// The bob reaches the view model as three world-space offsets: how far along
-	// the view axis, how far up, and how far to the side. Units are world units.
-	struct Placement
-	{
-		float forward;
-		float up;
-		float side;
-	};
-
-	Placement PlaceBob( const BobOffsets &offsets );
+	BobOutput StepBob( BobState &state, const BobParams &params,
+	                   const BobInput &input,
+	                   float time, float frametime );
 }
 
 #endif // VIEW_BOB_H

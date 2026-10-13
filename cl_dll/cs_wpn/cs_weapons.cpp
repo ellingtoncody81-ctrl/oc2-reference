@@ -74,6 +74,37 @@ static globalvars_t	Globals = { };
 
 static CBasePlayerWeapon *g_pWpns[ 32 ];
 
+//
+// Exposed for the CS:GO view bob in view.cpp, which needs the held weapon's
+// id, how many shots are still counted as in flight, whether a reload is
+// running, and its max speed. Those all live on the CBasePlayerWeapon the
+// client already predicts, so they are read from here rather than duplicated.
+//
+// Returns 0 when no weapon is held; CS:GO's bob then falls back to the fixed
+// 150 cycle, which is exactly what its no-weapon branch does.
+//
+extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload, float *max_speed )
+{
+	CBasePlayerWeapon *pWeapon = static_cast<CBasePlayerWeapon *>( player.m_pActiveItem );
+
+	if ( !pWeapon )
+	{
+		if ( id )          *id = 0;
+		if ( shots_fired ) *shots_fired = 0;
+		if ( in_reload )   *in_reload = 0;
+		if ( max_speed )   *max_speed = 0.0f;
+		return 0;
+	}
+
+	if ( id )          *id = pWeapon->m_iId;
+	if ( shots_fired ) *shots_fired = pWeapon->m_iShotsFired;
+	if ( in_reload )   *in_reload = pWeapon->m_fInReload ? 1 : 0;
+	if ( max_speed )   *max_speed = pWeapon->GetMaxSpeed();
+
+	return 1;
+}
+
+
 
 // CS Weapon placeholder entities
 static CAK47 g_AK47;

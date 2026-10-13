@@ -349,12 +349,51 @@ void CHud :: Init( void )
 
 	cl_viewbob = CVAR_CREATE( "cl_viewbob", "1", FCVAR_ARCHIVE );
 
-	// CS:GO style weapon bob (cl_bobstyle 2). Defaults match the mobile build.
+	// CS:GO style weapon bob (cl_bobstyle 2).
+	//
+	// The amplitudes are NOT CS:GO's stock 0.25 / 0.4. CS:GO's oscillator is
+	// tiny -- speed * 0.00625 * 0.25 is 0.39 at a 250 run -- and it is only
+	// visible because CS:GO draws its view model at 1/64 scale behind its own
+	// near plane. A GoldSrc view model sits a few units from the eye, so the
+	// same number is invisible. These keep CS:GO's 1 : 1.6 vert/lat ratio and
+	// scale it up until the swing is actually readable.
 	cl_bobstyle    = CVAR_CREATE( "cl_bobstyle",      "0",    FCVAR_ARCHIVE );
 	cl_bob_camera  = CVAR_CREATE( "cl_bob_camera",    "1",    FCVAR_ARCHIVE );
-	cl_bobamt_vert = CVAR_CREATE( "cl_bobamt_vert",   "0.13", FCVAR_ARCHIVE );
-	cl_bobamt_lat  = CVAR_CREATE( "cl_bobamt_lat",    "0.32", FCVAR_ARCHIVE );
-	cl_bob_lower_amt = CVAR_CREATE( "cl_bob_lower_amt", "8.0", FCVAR_ARCHIVE );
+	cl_bobamt_vert = CVAR_CREATE( "cl_bobamt_vert",   "0.9",  FCVAR_ARCHIVE );
+	cl_bobamt_lat  = CVAR_CREATE( "cl_bobamt_lat",    "1.44", FCVAR_ARCHIVE );
+
+	// CS:GO's stock 21 produces a 6.3 unit pull-back at a 250 run, which after
+	// AddViewModelBobHelper's 0.4 forward scale drags the weapon 2.5 units
+	// into the camera -- far enough to fill the screen with the near plane.
+	// 7 keeps the "gun rides low while running" read at about a third of that.
+	cl_bob_lower_amt = CVAR_CREATE( "cl_bob_lower_amt", "7", FCVAR_ARCHIVE );
+
+	// Master trim on everything the CS:GO bob pushes into the view model.
+	// 1.0 leaves AddViewModelBobHelper's own 0.4 / 0.1 / 0.2 untouched.
+	viewmodel_bob_scale = CVAR_CREATE( "viewmodel_bob_scale", "1", FCVAR_ARCHIVE );
+
+	// strafe shift, values straight out of GoldClient's config.cfg
+	viewmodel_shift_left_amt  = CVAR_CREATE( "viewmodel_shift_left_amt",  "1.5",  FCVAR_ARCHIVE );
+	viewmodel_shift_right_amt = CVAR_CREATE( "viewmodel_shift_right_amt", "0.75", FCVAR_ARCHIVE );
+
+	// 0 off / 1 drop the gun a unit / 2 follow the accumulated lateral offset
+	viewmodel_shift = CVAR_CREATE( "viewmodel_shift", "1", FCVAR_ARCHIVE );
+
+	viewmodel_offset_x = CVAR_CREATE( "viewmodel_offset_x", "0", FCVAR_ARCHIVE );
+	viewmodel_offset_y = CVAR_CREATE( "viewmodel_offset_y", "1", FCVAR_ARCHIVE );
+	viewmodel_offset_z = CVAR_CREATE( "viewmodel_offset_z", "0", FCVAR_ARCHIVE );
+
+	// weapon lag. GoldClient's defaults: scale 2, speed 8.
+	viewmodel_lag_scale = CVAR_CREATE( "viewmodel_lag_scale", "2", FCVAR_ARCHIVE );
+	viewmodel_lag_speed = CVAR_CREATE( "viewmodel_lag_speed", "8", FCVAR_ARCHIVE );
+
+	// gun roll as the mouse swings, degrees
+	viewmodel_rollangle = CVAR_CREATE( "viewmodel_rollangle", "0.5", FCVAR_ARCHIVE );
+
+	// landing impulse; the binary ships jump at 0 (off) and land at 1
+	viewmodel_lag_scale_jump  = CVAR_CREATE( "viewmodel_lag_scale_jump",  "0", FCVAR_ARCHIVE );
+	viewmodel_lag_scale_land  = CVAR_CREATE( "viewmodel_lag_scale_land",  "1", FCVAR_ARCHIVE );
+	viewmodel_lag_scale_crouch = CVAR_CREATE( "viewmodel_lag_scale_crouch", "1", FCVAR_ARCHIVE );
 
 	m_pShowHealth = CVAR_CREATE( "scoreboard_showhealth", "1", FCVAR_ARCHIVE );
 	m_pShowMoney = CVAR_CREATE( "scoreboard_showmoney", "1", FCVAR_ARCHIVE );
