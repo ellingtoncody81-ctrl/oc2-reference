@@ -351,26 +351,50 @@ void CHud :: Init( void )
 
 	// CS:GO style weapon bob (cl_bobstyle 2).
 	//
-	// The amplitudes are NOT CS:GO's stock 0.25 / 0.4. CS:GO's oscillator is
-	// tiny -- speed * 0.00625 * 0.25 is 0.39 at a 250 run -- and it is only
-	// visible because CS:GO draws its view model at 1/64 scale behind its own
-	// near plane. A GoldSrc view model sits a few units from the eye, so the
-	// same number is invisible. These keep CS:GO's 1 : 1.6 vert/lat ratio and
-	// scale it up until the swing is actually readable.
+	// Amplitudes are not CS:GO's, and not NextClient's stock either. CS:GO's
+	// oscillator is tiny -- speed * 0.00625 * 0.25 is 0.39 at a 250 run --
+	// and it only reads because CS:GO draws its view model at 1/64 scale behind
+	// its own near plane. NextClient (0.13 / 0.32) is the fork tuned against a
+	// GoldSrc view model and is the right shape, but measured on ours it works
+	// out to only 0.081 units of travel, well under 1% of the ~10 units the
+	// weapon sits from the eye -- invisible in practice.
+	//
+	// These keep NextClient's 1 : 2.46 ratio at 2.7x, which lands at ~0.22
+	// units of vertical travel and ~0.27 lateral. Everything stays a cvar;
+	// see md/15-hud-module.md.
 	cl_bobstyle    = CVAR_CREATE( "cl_bobstyle",      "0",    FCVAR_ARCHIVE );
 	cl_bob_camera  = CVAR_CREATE( "cl_bob_camera",    "1",    FCVAR_ARCHIVE );
-	cl_bobamt_vert = CVAR_CREATE( "cl_bobamt_vert",   "0.9",  FCVAR_ARCHIVE );
-	cl_bobamt_lat  = CVAR_CREATE( "cl_bobamt_lat",    "1.44", FCVAR_ARCHIVE );
+	cl_bobamt_vert = CVAR_CREATE( "cl_bobamt_vert",   "0.35", FCVAR_ARCHIVE );
+	cl_bobamt_lat  = CVAR_CREATE( "cl_bobamt_lat",    "0.86", FCVAR_ARCHIVE );
+	cl_bob_lower_amt = CVAR_CREATE( "cl_bob_lower_amt", "8", FCVAR_ARCHIVE );
 
-	// CS:GO's stock 21 produces a 6.3 unit pull-back at a 250 run, which after
-	// AddViewModelBobHelper's 0.4 forward scale drags the weapon 2.5 units
-	// into the camera -- far enough to fill the screen with the near plane.
-	// 7 keeps the "gun rides low while running" read at about a third of that.
-	cl_bob_lower_amt = CVAR_CREATE( "cl_bob_lower_amt", "7", FCVAR_ARCHIVE );
+	// Airborne handling. CS:GO drops the amplitude to 1/5 instantly, which
+	// flickers on ramp crests; air_speed rate limits it, 0 = CS:GO.
+	viewmodel_bob_air_scale = CVAR_CREATE( "viewmodel_bob_air_scale", "0.5",  FCVAR_ARCHIVE );
+	viewmodel_bob_air_speed = CVAR_CREATE( "viewmodel_bob_air_speed", "25",   FCVAR_ARCHIVE );
+
+	// Low-pass on the input speed, 1/s. The engine hands us the raw server
+	// velocity when the server has no prediction (cl_pmove.c:1008), so it
+	// steps at the tick rate; CS:GO never sees that because its own server
+	// always predicts. 15 is a ~65 ms time constant. 0 = off.
+	viewmodel_bob_speed_smooth = CVAR_CREATE( "viewmodel_bob_speed_smooth", "15", FCVAR_ARCHIVE );
+
+	// How long the grounded flag must stay false before the bob believes it.
+	// The flag chatters ~8x/second up a ramp; 0.1 rejects that and still
+	// catches a real jump, which clears it in well under a frame.
+	viewmodel_bob_ground_delay = CVAR_CREATE( "viewmodel_bob_ground_delay", "0.05", FCVAR_ARCHIVE );
+
+	// Speed chase rate, units per second. CS:GO uses 640; that is the ceiling on
+	// how fast bob_offset -- and so the phase rate -- may move in one frame.
+	viewmodel_bob_speed_follow = CVAR_CREATE( "viewmodel_bob_speed_follow", "640", FCVAR_ARCHIVE );
 
 	// Master trim on everything the CS:GO bob pushes into the view model.
 	// 1.0 leaves AddViewModelBobHelper's own 0.4 / 0.1 / 0.2 untouched.
 	viewmodel_bob_scale = CVAR_CREATE( "viewmodel_bob_scale", "1", FCVAR_ARCHIVE );
+
+	// 1 prints one diagnostics line per second; see the bobdbg print in
+	// V_CalcNormalRefdef. Off by default, it only reads timers.
+	viewmodel_bob_debug = CVAR_CREATE( "viewmodel_bob_debug", "0", FCVAR_ARCHIVE );
 
 	// strafe shift, values straight out of GoldClient's config.cfg
 	viewmodel_shift_left_amt  = CVAR_CREATE( "viewmodel_shift_left_amt",  "1.5",  FCVAR_ARCHIVE );

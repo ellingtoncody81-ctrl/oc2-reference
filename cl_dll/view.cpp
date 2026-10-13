@@ -172,6 +172,16 @@ static bool s_bPrevViewAngles = false;
 static float s_flLandKick = 0.0f;
 static float s_flFallTop = 0.0f;
 
+// viewmodel_bob_debug accumulator, see the bobdbg print in V_CalcNormalRefdef
+static bool s_bDbgPrimed = false;
+static bool s_bDbgGround = true;
+static float s_flDbgLast = 0.0f, s_flDbgWindow = 0.0f;
+static float s_flDbgMin = 0.0f, s_flDbgMax = 0.0f, s_flDbgJump = 0.0f, s_flDbgSum = 0.0f;
+static float s_flDbgLastUsed = 0.0f, s_flDbgUsedJump = 0.0f;
+static float s_flDbgLastVert = 0.0f, s_flDbgVertJump = 0.0f;
+static float s_flDbgLastAir = 1.0f, s_flDbgAirJump = 0.0f;
+static int s_nDbgFrames = 0, s_nDbgStall = 0, s_nDbgFlips = 0;
+
 // from cs_wpn/cs_weapons.cpp -- the held weapon, straight out of the weapon
 // code this client already predicts.
 extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload, float *max_speed );
@@ -988,9 +998,14 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 
 		params.bob_cycle   = cl_bobcycle->value;
 		params.bob_up      = cl_bobup->value;
-		params.amt_vert    = gHUD.cl_bobamt_vert ? gHUD.cl_bobamt_vert->value : 0.9f;
-		params.amt_lat     = gHUD.cl_bobamt_lat  ? gHUD.cl_bobamt_lat->value  : 1.44f;
-		params.lower_amt   = gHUD.cl_bob_lower_amt ? gHUD.cl_bob_lower_amt->value : 7.0f;
+		params.amt_vert    = gHUD.cl_bobamt_vert ? gHUD.cl_bobamt_vert->value : 0.35f;
+		params.amt_lat     = gHUD.cl_bobamt_lat  ? gHUD.cl_bobamt_lat->value  : 0.86f;
+		params.lower_amt   = gHUD.cl_bob_lower_amt ? gHUD.cl_bob_lower_amt->value : 8.0f;
+		params.air_scale   = gHUD.viewmodel_bob_air_scale ? gHUD.viewmodel_bob_air_scale->value : 0.5f;
+		params.air_speed   = gHUD.viewmodel_bob_air_speed ? gHUD.viewmodel_bob_air_speed->value : 25.0f;
+		params.speed_smooth = gHUD.viewmodel_bob_speed_smooth ? gHUD.viewmodel_bob_speed_smooth->value : 15.0f;
+		params.ground_delay = gHUD.viewmodel_bob_ground_delay ? gHUD.viewmodel_bob_ground_delay->value : 0.05f;
+		params.speed_follow = gHUD.viewmodel_bob_speed_follow ? gHUD.viewmodel_bob_speed_follow->value : 640.0f;
 		params.shift_left  = gHUD.viewmodel_shift_left_amt  ? gHUD.viewmodel_shift_left_amt->value  : 1.5f;
 		params.shift_right = gHUD.viewmodel_shift_right_amt ? gHUD.viewmodel_shift_right_amt->value : 0.75f;
 
@@ -1044,6 +1059,82 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 
 		view_bob::BobOutput offsets = view_bob::StepBob( s_BobState, params, in,
 			pparams->time, pparams->frametime );
+
+		// ---- diagnostics, off by default ----
+		//
+		// The slope stutter is not the airborne amplitude snap: at these
+		// amplitudes that step is under 0.1 units. Rather than guess again,
+		// viewmodel_bob_debug 1 prints one line a second with the numbers that
+		// can tell a rate change from a real phase stall.
+		if( gHUD.viewmodel_bob_debug && gHUD.viewmodel_bob_debug->value != 0.0f )
+		{
+			float flSpd = sqrtf( in.vx * in.vx + in.vy * in.vy );
+			float flBobScaleDbg = gHUD.viewmodel_bob_scale ? gHUD.viewmodel_bob_scale->value : 1.0f;
+
+			if( !s_bDbgPrimed )
+			{
+				s_bDbgPrimed = true;
+				s_flDbgLast = flSpd;
+				s_flDbgWindow = pparams->time;
+				s_flDbgMin = flSpd;   // seeding with 0 pinned the minimum there forever
+				s_flDbgMax = flSpd;
+			}
+
+			float flJump = fabsf( flSpd - s_flDbgLast );
+			s_flDbgLast = flSpd;
+
+			// what the bob actually consumes, after the low pass and the
+			// CS:GO follow clamp -- dmax on the raw value alone says nothing
+			// about whether the fix worked
+			float flUsed = s_BobState.last_speed;
+			float flUsedJump = fabsf( flUsed - s_flDbgLastUsed );
+			s_flDbgLastUsed = flUsed;
+
+			// what the eye actually sees, and whether the onground debounce
+			// held -- flips counts the raw flag, which grows whether or not
+			// the amplitude reacts to it
+			float flVertJump = fabsf( offsets.vertical - s_flDbgLastVert );
+			s_flDbgLastVert = offsets.vertical;
+
+			float flAirJump = fabsf( s_BobState.air_mix - s_flDbgLastAir );
+			s_flDbgLastAir = s_BobState.air_mix;
+
+			if( flSpd < s_flDbgMin ) s_flDbgMin = flSpd;
+			if( flSpd > s_flDbgMax ) s_flDbgMax = flSpd;
+			if( flJump > s_flDbgJump ) s_flDbgJump = flJump;
+			if( flUsedJump > s_flDbgUsedJump ) s_flDbgUsedJump = flUsedJump;
+			if( flVertJump > s_flDbgVertJump ) s_flDbgVertJump = flVertJump;
+			if( flAirJump > s_flDbgAirJump ) s_flDbgAirJump = flAirJump;
+			s_flDbgSum += flSpd;
+			s_nDbgFrames++;
+
+			if( flSpd < 40.0f ) s_nDbgStall++;
+
+			if( in.onground != s_bDbgGround )
+			{
+				s_nDbgFlips++;
+				s_bDbgGround = in.onground;
+			}
+
+			if( pparams->time >= s_flDbgWindow + 1.0f )
+			{
+				gEngfuncs.Con_Printf( "bobdbg: spd %.0f..%.0f avg %.0f | raw_d %.0f used_d %.0f | "
+					"SEEN vert_d %.2f air %.2f air_d %.2f | "
+					"flips %d | amp %.2f/%.2f sm %.0f gd %.2f\n",
+					s_flDbgMin, s_flDbgMax,
+					s_nDbgFrames ? s_flDbgSum / s_nDbgFrames : 0.0f,
+					s_flDbgJump, s_flDbgUsedJump,
+					s_flDbgVertJump, s_BobState.air_mix, s_flDbgAirJump,
+					s_nDbgFlips,
+					params.amt_vert, params.amt_lat,
+					params.speed_smooth, params.ground_delay );
+
+				s_flDbgWindow = pparams->time;
+				s_flDbgMin = s_flDbgMax = s_flDbgJump = s_flDbgSum = 0.0f;
+				s_flDbgUsedJump = s_flDbgVertJump = s_flDbgAirJump = 0.0f;
+				s_nDbgFrames = s_nDbgStall = 0;
+			}
+		}
 
 		// one-shot so the log says which path actually ran
 		static bool s_bLoggedStyle = false;

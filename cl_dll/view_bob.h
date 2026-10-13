@@ -46,6 +46,40 @@ namespace view_bob
 		float lower_amt;    // cl_bob_lower_amt       default 21
 		float shift_left;   // cl_viewmodel_shift_left_amt   default 1.5
 		float shift_right;  // cl_viewmodel_shift_right_amt  default 0.75
+
+		// Airborne handling. CS:GO scales the amplitude to a fifth the instant
+		// the grounded flag drops. That is reproduced here, but the switch can
+		// be rate limited: on a ramp crest the flag flickers, and a 5x
+		// amplitude step every other frame reads as a stutter.
+		float air_scale;   // airborne multiplier, CS:GO uses 0.2
+		float air_speed;   // slew rate toward it, 0 = instant like CS:GO
+
+		// Low-pass on the speed before anything else reads it, in units of 1/s.
+		// CS:GO's GetLocalVelocity() is predicted and arrives once per rendered
+		// frame; here it is the raw server velocity whenever the server has not
+		// enabled prediction (engine/client/dll_int/cl_pmove.c:1008 copies
+		// frame->clientdata.velocity straight in), so it steps at the tick
+		// rate instead. The classic GoldSrc bob gets away with that because its
+		// phase advances with frametime no matter what the speed does -- only
+		// the amplitude breathes. This bob feeds the speed into bob_offset, so
+		// a tick step kicks the phase rate directly and the stride hiccups on
+		// every ramp. 0 disables.
+		float speed_smooth;
+
+		// How long the grounded flag must read false before the bob treats
+		// the player as airborne. GoldSrc's onground chatters several times a
+		// second while running up a grade -- measured at ~8 flips per second
+		// on de_dust2 -- and every flip modulates the amplitude, so the stride
+		// stutters on the ramp. CS:GO tests GetGroundEntity() == NULL, which
+		// is a sticky state and never flickers like that. 0 disables.
+		float ground_delay;
+
+		// How fast the smoothed speed may chase the real one, in units per
+		// second. CS:GO uses 640, which at 60 fps allows 10.7 units of catch-up
+		// a frame -- that ceiling is what bounds the frame-to-frame jump in
+		// bob_offset, and therefore in the phase rate. Lower it to calm a
+		// stutter, at the cost of a slower start and stop.
+		float speed_follow;
 	};
 
 	// ---- everything the helper needs that is not a cvar ----
@@ -87,10 +121,14 @@ namespace view_bob
 		float last_bob_time;   // m_flLastBobTime
 		float last_speed;      // m_flLastSpeed
 		float gun_acc_pos;     // m_flGunAccuracyPosition (lives on the weapon)
+		float air_mix;         // smoothed airborne multiplier, 1 = grounded
+		float speed_in;       // low-passed speed, before the CS:GO follow clamp
+		float air_timer;      // how long the raw grounded flag has read false
 
 		BobState()
 			: bob_time( 0.0f ), last_bob_time( 0.0f ),
-			  last_speed( 0.0f ), gun_acc_pos( 0.0f )
+			  last_speed( 0.0f ), gun_acc_pos( 0.0f ), air_mix( 1.0f ),
+			  speed_in( 0.0f ), air_timer( 0.0f )
 		{
 		}
 	};

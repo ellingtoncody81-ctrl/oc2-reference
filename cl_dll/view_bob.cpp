@@ -88,6 +88,25 @@ namespace view_bob
 		// Find the speed of the player.
 		float speed = std::sqrt( input.vx * input.vx + input.vy * input.vy );
 
+		// Low-pass it first. See BobParams::speed_smooth -- on this engine the
+		// raw value steps at the server tick rate, and unlike the classic bob
+		// this one feeds the speed into the phase rate, so every step shows up
+		// as a hitch in the stride.
+		if( params.speed_smooth > 0.0f )
+		{
+			float f = 1.0f - std::exp( -params.speed_smooth * frametime );
+
+			if( f < 0.0f ) f = 0.0f;
+			if( f > 1.0f ) f = 1.0f;
+
+			state.speed_in = state.speed_in + ( speed - state.speed_in ) * f;
+			speed = state.speed_in;
+		}
+		else
+		{
+			state.speed_in = speed;
+		}
+
 		// do the dip before speed gets clamped
 		float run_add_amt = 0.0f;
 
@@ -105,7 +124,7 @@ namespace view_bob
 		}
 
 		// don't allow too big speed changes
-		float max_speed_delta = std::fmax( 0.0f, ( time - state.last_bob_time ) * 640.0f );
+		float max_speed_delta = std::fmax( 0.0f, ( time - state.last_bob_time ) * params.speed_follow );
 		speed = Clamp( speed, state.last_speed - max_speed_delta, state.last_speed + max_speed_delta );
 		speed = Clamp( speed, -320.0f, 320.0f );
 
@@ -168,7 +187,47 @@ namespace view_bob
 		cycle = RaisedCycle( cycle, params.bob_up );
 
 		// if we're in the air, slow our bob down a bit
-		float bob_multiplier = input.onground ? 0.00625f : 0.00125f;
+		//
+		// CS:GO flips between 0.00625 and 0.00125 in a single frame. On a ramp
+		// crest the grounded flag flickers, so the amplitude steps by 5x every
+		// other frame -- on its own small enough not to notice, but the swing
+		// is 5x bigger on a GoldSrc view model than on CS:GO's, so it reads as
+		// a stutter. air_speed rate limits the change; 0 gives the original.
+		//
+		// ground_delay comes first. The flag is not "flickering at a crest",
+		// it chatters ~8 times a second for the whole ramp, so the rate limit
+		// alone is not enough -- the amplitude gets dragged through its full
+		// range several times a second. CS:GO tests GetGroundEntity() == NULL,
+		// a sticky state that never behaves like that; this is the equivalent.
+		float air_target = 1.0f;
+
+		if( input.onground )
+		{
+			state.air_timer = 0.0f;
+		}
+		else
+		{
+			state.air_timer += frametime;
+
+			if( params.ground_delay <= 0.0f || state.air_timer >= params.ground_delay )
+				air_target = params.air_scale;
+		}
+
+		if( params.air_speed > 0.0f )
+		{
+			float step = params.air_speed * frametime;
+
+			if( state.air_mix < air_target )
+				state.air_mix = air_target < state.air_mix + step ? air_target : state.air_mix + step;
+			else
+				state.air_mix = air_target > state.air_mix - step ? air_target : state.air_mix - step;
+		}
+		else
+		{
+			state.air_mix = air_target;
+		}
+
+		float bob_multiplier = 0.00625f * state.air_mix;
 
 		float vertical = speed * ( bob_multiplier * params.amt_vert );
 		vertical = Blend( vertical, std::sin( cycle ) );

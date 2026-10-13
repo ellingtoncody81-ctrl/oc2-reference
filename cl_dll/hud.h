@@ -1064,6 +1064,12 @@ public:
 	cvar_t *cl_bobamt_lat;
 	cvar_t *cl_bob_lower_amt;
 	cvar_t *viewmodel_bob_scale;
+	cvar_t *viewmodel_bob_air_scale;
+	cvar_t *viewmodel_bob_air_speed;
+	cvar_t *viewmodel_bob_speed_smooth;
+	cvar_t *viewmodel_bob_ground_delay;
+	cvar_t *viewmodel_bob_speed_follow;
+	cvar_t *viewmodel_bob_debug;
 	cvar_t *viewmodel_shift_left_amt;
 	cvar_t *viewmodel_shift_right_amt;
 	cvar_t *viewmodel_shift;
