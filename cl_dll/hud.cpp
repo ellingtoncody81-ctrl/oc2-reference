@@ -349,6 +349,13 @@ void CHud :: Init( void )
 
 	cl_viewbob = CVAR_CREATE( "cl_viewbob", "1", FCVAR_ARCHIVE );
 
+	// CS:GO style weapon bob (cl_bobstyle 2). Defaults match the mobile build.
+	cl_bobstyle    = CVAR_CREATE( "cl_bobstyle",      "0",    FCVAR_ARCHIVE );
+	cl_bob_camera  = CVAR_CREATE( "cl_bob_camera",    "1",    FCVAR_ARCHIVE );
+	cl_bobamt_vert = CVAR_CREATE( "cl_bobamt_vert",   "0.13", FCVAR_ARCHIVE );
+	cl_bobamt_lat  = CVAR_CREATE( "cl_bobamt_lat",    "0.32", FCVAR_ARCHIVE );
+	cl_bob_lower_amt = CVAR_CREATE( "cl_bob_lower_amt", "8.0", FCVAR_ARCHIVE );
+
 	m_pShowHealth = CVAR_CREATE( "scoreboard_showhealth", "1", FCVAR_ARCHIVE );
 	m_pShowMoney = CVAR_CREATE( "scoreboard_showmoney", "1", FCVAR_ARCHIVE );
 
