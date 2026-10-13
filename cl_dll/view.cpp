@@ -15,6 +15,7 @@
 #include "cvardef.h"
 #include "usercmd.h"
 #include "const.h"
+#include "view_bob.h"
 
 #include "entity_state.h"
 #include "cl_entity.h"
@@ -154,6 +155,12 @@ void V_InterpolateAngles( float *start, float *end, float *output, float frac )
 } */
 
 // Quakeworld bob code, this fixes jitters in the mutliplayer since the clock (pparams->time) isn't quite linear
+//
+// s_BobState is the CS:GO bob's persistent state, kept here so it sits next to
+// the classic bob it replaced rather than inside view_bob.cpp, which stays pure
+// math with no engine types.
+static view_bob::BobState s_BobState = { 0.0f, 0.0f, 0.0f };
+
 float V_CalcBob ( struct ref_params_s *pparams )
 {
 	static	double	bobtime;
@@ -711,7 +718,17 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 
 	// transform the view offset by the model's matrix to get the offset from
 	// model origin for the view
-	bob = V_CalcBob ( pparams );
+	//
+	// The CS:GO bob replaces the classic one outright rather than layering on
+	// top of it, and it moves the view model, not the eye -- cl_bob_camera
+	// explicitly does nothing for cl_bobstyle 2. Leaving the classic bob live
+	// here bounces the whole view up and down and buries the three-axis view
+	// model bob underneath it. NextClient does the same by zeroing cl_bob
+	// around the original CalcRefdef.
+	if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
+		bob = 0.0f;
+	else
+		bob = V_CalcBob ( pparams );
 
 	// refresh position
 	VectorCopy ( pparams->simorg, pparams->vieworg );
@@ -865,16 +882,80 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 	// Let the viewmodel shake at about 10% of the amplitude
 	gEngfuncs.V_ApplyShake( view->origin, view->angles, 0.9 );
 
+	// ---- view bob
+	//
+	// Two paths share this spot. The classic Quake bob above produced one scalar
+	// that drove a forward push, a lift and a sway; that is what cl_bobstyle 0
+	// and 1 still get, untouched. cl_bobstyle 2 is the CS:GO bob and works on a
+	// three-axis offset instead -- it has no sway at all, and cl_bob_camera does
+	// not apply to it because it moves the view model, not the eye.
+	// The classic expressions are kept verbatim, including their untyped double
+	// literals. "bob * 0.4" promotes to double before it comes back down to a
+	// float on assignment, and writing 0.4f instead computes in single
+	// precision and lands on a slightly different value. The bob is small
+	// enough that nobody would notice frame to frame, but the current look was
+	// tuned against the double path and this keeps it identical.
+	float bobForward = bob * 0.4;
+	float bobUp      = bob;
+	float bobSide    = 0.0f;
+	float bobYaw     = - bob * 0.5;
+	float bobRoll    = - bob * 1;
+	float bobPitch   = - bob * 0.3;
+
+	if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
+	{
+		view_bob::BobParams params;
+
+		params.bob_cycle = cl_bobcycle->value;
+		params.bob_up    = cl_bobup->value;
+		params.amt_vert  = gHUD.cl_bobamt_vert ? gHUD.cl_bobamt_vert->value : 0.13f;
+		params.amt_lat   = gHUD.cl_bobamt_lat  ? gHUD.cl_bobamt_lat->value  : 0.32f;
+		params.lower_amt = gHUD.cl_bob_lower_amt ? gHUD.cl_bob_lower_amt->value : 8.0f;
+
+		// onground arrives from V_SetRefParams already folded to 0/1
+		// (cl_view.c: fd->onground = (cl.local.onground != -1)), so testing
+		// against -1 would be true forever and the airborne scale would never
+		// engage. Anything non-zero counts as grounded.
+		vec3_t bobvel;
+		VectorCopy( pparams->simvel, bobvel );
+		bobvel[2] = 0.0f;
+		float bobSpeed = sqrtf( bobvel[0] * bobvel[0] + bobvel[1] * bobvel[1] );
+
+		view_bob::BobOffsets offsets = view_bob::StepBob( s_BobState, params,
+			pparams->time, bobSpeed, pparams->onground != 0 );
+
+		// one-shot so the log says which path actually ran
+		static bool s_bLoggedStyle = false;
+		if( !s_bLoggedStyle )
+		{
+			s_bLoggedStyle = true;
+			gEngfuncs.Con_Printf( "viewbob: cl_bobstyle=%d, CS:GO bob active "
+				"(cycle=%g vert=%g lat=%g lower=%g)\n",
+				(int)gHUD.cl_bobstyle->value, params.bob_cycle,
+				params.amt_vert, params.amt_lat, params.lower_amt );
+		}
+
+		view_bob::Placement placed = view_bob::PlaceBob( offsets );
+
+		bobForward = placed.forward;
+		bobUp      = placed.up;
+		bobSide    = placed.side;
+		bobYaw     = 0.0f;
+		bobRoll    = 0.0f;
+		bobPitch   = 0.0f;
+	}
+
 	for ( i = 0; i < 3; i++ )
 	{
-		view->origin[ i ] += bob * 0.4 * pparams->forward[ i ];
+		view->origin[ i ] += bobForward * pparams->forward[ i ];
+		view->origin[ i ] += bobSide * pparams->right[ i ];
 	}
-	view->origin[2] += bob;
+	view->origin[2] += bobUp;
 
 	// throw in a little tilt.
-	view->angles[YAW]   -= bob * 0.5;
-	view->angles[ROLL]  -= bob * 1;
-	view->angles[PITCH] -= bob * 0.3;
+	view->angles[YAW]   += bobYaw;
+	view->angles[ROLL]  += bobRoll;
+	view->angles[PITCH] += bobPitch;
 
 	// pushing the view origin down off of the same X/Z plane as the ent's origin will give the
 	// gun a very nice 'shifting' effect when the player looks up/down. If there is a problem

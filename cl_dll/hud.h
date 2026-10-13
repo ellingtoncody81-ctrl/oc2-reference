@@ -1057,6 +1057,13 @@ public:
 	cvar_t *cscl_mapprefix;
 	cvar_t *cl_viewbob;
 
+	// CS:GO style weapon bob, cl_bobstyle 2. See cl_dll/view_bob.h.
+	cvar_t *cl_bobstyle;
+	cvar_t *cl_bob_camera;
+	cvar_t *cl_bobamt_vert;
+	cvar_t *cl_bobamt_lat;
+	cvar_t *cl_bob_lower_amt;
+
 	cvar_t* m_pCvarColor;
 	unsigned long m_iDefaultHUDColor;
 	void UpdateDefaultHUDColor();
