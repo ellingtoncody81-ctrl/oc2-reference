@@ -104,8 +104,8 @@ namespace view_bob
 		int   weapon_id;          // kNoWeaponId when nothing is held
 
 		// GetInaccuracyCrouch() / GetInaccuracyStand() / GetInaccuracy().
-		// CS:GO reads these out of the item schema; see the note on
-		// kInaccuracyStand below for how we fill them here.
+		// CS:GO reads these out of the item schema. The GoldSrc caller
+		// supplies native predicted spread differences relative to standing.
 		float inaccuracy_crouch;
 		float inaccuracy_stand;
 		float inaccuracy;
@@ -124,25 +124,25 @@ namespace view_bob
 		float bob_time;        // m_flBobTime
 		float last_bob_time;   // m_flLastBobTime
 		float last_speed;      // m_flLastSpeed
-		float gun_acc_pos;     // m_flGunAccuracyPosition (lives on the weapon)
+		float gun_acc_pos;     // current weapon's m_flGunAccuracyPosition
+		float weapon_acc_pos[31]; // GoldSrc weapon IDs 0..30, retained across switches
+		int active_weapon_id;
+		float vertical_bob, lateral_bob; // Valve keeps these when paused/unarmed
 		float air_mix;         // smoothed airborne multiplier, 1 = grounded
 		float speed_in;       // low-passed speed, before the CS:GO follow clamp
 		float air_timer;      // how long the raw grounded flag has read false
 
 		BobState()
 			: bob_time( 0.0f ), last_bob_time( 0.0f ),
-			  last_speed( 0.0f ), gun_acc_pos( 0.0f ), air_mix( 1.0f ),
+			  last_speed( 0.0f ), gun_acc_pos( 0.0f ), weapon_acc_pos{},
+			  active_weapon_id( 0 ), vertical_bob( 0.0f ), lateral_bob( 0.0f ), air_mix( 1.0f ),
 			  speed_in( 0.0f ), air_timer( 0.0f )
 		{
 		}
 	};
 
-	// stock CS:GO stand/crouch inaccuracy. CS:GO reads these per weapon out of
-	// items_game.txt, which is not in the local dump -- these are AK-47's
-	// values and are the only numbers here that are not lifted from source.
-	// They only matter for the crouching half of the accuracy shift.
-	extern const float kInaccuracyStand;
-	extern const float kInaccuracyCrouch;
+	// The caller supplies the native CS1.6 predicted spread for this weapon.
+	// This is a GoldSrc data adapter, not a replacement CS:GO item schema.
 
 	BobOutput StepBob( BobState &state, const BobParams &params,
 	                   const BobInput &input,

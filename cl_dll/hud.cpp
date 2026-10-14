@@ -370,7 +370,7 @@ void CHud :: Init( void )
 
 	// Airborne handling. CS:GO drops the amplitude to 1/5 instantly, which
 	// flickers on ramp crests; air_speed rate limits it, 0 = CS:GO.
-	viewmodel_bob_air_scale = CVAR_CREATE( "viewmodel_bob_air_scale", "0.5",  FCVAR_ARCHIVE );
+	viewmodel_bob_air_scale = CVAR_CREATE( "viewmodel_bob_air_scale", "0.8",  FCVAR_ARCHIVE );
 	viewmodel_bob_air_speed = CVAR_CREATE( "viewmodel_bob_air_speed", "25",   FCVAR_ARCHIVE );
 
 	// Low-pass on the input speed, 1/s. The engine hands us the raw server
@@ -386,7 +386,7 @@ void CHud :: Init( void )
 
 	// Speed chase rate, units per second. CS:GO uses 640; that is the ceiling on
 	// how fast bob_offset -- and so the phase rate -- may move in one frame.
-	viewmodel_bob_speed_follow = CVAR_CREATE( "viewmodel_bob_speed_follow", "640", FCVAR_ARCHIVE );
+	viewmodel_bob_speed_follow = CVAR_CREATE( "viewmodel_bob_speed_follow", "200", FCVAR_ARCHIVE );
 
 	// Master trim on everything the CS:GO bob pushes into the view model.
 	// 1.0 leaves AddViewModelBobHelper's own 0.4 / 0.1 / 0.2 untouched.
@@ -524,8 +524,11 @@ CHud :: ~CHud()
 	m_pHudList = NULL;
 }
 
+extern void V_ResetViewModelEffects();
+
 void CHud :: VidInit( void )
 {
+	V_ResetViewModelEffects();
 	static bool firstinit = true;
 	m_scrinfo.iSize = sizeof( m_scrinfo );
 	GetScreenInfo( &m_scrinfo );
@@ -650,12 +653,14 @@ void CHud :: VidInit( void )
 
 void CHud::Reset( void )
 {
+	V_ResetViewModelEffects();
 	for( HUDLIST *pList = m_pHudList; pList; pList = pList->pNext )
 		pList->p->Reset();
 }
 
 void CHud::Shutdown( void )
 {
+	V_ResetViewModelEffects();
 	for( HUDLIST *pList = m_pHudList; pList; pList = pList->pNext )
 	{
 		pList->p->Shutdown();

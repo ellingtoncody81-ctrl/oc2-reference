@@ -16,6 +16,9 @@
 #include "usercmd.h"
 #include "const.h"
 #include "view_bob.h"
+#include "view_effects.h"
+#include "view_stairs.h"
+#include "weapon_spread.h"
 
 #include "entity_state.h"
 #include "cl_entity.h"
@@ -162,22 +165,13 @@ void V_InterpolateAngles( float *start, float *end, float *output, float frac )
 // the classic bob it replaced rather than inside view_bob.cpp, which stays pure
 // math with no engine types.
 static view_bob::BobState s_BobState;
-// smoothed view model roll, see the viewmodel_rollangle block in
-// V_CalcNormalRefdef. Two axes because the binary feeds two different
-// usercmd components into it.
-static float s_flViewRollX = 0.0f;
-static float s_flViewRollY = 0.0f;
-static vec3_t s_vPrevViewAngles;
-static bool s_bPrevViewAngles = false;
-
-// landing kick state, see the viewmodel_lag_scale_land block
-static float s_flLandKick = 0.0f;
-static float s_flFallTop = 0.0f;
-
-// weapon sway state, see V_CalcViewModelLag
-static float   s_flVmLagLastTime = -1.0f;
-static vec3_t  s_vmlagOffset = { 0.0f, 0.0f, 0.0f };
-static vec3_t  v_dummy_axis = { 0.0f, 0.0f, 0.0f };
+static view_effects::EffectsState s_ViewEffects;
+static view_stairs::State s_ViewStairs;
+static cvar_t *cl_smoothstairs;
+static float s_flBobContextTime = -1.0f;
+static int s_iBobContextEntity = -1;
+static float s_flHudNextLog = 0.0f, s_flHudLandPeak = 0.0f;
+static int s_iHudLogWeapon = -1, s_iHudLogShots = -1, s_iHudLogReload = -1, s_iHudLogClip = -1;
 
 // viewmodel_bob_debug accumulator, see the bobdbg print in V_CalcNormalRefdef
 static bool s_bDbgPrimed = false;
@@ -192,43 +186,8 @@ static int s_nDbgFrames = 0, s_nDbgStall = 0, s_nDbgFlips = 0;
 
 // from cs_wpn/cs_weapons.cpp -- the held weapon, straight out of the weapon
 // code this client already predicts.
-extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload, float *max_speed );
-
-/*
-========================
-V_GetMovementInaccuracy
-
-CS:GO's accuracy has a movement term, and ReGameDLL already carries the same
-three tiers -- 0.2 for the rifles and most pistols, 0.15 for the MAC10, 0 for
-the UMP and MP5 -- in GetBaseAccuracy() (regamedll/dlls/weapons.cpp:53). That
-is the term that dominates: any movement at all pushes the gun to the right.
-========================
-*/
-static float V_GetMovementInaccuracy( int weapon_id )
-{
-	switch( weapon_id )
-	{
-	case WEAPON_M4A1:
-	case WEAPON_AK47:
-	case WEAPON_AUG:
-	case WEAPON_SG552:
-	case WEAPON_FAMAS:
-	case WEAPON_GALIL:
-	case WEAPON_M249:
-	case WEAPON_P90:
-	case WEAPON_TMP:
-		return 0.2f;
-
-	case WEAPON_MAC10:
-		return 0.15f;
-
-	case WEAPON_UMP45:
-	case WEAPON_MP5N:
-		return 0.0f;
-	}
-
-	return 0.0f;
-}
+extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload, float *max_speed, float *accuracy, int *weapon_state, int *clip );
+extern int g_iPlayerFlags;
 
 /*
 ========================
@@ -252,12 +211,6 @@ static bool V_IsSniperWeapon( int weapon_id )
 
 	return false;
 }
-
-// How much each round still in flight costs in accuracy. CS:GO reads this out
-// of the item schema too; this is the AK-47-shaped number and it only scales
-// the small "your spray is loosening" drift.
-static const float kShotAccuracyPenalty = 0.0012f;
-
 
 float V_CalcBob ( struct ref_params_s *pparams )
 {
@@ -703,7 +656,7 @@ void V_CalcQuakeGuns()
 
 	if(!cl_quakeguns->value)
 		return;
-	
+
 	if(!vm)
 		return;
 
@@ -724,149 +677,16 @@ void V_CalcQuakeGuns()
 }
 
 
-//==========================
-// V_CalcViewModelLag
-//==========================
-//
-// CS:GO's weapon sway, from
-// cstrike19_src/src/game/shared/predicted_viewmodel.cpp CalcViewModelLag().
-//
-// The original GoldSrc code -- and the GoldClient rewrite that replaced it --
-// compares this frame's forward vector against last frame's. That is a
-// one-frame difference: a fast flick produces a huge delta for a single frame
-// and then nothing, so the weapon snaps and then sits still. CS:GO instead
-// keeps a short history of the view angles and interpolates back a fixed
-// 100 ms, which is what makes the swing feel like inertia rather than a snap.
-//
-// One quirk is reproduced as written. AngleVectors() is called with null right
-// and up, so only the forward component of the lagged basis is computed and
-// vForwardDiff ends up (1 - fwd.x, 0, 0). The result is a pure forward push
-// proportional to how far the view has turned in the last interp seconds --
-// small and gentle, which is the look.
-namespace
+void V_ResetViewModelEffects()
 {
-	const int kVmLagHistory = 64;      // ~1 s at 60 fps, far more than interp needs
-
-	struct VmLagSample
-	{
-		float time;
-		float ang[3];
-	};
-
-	VmLagSample s_vmlag[kVmLagHistory];
-	int   s_vmlagHead = 0;
-	int   s_vmlagFill = 0;
-
-	void VmLagPush( float time, const vec3_t &ang )
-	{
-		s_vmlagHead = ( s_vmlagHead + 1 ) % kVmLagHistory;
-		s_vmlag[s_vmlagHead].time = time;
-		s_vmlag[s_vmlagHead].ang[PITCH] = ang[PITCH];
-		s_vmlag[s_vmlagHead].ang[YAW]   = ang[YAW];
-		s_vmlag[s_vmlagHead].ang[ROLL]  = ang[ROLL];
-
-		if( s_vmlagFill < kVmLagHistory )
-			s_vmlagFill++;
-	}
-
-	// The angles as they were interp seconds ago, linearly interpolated
-	// between the two samples that bracket that moment.
-	bool VmLagAt( float target, vec3_t &out )
-	{
-		if( s_vmlagFill < 2 )
-			return false;
-
-		for( int i = 0; i < s_vmlagFill; i++ )
-		{
-			const VmLagSample &newer = s_vmlag[( s_vmlagHead - i + kVmLagHistory ) % kVmLagHistory ];
-
-			if( i + 1 >= s_vmlagFill )
-				break;
-
-			const VmLagSample &older = s_vmlag[( s_vmlagHead - i - 1 + kVmLagHistory ) % kVmLagHistory];
-
-			if( newer.time <= target )
-			{
-				float span = newer.time - older.time;
-				float f = span > 0.0f ? ( target - older.time ) / span : 1.0f;
-
-				if( f < 0.0f ) f = 0.0f;
-				if( f > 1.0f ) f = 1.0f;
-
-				for( int k = 0; k < 3; k++ )
-				{
-					float a = older.ang[k];
-					float b = newer.ang[k];
-
-					// take the short way round 180 degrees
-					float d = b - a;
-					if( d > 180.0f )       d -= 360.0f;
-					else if( d < -180.0f )  d += 360.0f;
-
-					out[k] = a + d * f;
-				}
-
-				return true;
-			}
-		}
-
-		return false;
-	}
-}
-
-void V_CalcViewModelLag( ref_params_t *pparams, Vector &origin, Vector &angles )
-{
-	float interp = cl_wpn_sway_interp->value;
-
-	if( interp <= 0.0f )
-		return;
-
-	if( pparams->time == s_flVmLagLastTime )
-		return;                       // paused, keep the old offset
-
-	s_flVmLagLastTime = pparams->time;
-
-	VmLagPush( pparams->time, angles );
-
-	vec3_t lagged;
-
-	if( !VmLagAt( pparams->time - interp, lagged ) )
-		return;                       // not enough history yet
-
-	Vector forward, right, up;
-	AngleVectors( angles, forward, right, up );
-
-	vec3_t angleDiff;
-	angleDiff[PITCH] = angles[PITCH] - lagged[PITCH];
-	angleDiff[YAW]   = angles[YAW]   - lagged[YAW];
-	angleDiff[ROLL]  = angles[ROLL]  - lagged[ROLL];
-
-	// CS:GO only fills the forward component; the other two stay zero.
-	vec3_t vLaggedForward;
-	AngleVectors( angleDiff, vLaggedForward, v_dummy_axis, v_dummy_axis );
-
-	vLaggedForward[0] = -vLaggedForward[0];
-	vLaggedForward[1] = 0.0f;
-	vLaggedForward[2] = 0.0f;
-
-	vec3_t vForwardDiff;
-	vForwardDiff[0] = 1.0f - vLaggedForward[0];
-	vForwardDiff[1] = 0.0f;
-	vForwardDiff[2] = 0.0f;
-
-	vForwardDiff[0] *= cl_wpn_sway_scale->value;
-
-	s_vmlagOffset[0] =  forward[0] * vForwardDiff[0];
-	s_vmlagOffset[1] =  forward[1] * vForwardDiff[0];
-	s_vmlagOffset[2] =  forward[2] * vForwardDiff[0];
-
-	// The effect dies out as the view approaches vertical, where a forward
-	// push would just shove the weapon out of frame.
-	float flMult = bound( fabsf( up[2] ) - 0.02f, 0.0f, 1.0f );
-
-	origin[0] += s_vmlagOffset[0] * flMult;
-	origin[1] += s_vmlagOffset[1] * flMult;
-	origin[2] += s_vmlagOffset[2] * flMult;
+	s_BobState = view_bob::BobState();
+	view_effects::ResetEffects( s_ViewEffects );
+	s_ViewStairs = view_stairs::State();
+	s_flBobContextTime = -1.0f;
+	s_iBobContextEntity = -1;
+	s_bDbgPrimed = false;
+	s_flHudNextLog = s_flHudLandPeak = 0.0f;
+	s_iHudLogWeapon = s_iHudLogShots = s_iHudLogReload = s_iHudLogClip = -1;
 }
 
 /*
@@ -901,6 +721,26 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 
 	// view is the weapon model (only visible from inside body)
 	view = gEngfuncs.GetViewModel();
+	int iWeaponId = 0, iShotsFired = 0, iInReload = 0, iWeaponState = 0, iWeaponClip = 0;
+	float flMaxSpeed = 0.0f, flWeaponAccuracy = 0.0f;
+	HUD_GetBobWeaponState( &iWeaponId, &iShotsFired, &iInReload, &flMaxSpeed,
+		&flWeaponAccuracy, &iWeaponState, &iWeaponClip );
+	bool bVmActive = pparams->health > 0 && !g_iUser1 && !gEngfuncs.IsSpectateOnly()
+		&& !CL_IsThirdPerson() && pparams->viewentity <= pparams->maxclients;
+	bool bSameBobFrame = s_flBobContextTime == pparams->time;
+	if( !bVmActive || s_flBobContextTime < 0.0f || pparams->time < s_flBobContextTime
+		|| pparams->time - s_flBobContextTime > 1.0f || pparams->viewentity != s_iBobContextEntity )
+	{
+		V_ResetViewModelEffects();
+		s_BobState.last_bob_time = pparams->time - pparams->frametime;
+		bSameBobFrame = false;
+	}
+	s_flBobContextTime = pparams->time;
+	s_iBobContextEntity = pparams->viewentity;
+	oc2_weapon_spread::SpreadInput spreadInput = { iWeaponId, flWeaponAccuracy, iWeaponState,
+		sqrtf( pparams->simvel[0] * pparams->simvel[0] + pparams->simvel[1] * pparams->simvel[1] ),
+		pparams->onground != 0, ( g_iPlayerFlags & FL_DUCKING ) != 0, g_lastFOV > 0.0f ? g_lastFOV : 90.0f };
+	oc2_weapon_spread::SpreadOutput spread = oc2_weapon_spread::Calculate( spreadInput );
 
 	// transform the view offset by the model's matrix to get the offset from
 	// model origin for the view
@@ -1097,20 +937,17 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		params.amt_vert    = gHUD.cl_bobamt_vert ? gHUD.cl_bobamt_vert->value : 0.35f;
 		params.amt_lat     = gHUD.cl_bobamt_lat  ? gHUD.cl_bobamt_lat->value  : 0.86f;
 		params.lower_amt   = gHUD.cl_bob_lower_amt ? gHUD.cl_bob_lower_amt->value : 8.0f;
-		params.air_scale   = gHUD.viewmodel_bob_air_scale ? gHUD.viewmodel_bob_air_scale->value : 0.5f;
+		params.air_scale   = gHUD.viewmodel_bob_air_scale ? gHUD.viewmodel_bob_air_scale->value : 0.8f;
 		params.air_speed   = gHUD.viewmodel_bob_air_speed ? gHUD.viewmodel_bob_air_speed->value : 25.0f;
 		params.speed_smooth = gHUD.viewmodel_bob_speed_smooth ? gHUD.viewmodel_bob_speed_smooth->value : 15.0f;
 		params.ground_delay = gHUD.viewmodel_bob_ground_delay ? gHUD.viewmodel_bob_ground_delay->value : 0.05f;
-		params.speed_follow = gHUD.viewmodel_bob_speed_follow ? gHUD.viewmodel_bob_speed_follow->value : 640.0f;
+		params.speed_follow = gHUD.viewmodel_bob_speed_follow ? gHUD.viewmodel_bob_speed_follow->value : 200.0f;
 		params.shift_left  = gHUD.viewmodel_shift_left_amt  ? gHUD.viewmodel_shift_left_amt->value  : 1.5f;
 		params.shift_right = gHUD.viewmodel_shift_right_amt ? gHUD.viewmodel_shift_right_amt->value : 0.75f;
 
 		// The held weapon, out of the weapon code this client already predicts.
 		// Falls back to CS:GO's no-weapon branch when nothing is in hand.
-		int iWeaponId = 0, iShotsFired = 0, iInReload = 0;
-		float flMaxSpeed = 0.0f;
-
-		HUD_GetBobWeaponState( &iWeaponId, &iShotsFired, &iInReload, &flMaxSpeed );
+		// Snapshot was obtained once above and shared with diagnostics/effects.
 
 		// The line below prints on the first frame of the map, when nothing is
 		// held yet. Fire once more when a weapon shows up, so the weapon path is
@@ -1132,30 +969,25 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		in.vx               = pparams->simvel[0];
 		in.vy               = pparams->simvel[1];
 		in.onground         = pparams->onground != 0;
-		in.ducking          = pparams->viewheight[2] < 0.0f;
+		in.ducking          = ( g_iPlayerFlags & FL_DUCKING ) != 0;
 		in.in_reload        = iInReload != 0;
 		in.is_elite         = ( iWeaponId == WEAPON_ELITE );
 		in.sniper           = V_IsSniperWeapon( iWeaponId );
-		in.zoomed           = false;
+		in.zoomed           = g_lastFOV > 0.0f && g_lastFOV < 90.0f;
 		in.run_bob_scale    = 1.0f;
 		in.weapon_max_speed = flMaxSpeed;
 		in.weapon_id = iWeaponId;
 
-		// Accuracy drives the left/right drift. CS:GO composes it from the
-		// weapon's stand/crouch constants plus a movement term; ReGameDLL
-		// already carries that movement term as GetBaseAccuracy() (0.2 / 0.15
-		// / 0), so that half is exact. The stand/crouch pair is a stock AK-47
-		// pair -- CS:GO reads the real per-weapon numbers out of the item
-		// schema, which is not in the local dump.
-		float flMoveInaccuracy = V_GetMovementInaccuracy( iWeaponId );
-
-		in.inaccuracy_stand  = view_bob::kInaccuracyStand;
-		in.inaccuracy_crouch = view_bob::kInaccuracyCrouch;
-		in.inaccuracy        = in.inaccuracy_stand + flMoveInaccuracy
-		                          + (float)iShotsFired * kShotAccuracyPenalty;
+		// GoldSrc adapter: native predicted spread relative to this weapon's
+		// default standing spread in the same scope/silencer/burst mode.
+		// The Valve helper's 0.082 cap now limits the spread increase. This
+		// deliberately does not claim CS:GO schema values.
+		in.inaccuracy_stand  = 0.0f;
+		in.inaccuracy_crouch = spread.crouch - spread.stand;
+		in.inaccuracy        = spread.current - spread.stand;
 
 		view_bob::BobOutput offsets = view_bob::StepBob( s_BobState, params, in,
-			pparams->time, pparams->frametime );
+			pparams->time, pparams->paused || bSameBobFrame ? 0.0f : pparams->frametime );
 
 		// ---- diagnostics, off by default ----
 		//
@@ -1329,30 +1161,85 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 
 	V_DropPunchAngle ( pparams->frametime, (float *)&ev_punchangle );
 #endif
-	// smooth out stair step ups
-#if 1
-	if ( !pparams->smoothing && pparams->onground && pparams->simorg[2] - oldz > 0)
+	// CS:GO smooths stairs in BOTH directions. The GoldSrc movement code
+	// only probes 2 units below the hull; inspect a full step for presentation
+	// so a continuous downhill surface does not appear as repeated falls.
+	view_stairs::Input stairInput;
+	stairInput.time = pparams->time;
+	stairInput.frame_time = pparams->frametime;
+	stairInput.x = pparams->simorg[0]; stairInput.y = pparams->simorg[1];
+	stairInput.z = pparams->simorg[2]; stairInput.view_height = pparams->viewheight[2];
+	stairInput.vertical_speed = pparams->simvel[2];
+	stairInput.grounded = pparams->onground != 0;
+	stairInput.paused = pparams->paused != 0;
+	stairInput.jumping = pparams->cmd && ( pparams->cmd->buttons & IN_JUMP ) != 0;
+	stairInput.enabled = bVmActive && !pparams->smoothing && pparams->waterlevel < 2
+		&& !gEngfuncs.IsNoClipping() && ent && ent->curstate.movetype == MOVETYPE_WALK;
+	stairInput.step_size = pparams->movevars ? pparams->movevars->stepsize : 18.0f;
+	if( stairInput.step_size > 18.0f ) stairInput.step_size = 18.0f;
+	stairInput.static_support = false;
+	stairInput.support_z = stairInput.z;
+	const bool smoothStairs = cl_smoothstairs && cl_smoothstairs->value != 0.0f;
+	if( smoothStairs && stairInput.enabled && stairInput.step_size > 0.0f )
 	{
-		float steptime;
-
-		steptime = pparams->time - lasttime;
-		if (steptime < 0)
-			//FIXME		I_Error ("steptime < 0");
-			steptime = 0;
-
-		oldz += steptime * 150;
-		if (oldz > pparams->simorg[2])
-			oldz = pparams->simorg[2];
-		if (pparams->simorg[2] - oldz > 18)
-			oldz = pparams->simorg[2]- 18;
-		pparams->vieworg[2] += oldz - pparams->simorg[2];
-		view->origin[2] += oldz - pparams->simorg[2];
+		const int hull = gEngfuncs.pEventAPI->EV_LocalPlayerDucking() ? 1 : 0;
+		Vector start = pparams->simorg, end = pparams->simorg;
+		end[2] += 2.0f;
+		pmtrace_t upTrace = *gEngfuncs.PM_TraceLine( start, end, PM_TRACELINE_PHYSENTSONLY, hull, -1 );
+		if( !upTrace.startsolid && !upTrace.allsolid )
+		{
+			// PM_TraceLine returns a shared result; copy the first trace before
+			// calling it again. The API restores its temporary usehull value.
+			start = upTrace.endpos;
+			end = pparams->simorg; end[2] -= stairInput.step_size;
+			pmtrace_t downTrace = *gEngfuncs.PM_TraceLine( start, end, PM_TRACELINE_PHYSENTSONLY, hull, -1 );
+			physent_t *ground = gEngfuncs.pEventAPI->EV_GetPhysent( downTrace.ent );
+			if( downTrace.fraction > 0.0f && downTrace.fraction < 1.0f && !downTrace.startsolid
+				&& !downTrace.allsolid && downTrace.plane.normal[2] >= 0.7f
+				&& ground && !ground->player && ground->movetype == MOVETYPE_NONE )
+			{
+				stairInput.static_support = true;
+				stairInput.support_z = downTrace.endpos[2];
+			}
+		}
+	}
+	view_stairs::Output stairOutput;
+	if( smoothStairs )
+	{
+		stairOutput = view_stairs::Step( s_ViewStairs, stairInput );
+		// One common translation keeps the weapon's position relative to the
+		// eye unchanged, just as Source passes its finished eye to the model.
+		pparams->vieworg[2] += stairOutput.offset;
+		view->origin[2] += stairOutput.offset;
+		oldz = pparams->simorg[2];
 	}
 	else
 	{
-		oldz = pparams->simorg[2];
+		s_ViewStairs = view_stairs::State();
+		if ( !pparams->smoothing && pparams->onground && pparams->simorg[2] - oldz > 0)
+		{
+			float steptime;
+
+			steptime = pparams->time - lasttime;
+			if (steptime < 0)
+				//FIXME		I_Error ("steptime < 0");
+				steptime = 0;
+
+			oldz += steptime * 150;
+			if (oldz > pparams->simorg[2])
+				oldz = pparams->simorg[2];
+			if (pparams->simorg[2] - oldz > 18)
+				oldz = pparams->simorg[2]- 18;
+			pparams->vieworg[2] += oldz - pparams->simorg[2];
+			view->origin[2] += oldz - pparams->simorg[2];
+		}
+		else
+		{
+			oldz = pparams->simorg[2];
+		}
+		stairOutput.offset = oldz - pparams->simorg[2];
+		stairOutput.target_z = pparams->simorg[2];
 	}
-#endif
 
 	static Vector lastorg;
 	Vector delta;
@@ -1369,7 +1256,54 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 	}
 
 	V_CalcQuakeGuns();
-	V_CalcViewModelLag( pparams, view->origin, view->angles );
+	view_effects::EffectsParams effectParams;
+	effectParams.sway_interp = cl_wpn_sway_interp->value;
+	effectParams.sway_scale = cl_wpn_sway_scale->value;
+	effectParams.land_scale = gHUD.viewmodel_lag_scale_land->value;
+	effectParams.roll_angle = gHUD.viewmodel_rollangle->value;
+	view_effects::EffectsInput effectInput;
+	effectInput.time = pparams->time;
+	effectInput.frame_time = pparams->frametime;
+	effectInput.vertical_speed = pparams->simvel[2];
+	effectInput.grounded = pparams->onground != 0;
+	effectInput.active = bVmActive && view->model != NULL;
+	effectInput.paused = pparams->paused != 0;
+	effectInput.left_hand = gHUD.cl_righthand && gHUD.cl_righthand->value == 0.0f;
+	effectInput.view_entity = pparams->viewentity;
+	effectInput.weapon_id = iWeaponId;
+	effectInput.model_index = view->curstate.modelindex;
+	for( i = 0; i < 3; ++i )
+	{
+		effectInput.view_angles[i] = view->angles[i];
+		effectInput.mouse_angles[i] = pparams->cl_viewangles[i];
+	}
+	view_effects::EffectsOutput effects = view_effects::StepEffects( s_ViewEffects, effectParams, effectInput );
+	view_effects::Vec3 fixed = view_effects::FixedOffset( effectInput.mouse_angles,
+		gHUD.viewmodel_offset_x->value, gHUD.viewmodel_offset_y->value,
+		gHUD.viewmodel_offset_z->value, effectInput.left_hand );
+	if( effectInput.active )
+	{
+		for( i = 0; i < 3; ++i ) view->origin[i] += effects.sway_offset[i] + fixed[i];
+		view->origin[2] -= effects.land_dip;
+		view->angles[ROLL] += effects.mouse_roll;
+	}
+	if( gHUD.viewmodel_bob_debug && gHUD.viewmodel_bob_debug->value && bVmActive && !pparams->paused )
+	{
+		if( effects.land_dip > s_flHudLandPeak ) s_flHudLandPeak = effects.land_dip;
+		if( pparams->time >= s_flHudNextLog || iWeaponId != s_iHudLogWeapon
+			|| iShotsFired != s_iHudLogShots || iInReload != s_iHudLogReload || iWeaponClip != s_iHudLogClip )
+		{
+			gEngfuncs.Con_Printf( "hudphase2: t %.3f wp %d shots %d reload %d clip %d acc %.5f "
+				"spread %.5f/%.5f/%.5f | land_peak %.3f roll %.3f sway %.3f %.3f %.3f\n",
+				pparams->time, iWeaponId, iShotsFired, iInReload, iWeaponClip, flWeaponAccuracy,
+				spread.stand, spread.crouch, spread.current, s_flHudLandPeak, effects.mouse_roll,
+				effects.sway_offset.x, effects.sway_offset.y, effects.sway_offset.z );
+			s_flHudNextLog = pparams->time + 1.0f;
+			s_flHudLandPeak = 0.0f;
+			s_iHudLogWeapon = iWeaponId; s_iHudLogShots = iShotsFired;
+			s_iHudLogReload = iInReload; s_iHudLogClip = iWeaponClip;
+		}
+	}
 
 	// Smooth out whole view in multiplayer when on trains, lifts
 	if ( cl_vsmoothing && cl_vsmoothing->value && ( pparams->smoothing && ( pparams->maxclients > 1 ) ) )
@@ -1469,6 +1403,16 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		VectorCopy( view->angles, view->latched.prevangles );
 	}
 
+	if( gHUD.viewmodel_bob_debug && gHUD.viewmodel_bob_debug->value >= 2.0f
+		&& bVmActive && !pparams->paused )
+		gEngfuncs.Con_Printf( "stairsdbg: t %.5f mode %d pos %.3f %.3f %.3f vz %.3f "
+			"ground %d support %d track %d target %.3f offset %.3f eye %.3f rel %.3f "
+			"vh %.3f move %d jump %d\n", pparams->time, (int)smoothStairs,
+			pparams->simorg[0], pparams->simorg[1], pparams->simorg[2], pparams->simvel[2],
+			(int)stairInput.grounded, (int)stairInput.static_support, (int)stairOutput.supported,
+			stairOutput.target_z, stairOutput.offset, pparams->vieworg[2],
+			view->origin[2] - pparams->vieworg[2], pparams->viewheight[2],
+			ent ? ent->curstate.movetype : -1, (int)stairInput.jumping );
 	lasttime = pparams->time;
 
 	v_origin = pparams->vieworg;
@@ -2144,7 +2088,7 @@ void V_CalcSpectatorRefdef ( struct ref_params_s * pparams )
 		case INSET_CHASE_LOCKED:
 			V_GetChasePos( g_iUser2, NULL, v_origin, v_angles );
 			break;
-		
+
 		case INSET_CHASE_FREE:
 			V_GetChasePos( g_iUser2, v_cl_angles, v_origin, v_angles );
 			break;
@@ -2263,6 +2207,9 @@ void V_CalcThirdPersonRefdef( ref_params_t *pparams )
 
 void DLLEXPORT V_CalcRefdef( struct ref_params_s *pparams )
 {
+	// These branches bypass the local first-person effect update entirely.
+	if( pparams->intermission || g_iUser1 || CL_IsThirdPerson() || pparams->health <= 0 )
+		V_ResetViewModelEffects();
 	// intermission / finale rendering
 	if ( pparams->intermission )
 	{
@@ -2301,6 +2248,7 @@ void V_Init (void)
 	cl_bobcycle			= gEngfuncs.pfnRegisterVariable( "cl_bobcycle","0.98", FCVAR_ARCHIVE );
 	cl_bob				= gEngfuncs.pfnRegisterVariable( "cl_bob","0.01", FCVAR_ARCHIVE );// best default for my experimental gun wag (sjb)
 	cl_bobup			= gEngfuncs.pfnRegisterVariable( "cl_bobup","0.5", FCVAR_ARCHIVE );
+	cl_smoothstairs = gEngfuncs.pfnRegisterVariable( "cl_smoothstairs", "1", FCVAR_ARCHIVE );
 	cl_waterdist		= gEngfuncs.pfnRegisterVariable( "cl_waterdist","4", 0 );
 	cl_chasedist		= gEngfuncs.pfnRegisterVariable( "cl_chasedist","112", 0 );
 
@@ -2309,7 +2257,7 @@ void V_Init (void)
 
 	// CS:GO weapon sway, from predicted_viewmodel.cpp CalcViewModelLag().
 	// interp is how far back the view angles are sampled -- 0.1 is CS:GO's
-	// stock 100 ms -- and scale is the gain on the resulting forward push.
+	// stock 100 ms -- and scale is the gain on all three local sway axes.
 	cl_wpn_sway_interp		= gEngfuncs.pfnRegisterVariable( "cl_wpn_sway_interp", "0.1", FCVAR_ARCHIVE );
 	cl_wpn_sway_scale		= gEngfuncs.pfnRegisterVariable( "cl_wpn_sway_scale", "1.6", FCVAR_ARCHIVE );
 }
