@@ -83,16 +83,21 @@ static CBasePlayerWeapon *g_pWpns[ 32 ];
 // Returns 0 when no weapon is held; CS:GO's bob then falls back to the fixed
 // 150 cycle, which is exactly what its no-weapon branch does.
 //
-extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload, float *max_speed )
+static int s_iBobPredictedWeapon = 0;
+
+extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload, float *max_speed, float *accuracy, int *weapon_state, int *clip )
 {
 	CBasePlayerWeapon *pWeapon = static_cast<CBasePlayerWeapon *>( player.m_pActiveItem );
 
-	if ( !pWeapon )
+	if ( !pWeapon || pWeapon->m_iId != s_iBobPredictedWeapon )
 	{
 		if ( id )          *id = 0;
 		if ( shots_fired ) *shots_fired = 0;
 		if ( in_reload )   *in_reload = 0;
 		if ( max_speed )   *max_speed = 0.0f;
+		if ( accuracy )    *accuracy = 0.0f;
+		if ( weapon_state ) *weapon_state = 0;
+		if ( clip )        *clip = 0;
 		return 0;
 	}
 
@@ -100,6 +105,9 @@ extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload,
 	if ( shots_fired ) *shots_fired = pWeapon->m_iShotsFired;
 	if ( in_reload )   *in_reload = pWeapon->m_fInReload ? 1 : 0;
 	if ( max_speed )   *max_speed = pWeapon->GetMaxSpeed();
+	if ( accuracy )    *accuracy = pWeapon->m_flAccuracy;
+	if ( weapon_state ) *weapon_state = pWeapon->m_iWeaponState;
+	if ( clip )        *clip = pWeapon->m_iClip;
 
 	return 1;
 }
@@ -1192,9 +1200,13 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 		lasthealth = to->client.health;
 	}
 
-	// We are not predicting the current weapon, just bow out here.
+	// Clear the HUD snapshot when prediction has no active weapon.
 	if ( !pWeapon )
+	{
+		s_iBobPredictedWeapon = 0;
+		player.m_pActiveItem = NULL;
 		return;
+	}
 
 	for ( i = 0; i < MAX_WEAPONS; i++ )
 	{
@@ -1358,6 +1370,8 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 			}
 		}
 	}
+
+	s_iBobPredictedWeapon = to->client.health > 0 ? to->client.m_iId : 0;
 
 	// Copy in results of prediction code
 	to->client.viewmodel				= player.pev->viewmodel;

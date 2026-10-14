@@ -38,8 +38,11 @@ extern float g_flRoundTime;
 
 /// USER-DEFINED SERVER MESSAGE HANDLERS
 
+extern void V_ResetViewModelEffects();
+
 int CHud :: MsgFunc_ResetHUD(const char *pszName, int iSize, void *pbuf )
 {
+	V_ResetViewModelEffects();
 	// clear all hud data
 	HUDLIST *pList = m_pHudList;
 

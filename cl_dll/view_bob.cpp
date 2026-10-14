@@ -12,7 +12,7 @@ away) it is left as a no-op and marked, rather than "fixed".
 
 namespace
 {
-	const float kPi = 3.14159265358979323846f;
+	const double kPi = 3.14159265358979323846;
 
 	// Source: UTIL_SharedRandomFloat's helper in mathlib, and the identical
 	// pattern appears in every CS:GO clamp macro. std::clamp is C++17 and
@@ -57,32 +57,37 @@ namespace
 	inline float RaisedCycle( float cycle, float bob_up )
 	{
 		if( cycle < bob_up )
-			return kPi * cycle / bob_up;
+			return static_cast<float>( kPi * cycle / bob_up );
 
-		return kPi + kPi * ( cycle - bob_up ) / ( 1.0f - bob_up );
+		return static_cast<float>( kPi + kPi * ( cycle - bob_up ) / ( 1.0 - bob_up ) );
 	}
 
 	// amplitude * 0.3 + amplitude * 0.7 * sin( cycle )
 	inline float Blend( float amplitude, float sine )
 	{
-		return amplitude * 0.3f + amplitude * 0.7f * sine;
+		return static_cast<float>( amplitude * 0.3 + amplitude * 0.7 * sine );
 	}
 }
 
 namespace view_bob
 {
-	const float kInaccuracyStand = 0.0008f;
-	const float kInaccuracyCrouch = 0.0005f;
-
 	BobOutput StepBob( BobState &state, const BobParams &params,
 	                   const BobInput &input,
 	                   float time, float frametime )
 	{
-		BobOutput out{ 0.0f, 0.0f };
+		BobOutput out{ state.vertical_bob, state.lateral_bob };
 
 		// "if ( !gpGlobals->frametime || !player ) return 0;" -- the comment
 		// in the source says the return value is unused, the old values stay.
-		if( frametime == 0.0f )
+		if( !std::isfinite( frametime ) || frametime <= 0.0f || !std::isfinite( time ) )
+			return out;
+
+		// User cvars may be edited from the console. Reject a singular cycle
+		// before division or conversion of its phase to an integer.
+		if( !std::isfinite( params.bob_cycle ) || params.bob_cycle <= 0.0f
+			|| !std::isfinite( params.bob_up ) || params.bob_up <= 0.0f || params.bob_up >= 1.0f
+			|| !std::isfinite( input.vx ) || !std::isfinite( input.vy )
+			|| !std::isfinite( input.weapon_max_speed ) || input.weapon_max_speed >= 1000.0f )
 			return out;
 
 		// Find the speed of the player.
@@ -107,28 +112,22 @@ namespace view_bob
 			state.speed_in = speed;
 		}
 
-		// do the dip before speed gets clamped
-		float run_add_amt = 0.0f;
-
-		// when the player is moving forward, the gun lowers a bit
-		if( !input.zoomed )
-		{
-			float speed_factor = speed * 0.006f;
-
-			// CS:GO calls clamp( speed_factor, 0, 0.5 ) and throws the result
-			// away. Reproduced as written.
-			(void)Clamp( speed_factor, 0.0f, 0.5f );
-
-			float lower_amt = params.lower_amt * 0.2f;
-			run_add_amt = lower_amt * speed_factor;
-		}
-
 		// don't allow too big speed changes
 		float max_speed_delta = std::fmax( 0.0f, ( time - state.last_bob_time ) * params.speed_follow );
 		speed = Clamp( speed, state.last_speed - max_speed_delta, state.last_speed + max_speed_delta );
 		speed = Clamp( speed, -320.0f, 320.0f );
 
 		state.last_speed = speed;
+
+		// Valve applies the run lowering after the speed follow clamp.
+		float run_add_amt = 0.0f;
+		if( !input.zoomed )
+		{
+			float speed_factor = speed * 0.006f;
+			(void)Clamp( speed_factor, 0.0f, 0.5f );
+			float lower_amt = static_cast<float>( params.lower_amt * 0.2 );
+			run_add_amt = lower_amt * speed_factor;
+		}
 
 		float bob_offset = BobOffset( speed );
 		state.bob_time += ( time - state.last_bob_time ) * bob_offset;
@@ -155,6 +154,13 @@ namespace view_bob
 
 		if( have_weapon )
 		{
+			int weapon_id = input.weapon_id > 0 && input.weapon_id < 31 ? input.weapon_id : 0;
+			if( weapon_id != state.active_weapon_id )
+			{
+				state.weapon_acc_pos[state.active_weapon_id] = state.gun_acc_pos;
+				state.active_weapon_id = weapon_id;
+				state.gun_acc_pos = state.weapon_acc_pos[weapon_id];
+			}
 			run_add_amt *= input.run_bob_scale;
 
 			bob_cycle = ( ( ( 1000.0f - weapon_max_speed ) / 3.5f ) * 0.001f ) * params.bob_cycle;
@@ -244,7 +250,7 @@ namespace view_bob
 
 		float vertical = speed * ( bob_multiplier * params.amt_vert );
 		vertical = Blend( vertical, std::sin( cycle ) );
-		out.vertical = ClampFinite( vertical - ( run_add_amt - ( gun_acc_pos * 0.2f ) ), -7.0f, 4.0f );
+		out.vertical = ClampFinite( static_cast<float>( vertical - ( run_add_amt - ( gun_acc_pos * 0.2 ) ) ), -7.0f, 4.0f );
 
 		// ---- lateral ----
 		// CS:GO quirk kept verbatim: (int)( t / c * 2 ) truncates half-cycles,
@@ -258,9 +264,11 @@ namespace view_bob
 
 			float lateral = speed * ( bob_multiplier * params.amt_lat );
 			lateral = Blend( lateral, std::sin( cycle ) );
-			out.lateral = ClampFinite( lateral + gun_acc_pos * 0.25f, -8.0f, 8.0f );
+			out.lateral = ClampFinite( static_cast<float>( lateral + gun_acc_pos * 0.25 ), -8.0f, 8.0f );
 		}
 
+		state.vertical_bob = out.vertical;
+		state.lateral_bob = out.lateral;
 		return out;
 	}
 }
