@@ -906,8 +906,15 @@ void CHudAmmo::UserCmd_NextWeapon(void)
 	if ( gHUD.m_fPlayerDead || (gHUD.m_iHideHUDDisplay & (HIDEHUD_WEAPONS | HIDEHUD_ALL)) )
 		return;
 
+	const bool fastSwitch = m_pHud_FastSwitch->value != 0;
 	if ( !gpActiveSel || gpActiveSel == (WEAPON*)1 )
+	{
 		gpActiveSel = m_pWeapon;
+		// Several wheel events may arrive before the next user command.
+		WEAPON *pending = fastSwitch && g_weaponselect > 0 ? gWR.GetWeapon(g_weaponselect) : NULL;
+		if ( pending && gWR.GetWeaponSlot(pending->iSlot, pending->iSlotPos) == pending )
+			gpActiveSel = pending;
+	}
 
 	int pos = 0;
 	int slot = 0;
@@ -928,6 +935,15 @@ void CHudAmmo::UserCmd_NextWeapon(void)
 				if ( wsp /*&& gWR.HasAmmo(wsp)*/ )
 				{
 					gpActiveSel = wsp;
+					if ( fastSwitch )
+					{
+						ServerCmd(wsp->szName);
+						g_weaponselect = wsp->iId;
+						g_weaponselect_frames = 3;
+						gpLastSel = wsp;
+						gpActiveSel = NULL;
+						PlaySound("common/wpn_select.wav", 1);
+					}
 					return;
 				}
 			}
@@ -947,8 +963,15 @@ void CHudAmmo::UserCmd_PrevWeapon(void)
 	if ( gHUD.m_fPlayerDead || (gHUD.m_iHideHUDDisplay & (HIDEHUD_WEAPONS | HIDEHUD_ALL)) )
 		return;
 
+	const bool fastSwitch = m_pHud_FastSwitch->value != 0;
 	if ( !gpActiveSel || gpActiveSel == (WEAPON*)1 )
+	{
 		gpActiveSel = m_pWeapon;
+		// Several wheel events may arrive before the next user command.
+		WEAPON *pending = fastSwitch && g_weaponselect > 0 ? gWR.GetWeapon(g_weaponselect) : NULL;
+		if ( pending && gWR.GetWeaponSlot(pending->iSlot, pending->iSlotPos) == pending )
+			gpActiveSel = pending;
+	}
 
 	int pos = MAX_WEAPON_POSITIONS-1;
 	int slot = MAX_WEAPON_SLOTS-1;
@@ -969,6 +992,15 @@ void CHudAmmo::UserCmd_PrevWeapon(void)
 				if ( wsp /*&& gWR.HasAmmo(wsp)*/ )
 				{
 					gpActiveSel = wsp;
+					if ( fastSwitch )
+					{
+						ServerCmd(wsp->szName);
+						g_weaponselect = wsp->iId;
+						g_weaponselect_frames = 3;
+						gpLastSel = wsp;
+						gpActiveSel = NULL;
+						PlaySound("common/wpn_select.wav", 1);
+					}
 					return;
 				}
 			}
