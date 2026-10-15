@@ -2781,12 +2781,18 @@ PlayerInfo_ValueForKey
 */
 static const char *PlayerInfo_ValueForKey( int playerNum, const char *key )
 {
+	const qboolean sessionIdQuery = key && !Q_strcmp( key, "*oc2_userid" );
+
 	// find the player
 	if(( playerNum > cl.maxclients ) || ( playerNum < 1 ))
-		return NULL;
+		return sessionIdQuery ? "" : NULL;
 
 	if( !cl.players[playerNum-1].name[0] )
-		return NULL;
+		return sessionIdQuery ? "" : NULL;
+
+	// Read-only connection token from svc_updateuserinfo, independent of Steam identity.
+	if( sessionIdQuery )
+		return cl.players[playerNum-1].userid > 0 ? va( "%d", cl.players[playerNum-1].userid ) : "";
 
 	return Info_ValueForKey( cl.players[playerNum-1].userinfo, key );
 }

@@ -544,6 +544,9 @@ static void R_StudioSetUpTransform( cl_entity_t *e )
 
 	Matrix3x4_CreateFromEntity( g_studio.rotationmatrix, angles, origin, 1.0f );
 
+	// Menu studio models can follow a right-handed viewmodel in the same
+	// frame. Bone transforms must use this entity's flip state, not its predecessor's.
+	tr.fFlipViewModel = R_AllowFlipViewModel( e );
 	if( tr.fFlipViewModel )
 	{
 		g_studio.rotationmatrix[0][1] = -g_studio.rotationmatrix[0][1];
