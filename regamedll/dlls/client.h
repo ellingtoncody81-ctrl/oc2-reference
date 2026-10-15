@@ -294,3 +294,5 @@ extern int gmsgFog;
 extern int gmsgShowTimer;
 extern int gmsgAccount;
 extern int gmsgHealthInfo;
+extern int gmsgHudRound;
+extern int gmsgBuyState;

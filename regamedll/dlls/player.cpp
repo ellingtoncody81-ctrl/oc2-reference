@@ -27,6 +27,7 @@
 */
 
 #include "precompiled.h"
+#include <limits.h>
 
 BOOL gInitHUD = TRUE;
 
@@ -5749,6 +5750,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, Spawn)
 void EXT_FUNC CBasePlayer::__API_HOOK(Spawn)()
 {
 	int i;
+	m_iClientBuyState = -1;
 
 #ifdef REGAMEDLL_FIXES
 	// Do not allow to do spawn, if player chooses a team or appearance.
@@ -6146,6 +6148,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Precache)()
 	m_bitsHUDDamage = -1;
 	m_iClientBattery = -1;
 	m_iTrain = TRAIN_NEW;
+	m_iClientBuyState = -1;
 
 	// Make sure any necessary user messages have been registered
 	LinkUserMessages();
@@ -6688,6 +6691,7 @@ void CBasePlayer::FlashlightTurnOff()
 // Reset stuff so that the state is transmitted.
 void CBasePlayer::ForceClientDllUpdate()
 {
+	m_iClientBuyState = -1;
 #ifdef REGAMEDLL_FIXES
 	// fix for https://github.com/ValveSoftware/halflife/issues/1567
 	m_iClientHideHUD = -1;
@@ -7577,6 +7581,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
 {
 	if (m_fInitHUD)
 	{
+		m_iClientBuyState = -1;
 		m_fInitHUD = FALSE;
 		gInitHUD = FALSE;
 #ifdef REGAMEDLL_FIXES
@@ -7977,6 +7982,46 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
 		m_iLastClientHealth = m_iClientHealth;
 	}
 #endif // #ifdef BUILD_LATEST
+	SendBuyState();
+}
+
+void CBasePlayer::SendBuyState()
+{
+	// The existing server rule remains authoritative, including VIP/team/map
+	// restrictions. The short carries its time window, even outside a buy zone.
+	const int canBuy = CanPlayerBuy(false) ? 1 : 0;
+	int seconds = -1;
+	if (g_pGameRules->IsMultiplayer()
+#ifdef REGAMEDLL_ADD
+		&& buytime.value != -1.0f
+#endif
+	)
+	{
+		// Keep the rule's float multiplication/truncation for ordinary values,
+		// but never add an out-of-range/NaN float-to-int conversion in this UI path.
+		const double rawBuySeconds = buytime.value * 60.0f;
+		int buySeconds = MIN_BUY_TIME;
+		if (rawBuySeconds >= MIN_BUY_TIME)
+			buySeconds = rawBuySeconds >= INT_MAX ? INT_MAX : int(rawBuySeconds);
+		const float timeLeft = buySeconds - (gpGlobals->time - CSGameRules()->m_fRoundStartTime);
+		seconds = 0;
+		if (timeLeft > 0.0f)
+		{
+			seconds = timeLeft >= 32767.0f ? 32767 : int(timeLeft);
+			if (seconds < 32767 && seconds < timeLeft)
+				++seconds; // ceil positive fractional seconds, without an early expiry.
+		}
+	}
+
+	if (m_iClientBuyState == canBuy && m_iClientBuySeconds == seconds)
+		return;
+
+	MESSAGE_BEGIN(MSG_ONE, gmsgBuyState, nullptr, pev);
+		WRITE_BYTE(canBuy);
+		WRITE_SHORT(seconds);
+	MESSAGE_END();
+	m_iClientBuyState = canBuy;
+	m_iClientBuySeconds = seconds;
 }
 
 bool CBasePlayer::ShouldToShowAccount(CBasePlayer *pReceiver) const
