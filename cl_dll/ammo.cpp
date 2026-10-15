@@ -19,6 +19,8 @@
 //
 
 #include "hud.h"
+#include "match_ui.h"
+#include "match_status.h"
 #include "cvardef.h"
 #include "cl_util.h"
 #include "parsemsg.h"
@@ -33,6 +35,7 @@
 #include "com_weapons.h"
 #include "draw_util.h"
 #include "triangleapi.h"
+#include "render_api.h"
 #include "weapontype.h"
 
 #ifndef M_PI
@@ -1110,12 +1113,25 @@ int CHudAmmo::Draw(float flTime)
 	DrawWList(flTime);
 
 	// Draw ammo pickup history
-	gHR.DrawAmmoHistory( flTime );
+	// The modern inventory already shows held items; keep legacy pickup
+	// sprites from painting over its right-hand rows. History events remain.
+	if (!match_ui::Enabled()) gHR.DrawAmmoHistory( flTime );
 
 	if (!m_pWeapon)
 		return 0;
 
 	WEAPON *pw = m_pWeapon; // shorthand
+	if (match_ui::Enabled())
+	{
+		// Observer CurWeapon uses placeholder clip=0 and does not send target AmmoX.
+		// Hide unknown target ammo instead of displaying our local reserve as theirs.
+		if (g_iUser1 || gHUD.m_Health.m_iHealth <= 0) return 1;
+		if (m_fFade > 0) m_fFade -= gHUD.m_flTimeDelta * 20;
+		match_status::Ammo(pw->iAmmoType >= 0 ? pw->iClip : -1,
+			pw->iAmmoType >= 0 ? gWR.CountAmmo(pw->iAmmoType) : -1,
+			pw->iAmmo2Type >= 0 ? gWR.CountAmmo(pw->iAmmo2Type) : -1);
+		return 1;
+	}
 
 	// SPR_Draw Ammo
 	if ((pw->iAmmoType < 0) && (pw->iAmmo2Type < 0))
@@ -1945,36 +1961,206 @@ void DrawAmmoBar(WEAPON *p, int x, int y, int width, int height)
 
 
 
+namespace
+{
+bool PanelGrenade(const WEAPON *weapon)
+{
+	return weapon->iId == WEAPON_HEGRENADE || weapon->iId == WEAPON_FLASHBANG
+		|| weapon->iId == WEAPON_SMOKEGRENADE;
+}
+
+int PanelAmmo(int type)
+{
+	return type >= 0 && type < MAX_AMMO_TYPES ? gWR.CountAmmo(type) : 0;
+}
+
+bool PanelHasAmmo(const WEAPON *weapon)
+{
+	return weapon->iAmmoType < 0 || weapon->iMax1 == -1 || weapon->iClip > 0
+		|| PanelAmmo(weapon->iAmmoType) > 0 || PanelAmmo(weapon->iAmmo2Type) > 0;
+}
+
+void PanelWeaponName(const WEAPON *weapon, char *text, size_t size)
+{
+	// GoldSrc has no skin/custom-name field here. These are the actual CS1.6
+	// weapons, not cosmetic names inferred from the available artwork.
+	const char *name = nullptr;
+	switch (weapon->iId)
+	{
+	case WEAPON_P228: name = "P228"; break;
+	case WEAPON_SCOUT: name = "Scout"; break;
+	case WEAPON_HEGRENADE: name = "HE Grenade"; break;
+	case WEAPON_XM1014: name = "XM1014"; break;
+	case WEAPON_C4: name = "C4"; break;
+	case WEAPON_MAC10: name = "MAC-10"; break;
+	case WEAPON_AUG: name = "AUG"; break;
+	case WEAPON_SMOKEGRENADE: name = "Smoke Grenade"; break;
+	case WEAPON_ELITE: name = "Dual Elites"; break;
+	case WEAPON_FIVESEVEN: name = "Five-SeveN"; break;
+	case WEAPON_UMP45: name = "UMP-45"; break;
+	case WEAPON_SG550: name = "SG550"; break;
+	case WEAPON_GALIL: name = "Galil"; break;
+	case WEAPON_FAMAS: name = "FAMAS"; break;
+	case WEAPON_USP: name = "USP"; break;
+	case WEAPON_GLOCK18: name = "Glock-18"; break;
+	case WEAPON_AWP: name = "AWP"; break;
+	case WEAPON_MP5N: name = "MP5"; break;
+	case WEAPON_M249: name = "M249"; break;
+	case WEAPON_M3: name = "M3"; break;
+	case WEAPON_M4A1: name = "M4A1"; break;
+	case WEAPON_TMP: name = "TMP"; break;
+	case WEAPON_G3SG1: name = "G3SG1"; break;
+	case WEAPON_FLASHBANG: name = "Flashbang"; break;
+	case WEAPON_DEAGLE: name = "Desert Eagle"; break;
+	case WEAPON_SG552: name = "SG552"; break;
+	case WEAPON_AK47: name = "AK-47"; break;
+	case WEAPON_KNIFE: name = "Knife"; break;
+	case WEAPON_P90: name = "P90"; break;
+	default:
+		name = !strncmp(weapon->szName, "weapon_", 7) ? weapon->szName+7 : weapon->szName;
+		break;
+	}
+	strlcpy(text, name, size);
+}
+
+int PanelWeaponTexture(const WEAPON *weapon)
+{
+	// WeaponList is server input: allow one resource basename, never a path.
+	if (!weapon->szName[0]) return 0;
+	for (const unsigned char *p = (const unsigned char *)weapon->szName; *p; ++p)
+		if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')
+			|| (*p >= '0' && *p <= '9') || *p == '_')) return 0;
+	char path[MAX_WEAPON_NAME+32];
+	snprintf(path, sizeof(path), "gfx/weaponlist/%s.tga", weapon->szName);
+	return match_ui::Texture(path);
+}
+
+bool PanelSprite(const WEAPON *weapon, bool active, float x, float y,
+	float width, float height, match_ui::Color color)
+{
+	const HSPRITE sprite = active && weapon->hActive ? weapon->hActive : weapon->hInactive;
+	const wrect_t &rect = active && weapon->hActive ? weapon->rcActive : weapon->rcInactive;
+	const int rectWidth = rect.right-rect.left, rectHeight = rect.bottom-rect.top;
+	auto *tri = gEngfuncs.pTriAPI;
+	if (!sprite || !tri || rectWidth <= 0 || rectHeight <= 0) return false;
+	const auto *model = gEngfuncs.GetSpritePointer(sprite);
+	const int atlasWidth = SPR_Width(sprite, 0), atlasHeight = SPR_Height(sprite, 0);
+	if (!model || atlasWidth <= 0 || atlasHeight <= 0) return false;
+	if (gRenderAPI.GL_SelectTexture) gRenderAPI.GL_SelectTexture(0);
+	if (!tri->SpriteTexture(const_cast<model_s *>(model), 0)) return false;
+	const float fit = min(width/rectWidth, height/rectHeight);
+	x += width-rectWidth*fit;
+	y += (height-rectHeight*fit)*0.5f;
+	width = rectWidth*fit; height = rectHeight*fit;
+	const float scale = gHUD.m_flScale > 0 ? gHUD.m_flScale : 1.0f;
+	tri->RenderMode(kRenderTransAdd); tri->CullFace(TRI_NONE);
+	if (tri->Color4fRendermode)
+		tri->Color4fRendermode(color.r/255.0f,color.g/255.0f,color.b/255.0f,color.a/255.0f,kRenderTransAlpha);
+	else tri->Color4ub(color.r,color.g,color.b,color.a);
+	tri->Begin(TRI_QUADS);
+	tri->TexCoord2f(float(rect.left)/atlasWidth, float(rect.top)/atlasHeight); tri->Vertex3f(x*scale,y*scale,0);
+	tri->TexCoord2f(float(rect.left)/atlasWidth, float(rect.bottom)/atlasHeight); tri->Vertex3f(x*scale,(y+height)*scale,0);
+	tri->TexCoord2f(float(rect.right)/atlasWidth, float(rect.bottom)/atlasHeight); tri->Vertex3f((x+width)*scale,(y+height)*scale,0);
+	tri->TexCoord2f(float(rect.right)/atlasWidth, float(rect.top)/atlasHeight); tri->Vertex3f((x+width)*scale,y*scale,0);
+	tri->End(); tri->Color4ub(255,255,255,255);
+	tri->RenderMode(kRenderNormal); tri->CullFace(TRI_FRONT);
+	return true;
+}
+
+int DrawModernWeaponList(const WEAPON *active, const WEAPON *selection)
+{
+	// CS:GO csgo_hudweaponselection.cpp:1388-1440 derives the inventory from
+	// owned weapons, marks GetActiveWeapon(), and reads real grenade counts.
+	// GoldSrc gWR/CurWeapon supply that state; selection remains a preview.
+	if (g_iUser1 || gHUD.m_Health.m_iHealth <= 0) return 0;
+	const WEAPON *rows[MAX_WEAPON_SLOTS][MAX_WEAPON_POSITIONS] = {};
+	int counts[MAX_WEAPON_SLOTS] = {}, rowCount = 0;
+	bool seen[MAX_WEAPONS] = {};
+	for (int slot = 0; slot < MAX_WEAPON_SLOTS; ++slot)
+	{
+		for (int pos = 0; pos < MAX_WEAPON_POSITIONS; ++pos)
+		{
+			const WEAPON *weapon = gWR.GetWeaponSlot(slot,pos);
+			if (!weapon || weapon->iId < 1 || weapon->iId >= MAX_WEAPONS || seen[weapon->iId]) continue;
+			seen[weapon->iId] = true;
+			// Guns remain visible when empty. A spent grenade is no longer an
+			// inventory item; knives have no ammo type and must stay visible.
+			if (PanelGrenade(weapon) && PanelAmmo(weapon->iAmmoType) < 1) continue;
+			rows[slot][counts[slot]++] = weapon;
+		}
+		if (counts[slot]) ++rowCount;
+	}
+	if (!rowCount) return 0;
+	float scale = match_ui::Scale();
+	scale = min(scale, ScreenHeight*0.70f/(40+110*rowCount));
+	int row = 0;
+	for (int slot = 0; slot < MAX_WEAPON_SLOTS; ++slot)
+	{
+		if (!counts[slot]) continue;
+		// APK resource layout: W-180, 150x65, 110 vertical pitch; extra
+		// weapons in the same slot extend left by 80. Its UVs are ordinary.
+		const float maxWidth = min(ScreenWidth*0.45f,420*scale);
+		const float rowScale = min(scale,maxWidth/(150+80*(counts[slot]-1)));
+		const float y = ScreenHeight-40*scale-110*scale*(rowCount-row++);
+		for (int item = 0; item < counts[slot]; ++item)
+		{
+			const WEAPON *weapon = rows[slot][item];
+			const bool current = weapon == active, preview = weapon == selection && !current;
+			const float x = ScreenWidth-30*scale-(150+80*item)*rowScale;
+			// Keep silhouettes opaque; the APK dims inactive RGB, not opacity.
+			const int dim = current ? 0 : 30;
+			const match_ui::Color gold = PanelHasAmmo(weapon)
+				? match_ui::Color(237-dim,199-dim,97-dim) : match_ui::Color(145,135,108,150);
+			const int texture = PanelWeaponTexture(weapon);
+			if (texture) match_ui::Picture(texture,x,y,150*rowScale,65*rowScale,gold);
+			else if (!PanelSprite(weapon,current,x,y,150*rowScale,65*rowScale,gold))
+			{
+				char name[MAX_WEAPON_NAME]; PanelWeaponName(weapon,name,sizeof(name));
+				match_ui::Text(name,x+145*rowScale,y+24*rowScale,18*rowScale,gold,true,150*rowScale);
+			}
+			if (preview)
+				FillRGBABlend(int(x-4*rowScale),int(y+8*rowScale),max(1,int(2*rowScale)),int(49*rowScale),255,255,255,210);
+			if (!item)
+			{
+				char number[8]; snprintf(number,sizeof(number),"%d",slot+1);
+				match_ui::Text(number,x+170*rowScale,y+24*rowScale,16*rowScale,{220,220,220,190},true);
+			}
+			if (PanelGrenade(weapon))
+			{
+				char count[16]; snprintf(count,sizeof(count),"%d",PanelAmmo(weapon->iAmmoType));
+				match_ui::Text(count,x+175*rowScale,y+50*rowScale,16*rowScale,{255,255,255},true);
+			}
+			if (current)
+			{
+				char name[MAX_WEAPON_NAME]; PanelWeaponName(weapon,name,sizeof(name));
+				match_ui::Text(name,x+145*rowScale,y+80*scale,22*scale,{255,255,255},true,min(260*scale,ScreenWidth*0.24f));
+			}
+		}
+	}
+	return 1;
+}
+}
+
 //
 // Draw Weapon Menu
 //
 int CHudAmmo::DrawWList(float flTime)
 {
 	int r,g,b,x,y,a,i;
+	int iActiveSlot = gpActiveSel && gpActiveSel != (WEAPON *)1 ? gpActiveSel->iSlot : -1;
 
-	if ( !gpActiveSel )
-		return 0;
-
-	int iActiveSlot;
-
-	if ( gpActiveSel == (WEAPON *)1 )
-		iActiveSlot = -1;	// current slot has no weapons
-	else 
-		iActiveSlot = gpActiveSel->iSlot;
+	// Keep the existing empty-slot handling for the input/confirmation menu.
+	if (iActiveSlot > 0 && iActiveSlot < MAX_WEAPON_SLOTS && !gWR.GetFirstPos(iActiveSlot))
+	{
+		gpActiveSel = (WEAPON *)1;
+		iActiveSlot = -1;
+	}
+	if (match_ui::Enabled())
+		return DrawModernWeaponList(m_pWeapon,gpActiveSel == (WEAPON *)1 ? nullptr : gpActiveSel);
+	if (!gpActiveSel) return 0;
 
 	x = gHUD.m_Radar.m_hRadar.rect.right + 10; //!!!
 	y = 10; //!!!
-	
-
-	// Ensure that there are available choices in the active slot
-	if ( iActiveSlot > 0 )
-	{
-		if ( !gWR.GetFirstPos( iActiveSlot ) )
-		{
-			gpActiveSel = (WEAPON *)1;
-			iActiveSlot = -1;
-		}
-	}
 		
 	// Draw top line
 	for ( i = 0; i < MAX_WEAPON_SLOTS; i++ )

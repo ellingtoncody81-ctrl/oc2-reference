@@ -37,6 +37,7 @@
 #include "csprite.h"
 #include "cvardef.h"
 #include "utlstring.h"
+#include "avatar_state.h"
 
 #define MIN_ALPHA	 100	
 #define	HUDELEM_ACTIVE	1
@@ -359,6 +360,33 @@ protected:
 };
 
 
+class CHudAvatars: public CHudBase
+{
+public:
+	int Init() override;
+	int VidInit() override;
+	int Draw(float time) override;
+	void InitHUDData() override;
+	void Shutdown() override;
+	bool Enabled() const;
+	bool HasPlayers();
+	void Refresh(float time);
+	void DrawPlayerAvatar(int player, int x, int y, int size);
+	int AvatarTexture(int player);
+	void NoteMessage(int kind, int player);
+	CHudUserCmd(AvatarDump);
+private:
+	avatar_state::State m_state{};
+	int m_textures[13]{}; // T, CT, skull, ten resource-configured portraits
+	int m_portraits[MAX_PLAYERS + 1]{};
+	unsigned int m_messages[3]{}; // TeamInfo, ScoreInfo, ScoreAttrib
+	float m_refreshTime = -1.0f;
+	cvar_t *m_enabled = nullptr;
+	cvar_t *m_position = nullptr;
+	cvar_t *m_showCount = nullptr;
+	void DrawTexture(int texture, int x, int y, int size, int brightness);
+};
+
 class CHudScoreboard: public CHudBase
 {
 	friend class CHudSpectatorGui;
@@ -377,6 +405,7 @@ public:
 	void GetAllPlayersInfo( void );
 
 	bool ShouldDrawScoreboard() const;
+	int RoundScore(int team) const { return team >= 1 && team <= 2 ? m_teamScores[team] : 0; }
 
 	CHudUserCmd(ShowScores);
 	CHudUserCmd(HideScores);
@@ -402,6 +431,8 @@ private:
 	cvar_t *cl_showpacketloss;
 	cvar_t *cl_showplayerversion;
 	cvar_t *cl_show_scoreboard_on_death;
+	int m_teamScores[3]{};
+	bool m_teamScoreKnown[3]{};
 };
 
 //
@@ -507,9 +538,12 @@ class CHudDeathNotice : public CHudBase
 public:
 	int Init( void );
 	void InitHUDData( void );
+	void Reset(void) override;
+	void Think(void) override;
 	int VidInit( void );
 	int Draw( float flTime );
 	CHudMsgFunc(DeathMsg);
+	CHudMsgFunc(HudRound);
 
 private:
 	int m_HUD_d_skull;  // sprite index of skull icon
@@ -586,6 +620,8 @@ public:
 	int Draw(float flTime);
 	CHudMsgFunc(Battery);
 	CHudMsgFunc(ArmorType);
+	int GetArmor() const { return m_iBat; }
+	bool HasHelmet() const { return m_enArmorType == VestHelm; }
 	
 private:
 	enum armortype_t {
@@ -732,6 +768,12 @@ public:
 	//could use a friend declaration instead...
 	void EnableIcon( const char *pszIconName, unsigned char red, unsigned char green, unsigned char blue );
 	void DisableIcon( const char *pszIconName );
+	bool IsIconActive(const char *name) const
+	{
+		for (const auto& icon : m_IconList)
+			if (icon.spr && !strcmp(icon.szSpriteName, name)) return true;
+		return false;
+	}
 
 	friend class CHudScoreboard;
 
@@ -764,6 +806,7 @@ public:
 	int Draw( float flTime );
 	CHudMsgFunc(Money);
 	CHudMsgFunc(BlinkAcct);
+	int GetMoney() const { return m_iMoneyCount; }
 
 private:
 	int m_iMoneyCount;
@@ -810,6 +853,8 @@ public:
 	CHudMsgFunc(ShowTimer);
 
 	int m_right;
+	int SecondsRemaining(float time) const { return (int)(m_iTime + m_fStartTime - time); }
+	bool ShouldDrawTimer() const;
 private:
 	int m_HUD_timer;
 	int m_iTime;
@@ -976,6 +1021,7 @@ public:
 	void AddHudElem(CHudBase *p);
 
 	inline float GetSensitivity() { return m_flMouseSensitivity; }
+	int SpriteCount() const { return m_iSpriteCount; }
 	inline HSPRITE GetSprite( int index )
 	{
 		assert( index >= -1 && index <= m_iSpriteCount );
@@ -1106,6 +1152,7 @@ public:
 	CHudTextMessage m_TextMessage;
 	CHudStatusIcons m_StatusIcons;
 	CHudScoreboard  m_Scoreboard;
+	CHudAvatars     m_Avatars;
 	CHudMOTD        m_MOTD;
 	CHudMoney       m_Money;
 	CHudTimer       m_Timer;

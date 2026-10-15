@@ -151,7 +151,7 @@ int CHudRadarModern::Init( void )
 	s_cl_radar_blur_radius = CVAR_CREATE( "cl_radar_blur_radius", "0", FCVAR_ARCHIVE );
 	s_cl_radar_blur_alpha  = CVAR_CREATE( "cl_radar_blur_alpha", "0.59", FCVAR_ARCHIVE );
 	s_cl_radar_modern     = CVAR_CREATE( "cl_radar_modern", "1", FCVAR_ARCHIVE );
-	s_cl_radar_debug      = CVAR_CREATE( "cl_radar_debug", "1", FCVAR_ARCHIVE );
+	s_cl_radar_debug      = CVAR_CREATE( "cl_radar_debug", "0", FCVAR_ARCHIVE );
 	// how much of the map the radar window covers (1.0 = whole map width,
 	// smaller = see more of it)
 	s_cl_radar_view       = CVAR_CREATE( "cl_radar_view", "1", FCVAR_ARCHIVE );
@@ -1487,7 +1487,7 @@ int CHudRadarModern::Draw( float flTime )
 		DrawOverviewLayer( m_iCenterX, m_iCenterY, m_iRadius );
 
 	// temporary on-screen diagnostics (removed once the radar is confirmed)
-	if( s_cl_radar_debug )
+	if( s_cl_radar_debug && s_cl_radar_debug->value > 0 )
 	{
 		char szDbg[256];
 		int nFrames = gHUD.m_Spectator.GetMapSprite()
