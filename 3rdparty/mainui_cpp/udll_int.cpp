@@ -19,6 +19,7 @@ GNU General Public License for more details.
 #include "Utils.h"
 #include "cl_dll/IGameMenuExports.h"
 #include "cl_dll/IGameClientExports.h"
+#include "cl_dll/IOc2BuyMenu.h"
 #include "interface.h"
 #include "font/FontManager.h"
 
@@ -37,6 +38,9 @@ ui_enginefuncs_t EngFuncs::engfuncs;
 ui_extendedfuncs_t EngFuncs::textfuncs;
 ui_globalvars_t	*gpGlobals;
 IGameClientExports *g_pClient;
+IOc2BuyMenu *g_pOc2BuyMenu;
+extern bool UI_OC2BuyMenu_Show();
+extern void UI_OC2BuyMenu_Init();
 CMenu gMenu;
 
 static UI_FUNCTIONS gFunctionTable =
@@ -125,6 +129,8 @@ public:
 			return false;
 
 		g_pClient = static_cast<IGameClientExports *>( appFactory( GAMECLIENTEXPORTS_INTERFACE_VERSION, NULL ) );
+		g_pOc2BuyMenu = static_cast<IOc2BuyMenu *>( appFactory( OC2_BUYMENU_INTERFACE_VERSION, NULL ) );
+		UI_OC2BuyMenu_Init();
 		return g_pClient != nullptr;
 	}
 
@@ -162,6 +168,10 @@ public:
 		// Clear button states to prevent stuck input
 		// when opening the menu while a key is held down
 		EngFuncs::KEY_ClearStates();
+		if ((menuType == MENU_BUY || menuType == MENU_BUY_PISTOL || menuType == MENU_BUY_SHOTGUN ||
+			menuType == MENU_BUY_RIFLE || menuType == MENU_BUY_SUBMACHINEGUN ||
+			menuType == MENU_BUY_MACHINEGUN || menuType == MENU_BUY_ITEM) && UI_OC2BuyMenu_Show())
+			return;
 
 		switch( menuType )
 		{

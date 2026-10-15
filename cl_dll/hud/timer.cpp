@@ -54,15 +54,16 @@ int CHudTimer::VidInit()
 	return 1;
 }
 
+bool CHudTimer::ShouldDrawTimer() const
+{
+	return (m_iFlags & HUD_DRAW) && !(gHUD.m_iHideHUDDisplay & (HIDEHUD_TIMER | HIDEHUD_ALL))
+		&& (gHUD.m_iWeaponBits & (1 << WEAPON_SUIT)) && g_iUser1 != OBS_IN_EYE;
+}
+
 int CHudTimer::Draw( float fTime )
 {
-	if( gHUD.m_iHideHUDDisplay & ( HIDEHUD_TIMER | HIDEHUD_ALL ) )
-		return 1;
-
-	if (!(gHUD.m_iWeaponBits & (1<<(WEAPON_SUIT)) ))
-		return 1;
-
-	if( g_iUser1 == OBS_IN_EYE )
+	// The shared avatar bar owns the center round timer when enabled.
+	if (!ShouldDrawTimer() || (gHUD.m_Avatars.Enabled() && gHUD.m_Avatars.HasPlayers()))
 		return 1;
 
 	int r, g, b;

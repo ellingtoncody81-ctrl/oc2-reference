@@ -23,6 +23,9 @@
 #include <stdio.h>
 #include "draw_util.h"
 #include "strl.h"
+#include "kill_feedback.h"
+#include "match_ui.h"
+#include <cmath>
 
 float color[3];
 
@@ -37,14 +40,179 @@ struct DeathNoticeItem {
 	float *KillerColor;
 	float *VictimColor;
 	int iHeadShotId;
+	int killerTeam, victimTeam;
+	bool localKiller, localVictim;
+	char weaponResource[64]; // fixed directory plus an ASCII-validated resource name
 };
 
-#define MAX_DEATHNOTICES	4
+#define MAX_DEATHNOTICES	15 // CSGO csgo_huddeathnotice.cpp:43, bounded oldest-first queue
 static int DEATHNOTICE_DISPLAY_TIME = 6;
 
 #define DEATHNOTICE_TOP		32
 
 DeathNoticeItem rgDeathNoticeList[ MAX_DEATHNOTICES + 1 ];
+
+namespace
+{
+kill_feedback::State s_KillFeedback;
+float s_LastThinkTime = -1.0f;
+
+int PlayerTeam(int slot)
+{
+	if (slot < 1 || slot > MAX_PLAYERS) return TEAM_UNASSIGNED;
+	// TeamInfo is authoritative; optional userinfo may be absent or older.
+	if (g_PlayerExtraInfo[slot].teamname[0]) return g_PlayerExtraInfo[slot].teamnumber;
+	return g_PlayerInfoList[slot].team >= 0 ? g_PlayerInfoList[slot].team : TEAM_UNASSIGNED;
+}
+
+void ExpireNotices(float time)
+{
+	for (int i = 0; i < MAX_DEATHNOTICES && rgDeathNoticeList[i].iId; ++i)
+	{
+		if (time >= rgDeathNoticeList[i].flDisplayTime)
+		{
+			memmove(&rgDeathNoticeList[i], &rgDeathNoticeList[i+1], sizeof(DeathNoticeItem) * (MAX_DEATHNOTICES-i));
+			--i;
+		}
+	}
+}
+
+match_ui::Color TeamColor(int team)
+{
+	if (team == TEAM_CT) return match_ui::Color(115,161,209,255);
+	if (team == TEAM_TERRORIST) return match_ui::Color(237,199,97,255);
+	return match_ui::Color(210,210,210,255);
+}
+
+match_ui::Color NoticeNameColor(int team)
+{
+	// The notice uses red/blue names; the bottom card keeps its team theme.
+	if (team == TEAM_CT) return match_ui::Color(110,160,192,255);
+	if (team == TEAM_TERRORIST) return match_ui::Color(168,43,48,255);
+	return match_ui::Color(190,190,190,255);
+}
+
+void NoticeBackground(float x, float y, float width, float height, const DeathNoticeItem& item, int alpha)
+{
+	// The shipped killbg/deathbg pictures contain blue/orange RGB, rather
+	// than a neutral mask. Use the reference's black translucent panel.
+	// CSGO's local involvement remains visible through the darker panel;
+	// no bright team stripe competes with the white weapon silhouette.
+	const int opacity = item.localKiller || item.localVictim ? 235 : 215;
+	FillRGBABlend((int)x,(int)y,(int)width,(int)height,0,0,0,opacity*alpha/255);
+}
+
+void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int headshot, float time)
+{
+	// OC2 resource layout: size 1.5 -> weapon 90x33, row pitch 70/1.5,
+	// padding 32, notice background eight units taller than the glyph.
+	const float scale = match_ui::Scale();
+	const float weaponW = 90.0f*scale, weaponH = 33.0f*scale;
+	const float iconW = 33.0f*scale, padding = 6.0f*scale;
+	const float textH = 28.0f*scale;
+	const float maxName = min(240.0f*scale, ScreenWidth*0.24f);
+	const float killerW = item.bSuicide ? 0.0f : min(maxName,match_ui::TextWidth(item.szKiller,textH));
+	const float victimW = item.bNonPlayerKill ? 0.0f : min(maxName,match_ui::TextWidth(item.szVictim,textH));
+	const float width = killerW+victimW+weaponW+padding*2
+		+ (item.bSuicide ? 0.0f : padding) + (item.bNonPlayerKill ? 0.0f : padding)
+		+ (item.iHeadShotId ? iconW+padding : 0.0f);
+	const float x = ScreenWidth-32.0f*scale-width;
+	const float y = std::floor(ScreenHeight/480.0f*32.0f+0.5f)+50.0f*scale+row*(70.0f/1.5f)*scale;
+	// The queue remains bounded at 15; tiny viewports draw only complete rows.
+	if (y < 0 || y+weaponH+8.0f*scale > ScreenHeight-20.0f*scale) return;
+	// CSGO starts fade after the lifetime and deletes one second later
+	// (csgo_huddeathnotice.cpp:182-188,555-559). Legacy drawing keeps its
+	// original expiry; modern pictures, text and background share this opacity.
+	const int alpha = (int)(255.0f*kill_feedback::NoticeOpacity(time,item.flDisplayTime));
+	NoticeBackground(x,y,width,weaponH+8.0f*scale,item,alpha);
+	match_ui::Color killerColor = NoticeNameColor(item.killerTeam), victimColor = NoticeNameColor(item.victimTeam);
+	killerColor.a = victimColor.a = alpha;
+	const match_ui::Color iconColor(255,255,255,alpha);
+	float cursor = x+padding;
+	if (!item.bSuicide)
+	{
+		match_ui::Text(item.szKiller,cursor,y+(weaponH-textH)*0.5f+4.0f*scale,textH,killerColor,false,maxName);
+		cursor += killerW+padding;
+	}
+	const int id = item.iId >= 0 ? item.iId : skull;
+	const int weaponTexture = item.weaponResource[0] ? match_ui::Texture(item.weaponResource) : 0;
+	// OC2 weapon TGAs face left; the reference notice points toward the
+	// victim on the right. Keep world/death symbols and headshots unchanged.
+	const bool flipWeaponTexture = strcmp(item.weaponResource,"gfx/vgui/death/d_worldspawn.tga") != 0
+		&& strcmp(item.weaponResource,"gfx/vgui/death/d_skull.tga") != 0
+		&& strcmp(item.weaponResource,"gfx/vgui/death/d_headshot.tga") != 0;
+	if (weaponTexture) match_ui::Picture(weaponTexture,cursor,y+4.0f*scale,weaponW,weaponH,iconColor,false,flipWeaponTexture);
+	// Native GoldSrc death sprites already face right (AK/deagle/Glock/M4).
+	// Explicitly retain that orientation, including the skull fallback.
+	else if (id >= 0) match_ui::Sprite(id,cursor,y+4.0f*scale,weaponW,weaponH,iconColor,false);
+	else match_ui::Text("X",cursor,y+4.0f*scale,textH,iconColor);
+	cursor += weaponW;
+	if (item.iHeadShotId)
+	{
+		cursor += padding;
+		const int texture = match_ui::Texture("gfx/vgui/death/headshot.tga");
+		if (texture) match_ui::Picture(texture,cursor,y+4.0f*scale,iconW,weaponH,iconColor);
+		else if (headshot >= 0) match_ui::Sprite(headshot,cursor,y+4.0f*scale,iconW,weaponH,iconColor);
+		cursor += iconW;
+	}
+	if (!item.bNonPlayerKill)
+		match_ui::Text(item.szVictim,cursor+padding,y+(weaponH-textH)*0.5f+4.0f*scale,textH,victimColor,false,maxName);
+}
+
+void DrawKillCard(float time)
+{
+	if (!match_ui::Enabled() || !s_KillFeedback.card_visible || s_KillFeedback.round_kills < 1 ||
+		g_iUser1 || gHUD.m_Health.m_iHealth <= 0 || !(gHUD.m_iWeaponBits & (1<<WEAPON_SUIT)) ||
+		(gHUD.m_iHideHUDDisplay & (HIDEHUD_HEALTH|HIDEHUD_WEAPONS|HIDEHUD_ALL))) return;
+	const int frame = kill_feedback::CardFrame(s_KillFeedback,time);
+	if (frame < 0) return;
+	// CS2-style artwork/OC2 geometry, driven by CS:GO-compatible confirmed
+	// round kills. Group 6 is an A-card resource and is deliberately unused;
+	// beyond five kills, retain group 5 and report the true count separately.
+	const int group = min(s_KillFeedback.round_kills,5);
+	char path[80];
+	snprintf(path,sizeof(path),"gfx/vgui/killcard/%d/%04d.tga",group,frame+1);
+	const float scale = match_ui::Scale(), center = ScreenWidth*0.5f;
+	const int texture = match_ui::Texture(path);
+	const cl_entity_t *local = gEngfuncs.GetLocalPlayer();
+	const int team = local ? PlayerTeam(local->index) : TEAM_UNASSIGNED;
+	match_ui::Color color = TeamColor(team);
+	const float flash = HUD_LocalKillFlash(time);
+	color.r += (int)((255-color.r)*flash);
+	color.g += (int)((255-color.g)*flash);
+	color.b += (int)((255-color.b)*flash);
+	if (texture) match_ui::Picture(texture,center-195*scale,ScreenHeight-195*scale,390*scale,150*scale,color);
+	else
+	{
+		FillRGBABlend((int)(center-100*scale),(int)(ScreenHeight-175*scale),(int)(200*scale),(int)(60*scale),12,16,22,185);
+		match_ui::Text("KILL",center-match_ui::TextWidth("KILL",24*scale)*0.5f,ScreenHeight-170*scale,24*scale,color);
+	}
+	if (s_KillFeedback.round_kills > 5 || !texture)
+	{
+		char count[24]; snprintf(count,sizeof(count),"x%d",s_KillFeedback.round_kills);
+		const float height = 24*scale;
+		match_ui::Text(count,center-match_ui::TextWidth(count,height)*0.5f,ScreenHeight-140*scale,height,color);
+	}
+}
+}
+
+void HUD_DrawKillCard(float time) { DrawKillCard(time); }
+
+float HUD_LocalKillFlash(float time)
+{
+	if (!s_KillFeedback.card_visible || s_KillFeedback.local_dead || gHUD.m_Health.m_iHealth <= 0 ||
+		!std::isfinite(time) || s_KillFeedback.last_kill_time < 0.0f) return 0.0f;
+	const float elapsed = time-s_KillFeedback.last_kill_time;
+	return elapsed >= 0.0f && elapsed < 1.0f ? 1.0f-elapsed : 0.0f;
+}
+
+void HUD_KillFeedbackDump()
+{
+	gEngfuncs.Con_Printf("killfeedback: round=%d hs=%d card=%d dead=%d notices=",s_KillFeedback.round_kills,
+		s_KillFeedback.round_headshots,(int)s_KillFeedback.card_visible,(int)s_KillFeedback.local_dead);
+	int count=0; while(count<MAX_DEATHNOTICES && rgDeathNoticeList[count].iId) ++count;
+	gEngfuncs.Con_Printf("%d\n",count);
+}
 
 cvar_t *cl_killsound;
 cvar_t *cl_killsound_path;
@@ -54,11 +222,12 @@ int CHudDeathNotice :: Init( void )
 	gHUD.AddHudElem( this );
 
 	HOOK_MESSAGE( gHUD.m_DeathNotice, DeathMsg );
+	HOOK_MESSAGE( gHUD.m_DeathNotice, HudRound );
 
 	hud_deathnotice_time = CVAR_CREATE( "hud_deathnotice_time", "6", FCVAR_ARCHIVE );
 	cl_killsound = CVAR_CREATE( "cl_killsound", "0", FCVAR_ARCHIVE );
 	cl_killsound_path = CVAR_CREATE( "cl_killsound_path", "buttons/bell1.wav", FCVAR_ARCHIVE );
-	m_iFlags = 0;
+	m_iFlags = HUD_THINK;
 
 	return 1;
 }
@@ -67,6 +236,32 @@ int CHudDeathNotice :: Init( void )
 void CHudDeathNotice :: InitHUDData( void )
 {
 	memset( rgDeathNoticeList, 0, sizeof(rgDeathNoticeList) );
+	kill_feedback::ClearMap(s_KillFeedback);
+	s_LastThinkTime = -1.0f;
+	m_iFlags = HUD_THINK;
+}
+
+void CHudDeathNotice::Reset()
+{
+	// ResetHUD also arrives for fullupdate/demo recording within a round.
+	// Retain confirmed kills and the card; HudRound owns the round boundary.
+	s_LastThinkTime = -1.0f;
+}
+
+int CHudDeathNotice::MsgFunc_HudRound(const char *pszName, int iSize, void *pbuf)
+{
+	// GoldSrc bridge for CS:GO CCSPlayer::RoundRespawn (cs_player.cpp:8363-8364).
+	kill_feedback::ResetRound(s_KillFeedback);
+	return 1;
+}
+
+void CHudDeathNotice::Think()
+{
+	if (s_LastThinkTime >= 0.0f && gHUD.m_flTime < s_LastThinkTime) InitHUDData();
+	s_LastThinkTime = gHUD.m_flTime;
+	ExpireNotices(gHUD.m_flTime); // CHud::Think runs even when rendering is hidden
+	if (rgDeathNoticeList[0].iId || s_KillFeedback.card_visible) m_iFlags |= HUD_DRAW;
+	else m_iFlags &= ~HUD_DRAW;
 }
 
 
@@ -81,11 +276,26 @@ int CHudDeathNotice :: VidInit( void )
 int CHudDeathNotice :: Draw( float flTime )
 {
 	int x, y, r, g, b, i;
+	ExpireNotices(flTime);
+	const bool modern = match_ui::Enabled();
+	int firstVisible = 0;
+	if (!modern)
+	{
+		int count = 0;
+		while (count < MAX_DEATHNOTICES && rgDeathNoticeList[count].iId) ++count;
+		firstVisible = max(0,count-4); // preserve the legacy four newest visible rows
+	}
 
 	for( i = 0; i < MAX_DEATHNOTICES; i++ )
 	{
 		if ( rgDeathNoticeList[i].iId == 0 )
 			break;  // we've gone through them all
+		if (modern)
+		{
+			if (!(gHUD.m_iHideHUDDisplay & HIDEHUD_ALL)) DrawModernNotice(rgDeathNoticeList[i],i,m_HUD_d_skull,m_HUD_d_headshot,flTime);
+			continue;
+		}
+		if (i < firstVisible) continue;
 
 		if ( rgDeathNoticeList[i].flDisplayTime < flTime )
 		{ // display time has expired
@@ -104,11 +314,11 @@ int CHudDeathNotice :: Draw( float flTime )
 			// Draw the death notice
 			if( !g_iUser1 )
 			{
-				y = YRES(DEATHNOTICE_TOP) + 2 + (20 * i);  //!!!
+				y = YRES(DEATHNOTICE_TOP) + 2 + (20 * (i-firstVisible));  //!!!
 			}
 			else
 			{
-				y = ScreenHeight / 5 + 2 + (20 * i);
+				y = ScreenHeight / 5 + 2 + (20 * (i-firstVisible));
 			}
 
 			int id = (rgDeathNoticeList[i].iId == -1) ? m_HUD_d_skull : rgDeathNoticeList[i].iId;
@@ -155,7 +365,7 @@ int CHudDeathNotice :: Draw( float flTime )
 		}
 	}
 
-	if( i == 0 )
+	if( i == 0 && !s_KillFeedback.card_visible )
 		m_iFlags &= ~HUD_DRAW; // disable hud item
 
 	return 1;
@@ -173,8 +383,9 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	int headshot = reader.ReadByte();
 
 	char killedwith[32];
+	const char *weaponName = reader.ReadString();
 	strlcpy( killedwith, "d_", sizeof( killedwith ) );
-	strlcat( killedwith, reader.ReadString(), sizeof( killedwith ) );
+	strlcat( killedwith, weaponName, sizeof( killedwith ) );
 
 	//if (gViewPort)
 	//	gViewPort->DeathMsg( killer, victim );
@@ -192,6 +403,10 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 		memmove( rgDeathNoticeList, rgDeathNoticeList+1, sizeof(DeathNoticeItem) * MAX_DEATHNOTICES );
 		i = MAX_DEATHNOTICES - 1;
 	}
+	// A reused queue entry must not inherit suicide/TK flags or colors.
+	rgDeathNoticeList[i] = DeathNoticeItem();
+	if (kill_feedback::WeaponResourceName(weaponName))
+		snprintf(rgDeathNoticeList[i].weaponResource,sizeof(rgDeathNoticeList[i].weaponResource),"gfx/vgui/death/d_%s.tga",weaponName);
 
 	//if (gViewPort)
 		//gViewPort->GetAllPlayersInfo();
@@ -253,13 +468,36 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	}
 
 	rgDeathNoticeList[i].iHeadShotId = headshot;
+	rgDeathNoticeList[i].killerTeam = PlayerTeam(killer);
+	rgDeathNoticeList[i].victimTeam = PlayerTeam(victim);
+	if (killer != victim && killer >= 1 && killer <= MAX_PLAYERS && victim >= 1 && victim <= MAX_PLAYERS &&
+		(rgDeathNoticeList[i].killerTeam == TEAM_CT || rgDeathNoticeList[i].killerTeam == TEAM_TERRORIST) &&
+		rgDeathNoticeList[i].killerTeam == rgDeathNoticeList[i].victimTeam)
+		rgDeathNoticeList[i].bTeamKill = true;
+	const cl_entity_t *localPlayer = gEngfuncs.GetLocalPlayer();
+	const int localIndex = localPlayer ? localPlayer->index : 0;
+	rgDeathNoticeList[i].localKiller = localIndex == killer && killer != victim;
+	rgDeathNoticeList[i].localVictim = localIndex == victim;
+	kill_feedback::Event event;
+	event.time = gHUD.m_flTime; event.local = localIndex; event.killer = killer; event.victim = victim;
+	event.killer_team = rgDeathNoticeList[i].killerTeam;
+	event.victim_team = rgDeathNoticeList[i].bTeamKill ? event.killer_team : rgDeathNoticeList[i].victimTeam;
+	event.headshot = headshot != 0;
+	const bool confirmedKill = kill_feedback::OnDeath(s_KillFeedback,event);
 
 	// Find the sprite in the list
 	int spr = gHUD.GetSpriteIndex( killedwith );
 
 	rgDeathNoticeList[i].iId = spr;
 
-	rgDeathNoticeList[i].flDisplayTime = gHUD.m_flTime + hud_deathnotice_time->value;
+	float lifetime = hud_deathnotice_time->value;
+	if (!std::isfinite(lifetime)) lifetime = 6.0f;
+	lifetime = max(0.0f,lifetime);
+	// CSGO csgo_huddeathnotice.cpp:536 extends local killer/victim notices.
+	if (match_ui::Enabled() && (rgDeathNoticeList[i].localKiller || rgDeathNoticeList[i].localVictim)) lifetime *= 1.5f;
+	const float fadeTime = match_ui::Enabled() && lifetime > 0.0f ? 1.0f : 0.0f;
+	rgDeathNoticeList[i].flDisplayTime = gHUD.m_flTime + lifetime + fadeTime;
+	if (confirmedKill) HUD_KillFeedbackDump();
 
 	// Play kill sound
 	if ((killer_this_player || g_iUser2 == killer) &&

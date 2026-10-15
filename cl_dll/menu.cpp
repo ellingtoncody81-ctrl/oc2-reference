@@ -21,6 +21,7 @@
 #include "cl_util.h"
 #include "parsemsg.h"
 #include "com_weapons.h"
+#include "buy_menu_state.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -65,6 +66,7 @@ int CHudMenu :: Init( void )
 
 void CHudMenu :: InitHUDData( void )
 {
+	buy_menu_state::ClearMap();
 	m_fMenuDisplayed = 0;
 	m_bitsValidSlots = 0;
 	Reset();
@@ -171,6 +173,16 @@ int CHudMenu :: MsgFunc_ShowMenu( const char *pszName, int iSize, void *pbuf )
 	}
 
 	menustring = reader.ReadString();
+	// Legacy servers can send the buy root as ShowMenu rather than VGUIMenu.
+	// Route this exact root to the native purchase UI without replacing radio,
+	// team selection or arbitrary server/plugin menus.
+	if (!m_fWaitingForMore && !NeedMore && !strcmp(menustring,"#Buy") && g_pMenu && !UseOldTouchMenusEnabled())
+	{
+		m_fMenuDisplayed = 0;
+		m_iFlags &= ~HUD_DRAW;
+		ShowVGUIMenu(MENU_BUY);
+		return 1;
+	}
 
 	// menu will be replaced by scripted touch config
 	// so execute it and exit
@@ -237,6 +249,7 @@ int CHudMenu::MsgFunc_VGUIMenu( const char *pszName, int iSize, void *pbuf )
 
 int CHudMenu::MsgFunc_BuyClose(const char *pszName, int iSize, void *pbuf)
 {
+	buy_menu_state::Close();
 	Touch_CloseMenu();
 
 	if (g_pMenu)
@@ -262,6 +275,7 @@ void CHudMenu::UserCmd_OldStyleMenuOpen()
 
 void CHudMenu::UserCmd_OldStyleMenuClose()
 {
+	buy_menu_state::Close();
 	m_fMenuDisplayed = 0; // no valid slots means that the menu should be turned off
 	m_iFlags &= ~HUD_DRAW;
 

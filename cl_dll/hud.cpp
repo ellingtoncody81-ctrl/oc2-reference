@@ -21,6 +21,9 @@
 #include <new>
 
 #include "hud.h"
+#include "match_ui.h"
+#include "match_status.h"
+#include "buy_menu_state.h"
 #include "cl_util.h"
 #include <string.h>
 #include <stdio.h>
@@ -247,7 +250,7 @@ char *Q_buildnum( void )
 }
 
 int __MsgFunc_ADStop( const char *name, int size, void *buf ) { return 1; }
-int __MsgFunc_ItemStatus( const char *name, int size, void *buf ) { return 1; }
+int __MsgFunc_ItemStatus( const char *name, int size, void *buf ) { return buy_menu_state::ItemStatusMessage(name,size,buf); }
 // int __MsgFunc_ReqState( const char *name, int size, void *buf ) { return 1; }
 int __MsgFunc_ForceCam( const char *name, int size, void *buf ) { return 1; }
 int __MsgFunc_Spectator( const char *name, int size, void *buf ) { return 1; }
@@ -489,12 +492,15 @@ void CHud :: Init( void )
 	// all things that have own background and must be drawn last
 	m_ProgressBar.Init();
 	m_Menu.Init();
+	buy_menu_state::Init();
 
 	// Spectator GUI is not need in singleplayer czeror
 	if( GetGameType() != GAME_CZERODS )
 		m_SpectatorGui.Init();
 
+	match_status::Init();
 	m_Scoreboard.Init();
+	m_Avatars.Init();
 
 	GetClientVoice()->Init( &g_VoiceStatusHelper );
 
@@ -635,6 +641,7 @@ void CHud :: VidInit( void )
 
 	m_hGasPuff = SPR_Load("sprites/gas_puff_01.spr");
 
+	match_ui::VidInit();
 	for( HUDLIST *pList = m_pHudList; pList; pList = pList->pNext )
 		pList->p->VidInit();
 
@@ -660,11 +667,13 @@ void CHud::Reset( void )
 
 void CHud::Shutdown( void )
 {
+	buy_menu_state::ClearMap();
 	V_ResetViewModelEffects();
 	for( HUDLIST *pList = m_pHudList; pList; pList = pList->pNext )
 	{
 		pList->p->Shutdown();
 	}
+	match_ui::Shutdown();
 }
 
 int CHud::MsgFunc_Logo(const char *pszName,  int iSize, void *pbuf)

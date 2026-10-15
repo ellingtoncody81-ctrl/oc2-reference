@@ -23,6 +23,8 @@
 #include "math.h"
 
 #include "hud.h"
+#include "match_ui.h"
+#include "match_status.h"
 #include "cl_util.h"
 #include "parsemsg.h"
 #include <string.h>
@@ -84,6 +86,7 @@ int CHudHealth::Init(void)
 
 void CHudHealth::Reset( void )
 {
+	match_status::Reset();
 	// make sure the pain compass is cleared when the player respawns
 	for( int i = 0; i < ATK_COUNT; i++ )
 		m_fAttack[i] = 0;
@@ -186,6 +189,7 @@ int CHudHealth:: MsgFunc_ScoreAttrib(const char *pszName,  int iSize, void *pbuf
 	g_PlayerExtraInfo[index].has_c4 = !!(flags & PLAYER_HAS_C4);
 	g_PlayerExtraInfo[index].vip    = !!(flags & PLAYER_VIP);
 	g_PlayerExtraInfo[index].has_defuse_kit = !!(flags & PLAYER_HAS_DEFUSER);
+	gHUD.m_Avatars.NoteMessage(2, index);
 	return 1;
 }
 
@@ -260,6 +264,25 @@ int CHudHealth::Draw(float flTime)
 
 void CHudHealth::DrawHealthBar( float flTime )
 {
+	if (match_ui::Enabled())
+	{
+		if (m_fFade > 0) m_fFade = max(0.0f, m_fFade - float(gHUD.m_flTimeDelta * 20));
+		if (!(gHUD.m_iWeaponBits & (1 << WEAPON_SUIT))) return;
+		const cl_entity_t *local = gEngfuncs.GetLocalPlayer();
+		if (!local || (g_iUser1 && g_iUser1 != OBS_IN_EYE)) return;
+		const int owner = g_iUser1 == OBS_IN_EYE ? g_iUser2 : local->index;
+		if (owner < 1 || owner > MAX_PLAYERS) return;
+		int health = m_iHealth;
+		if (g_iUser1 == OBS_IN_EYE)
+		{
+			// Do not present the local player's health as an observed opponent's.
+			if (g_PlayerExtraInfo[owner].sb_health < 0) return;
+			health = g_PlayerExtraInfo[owner].sb_health;
+		}
+		else if (g_PlayerExtraInfo[owner].sb_health > 255) health = g_PlayerExtraInfo[owner].sb_health;
+		if (health > 0) match_status::Health(health, owner, flTime);
+		return;
+	}
 	int r, g, b;
 	int a = 0, x, y;
 	int HealthWidth;

@@ -83,6 +83,8 @@ int gmsgFog = 0;
 int gmsgShowTimer = 0;
 int gmsgAccount = 0;
 int gmsgHealthInfo = 0;
+int gmsgHudRound = 0;
+int gmsgBuyState = 0;
 bool g_bClientPrintEnable = true;
 
 char *sPlayerModelFiles[] =
@@ -230,6 +232,8 @@ void LinkUserMessages()
 	gmsgAccount       = REG_USER_MSG("Account", 5);
 	gmsgHealthInfo    = REG_USER_MSG("HealthInfo", 5);
 #endif
+	gmsgHudRound      = REG_USER_MSG("HudRound", 0);
+	gmsgBuyState      = REG_USER_MSG("BuyState", 3);
 }
 
 void WriteSigonMessages()

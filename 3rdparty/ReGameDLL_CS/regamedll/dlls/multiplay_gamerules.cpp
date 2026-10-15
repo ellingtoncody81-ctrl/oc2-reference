@@ -1962,6 +1962,10 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 
 	// the round time stamp must be set before players are spawned
 	m_fRoundStartTime = m_fRoundStartTimeReal = gpGlobals->time;
+	// GoldSrc bridge for CS:GO CCSPlayer::RoundRespawn (cs_player.cpp:8363-8364):
+	// only a real round restart, never ResetHUD/fullupdate, resets round kills.
+	MESSAGE_BEGIN(MSG_ALL, gmsgHudRound);
+	MESSAGE_END();
 
 	// Adrian - No cash for anyone at first rounds! ( well, only the default. )
 	if (m_bCompleteReset)

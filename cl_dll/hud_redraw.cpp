@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "draw_util.h"
+#include "buy_menu_state.h"
 
 #define MAX_LOGO_FRAMES 56
 
@@ -52,6 +53,7 @@ void CHud::Think(void)
 		if( pList->p->m_iFlags & HUD_THINK )
 			pList->p->Think();
 	}
+	buy_menu_state::Think();
 
 	newfov = HUD_GetFOV();
 	m_iFOV = newfov ? newfov : default_fov->value;
@@ -102,7 +104,7 @@ int CHud :: Redraw( float flTime, int intermission )
 
 	UpdateDefaultHUDColor();
 
-	if ( m_pCvarDraw->value && (intermission || !(m_iHideHUDDisplay & HIDEHUD_ALL) ) )
+	if ( !buy_menu_state::IsOpen() && m_pCvarDraw->value && (intermission || !(m_iHideHUDDisplay & HIDEHUD_ALL) ) )
 	{
 		for( HUDLIST *pList = m_pHudList; pList; pList = pList->pNext )
 		{
@@ -117,7 +119,7 @@ int CHud :: Redraw( float flTime, int intermission )
 	}
 
 	// are we in demo mode? do we need to draw the logo in the top corner?
-	if (m_iLogo)
+	if (m_iLogo && !buy_menu_state::IsOpen())
 	{
 		int x, y, i;
 

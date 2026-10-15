@@ -16,6 +16,7 @@
 // status_icons.cpp
 //
 #include "hud.h"
+#include "match_ui.h"
 #include "cl_util.h"
 #include "const.h"
 #include "entity_state.h"
@@ -62,6 +63,7 @@ int CHudStatusIcons::Draw( float flTime )
 	{
 		if ( m_IconList[i].spr )
 		{
+			if (match_ui::Enabled() && !strcmp(m_IconList[i].szSpriteName, "buyzone")) continue;
 			y -= ( m_IconList[i].rc.Height() ) + 5;
 			
 			if( g_bInBombZone && !strcmp(m_IconList[i].szSpriteName, "c4") && ((int)(flTime * 10) % 2))

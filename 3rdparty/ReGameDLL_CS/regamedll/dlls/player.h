@@ -570,6 +570,7 @@ public:
 	void ResetAutoaim();
 	Vector AutoaimDeflection(Vector &vecSrc, float flDist, float flDelta);
 	void ForceClientDllUpdate();
+	void SendBuyState();
 	void DeathMessage(entvars_t *pevAttacker) {};
 	void SetCustomDecalFrames(int nFrames);
 	int GetCustomDecalFrames();
@@ -922,6 +923,10 @@ public:
 	int m_iLastClientHealth;
 	float m_tmNextAccountHealthUpdate;
 #endif
+
+	// UI replication cache only; -1 forces the first reliable update.
+	int m_iClientBuyState = -1;
+	int m_iClientBuySeconds = 0;
 };
 
 CWeaponBox *CreateWeaponBox(CBasePlayerItem *pItem, CBasePlayer *pPlayerOwner, const char *modelName, Vector &origin, Vector &angles, Vector &velocity, float lifeTime, bool packAmmo);

@@ -33,6 +33,8 @@ version.
 #include "math.h"
 
 #include "hud.h"
+#include "match_ui.h"
+#include "match_status.h"
 #include "cl_util.h"
 #include "parsemsg.h"
 #include <string.h>
@@ -78,6 +80,17 @@ int CHudMoney::Draw(float flTime)
 		m_iDelta = 0;
 	}
 	float interpolate = ( 5 - m_fFade ) / 5;
+	if (match_ui::Enabled())
+	{
+		if (g_iUser1) return 1;
+		if (m_iBlinkAmt)
+		{
+			m_fBlinkTime += gHUD.m_flTimeDelta;
+			if (m_fBlinkTime > 1.0f) { m_fBlinkTime = 0; --m_iBlinkAmt; }
+		}
+		match_status::Money(m_iMoneyCount, m_iDelta, m_fFade, m_iBlinkAmt && m_fBlinkTime > 0.5f);
+		return 1;
+	}
 
 	int iDollarWidth = m_hDollar.rect.Width();
 

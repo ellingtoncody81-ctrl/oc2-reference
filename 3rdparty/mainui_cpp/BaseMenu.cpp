@@ -603,6 +603,8 @@ void UI_CloseClientMenu( void )
 {
 	if( !uiStatic.client.IsActive() )
 		return;
+	extern void UI_OC2BuyMenu_ClearState();
+	UI_OC2BuyMenu_ClearState();
 
 	uiStatic.client.Clean();
 	EngFuncs::KEY_ClearStates();

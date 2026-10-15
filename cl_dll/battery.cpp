@@ -22,6 +22,8 @@
 #include "parsemsg.h"
 #include "cl_util.h"
 #include "draw_util.h"
+#include "match_ui.h"
+#include "match_status.h"
 
 int CHudBattery::Init( void )
 {
@@ -76,6 +78,13 @@ int CHudBattery::Draw( float flTime )
 
 	if (!(gHUD.m_iWeaponBits & (1<<(WEAPON_SUIT)) ))
 		return 1;
+	if (match_ui::Enabled())
+	{
+		if (m_fFade > 0) m_fFade = max(0.0f, m_fFade - float(gHUD.m_flTimeDelta * 20));
+		// GoldSrc supplies no reliable observed-player armor in this HUD channel.
+		if (!g_iUser1 && gHUD.m_Health.m_iHealth > 0) match_status::Armor(m_iBat);
+		return 1;
+	}
 
 	int r, g, b, x, y, a;
 	wrect_t rc;
