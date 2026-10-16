@@ -430,11 +430,29 @@ direction is negative for wheel down, otherwise wheel up
 void IN_MWheelEvent( int y )
 {
 	int b = y > 0 ? K_MWHEELUP : K_MWHEELDOWN;
+	qboolean menu = cls.key_dest == key_menu;
+	int count = 1;
+	int i;
 
 	VGui_MWheelEvent( y );
 
-	Key_Event( b, true );
-	Key_Event( b, false );
+	if( menu )
+	{
+		// MainUI exposes wheel directions through key events. Preserve the
+		// magnitude of an aggregated wheel packet without changing in-game
+		// invnext/invprev semantics or the menu ABI. Clamp before negating so
+		// INT_MIN and corrupt input cannot overflow or flood the event loop.
+		count = y < -32 || y > 32 ? 32 : ( y < 0 ? -y : y );
+	}
+
+	for( i = 0; i < count; ++i )
+	{
+		// A callback can close a menu; remaining notches must not reach play.
+		if( menu && cls.key_dest != key_menu )
+			break;
+		Key_Event( b, true );
+		Key_Event( b, false );
+	}
 }
 
 /*

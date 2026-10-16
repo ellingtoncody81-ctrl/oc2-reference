@@ -186,18 +186,30 @@ static void R_StudioSetupTimings( void )
 ================
 R_AllowFlipViewModel
 
-should a flip the viewmodel if cl_righthand is set to 1
+Mirror Source-authored right-hand rigs for cl_righthand 0. Original GoldSrc
+rigs retain their historical opposite authoring convention.
 ================
 */
 static qboolean R_AllowFlipViewModel( cl_entity_t *e )
 {
-	if( cl_righthand && cl_righthand->value > 0 )
-	{
-		if( e == tr.viewent )
-			return true;
-	}
+	if( !e || e != tr.viewent || !e->model || e->model->type != mod_studio )
+		return false;
 
-	return false;
+	qboolean right = false, left = false;
+	studiohdr_t *header = (studiohdr_t *)gEngfuncs.Mod_Extradata( mod_studio, e->model );
+	if( header && header->numbones > 0 && header->numbones <= MAXSTUDIOBONES &&
+		header->boneindex >= 0 && header->boneindex <= header->length &&
+		header->numbones <= ( header->length - header->boneindex ) / sizeof( mstudiobone_t ))
+	{
+		mstudiobone_t *bones = (mstudiobone_t *)((byte *)header + header->boneindex);
+		for( int i = 0; i < header->numbones; ++i )
+		{
+			if( !Q_stricmp( bones[i].name, "v_weapon.Bip01_R_Hand" )) right = true;
+			if( !Q_stricmp( bones[i].name, "v_weapon.Bip01_L_Hand" )) left = true;
+		}
+	}
+	const qboolean right_hand = !cl_righthand || cl_righthand->value > 0;
+	return right && left ? !right_hand : right_hand;
 }
 
 /*
@@ -1297,6 +1309,9 @@ R_StudioSetupLighting
 */
 static void R_StudioSetupLighting( alight_t *plight )
 {
+	// A client studio renderer may supply its own bone transforms. Determine
+	// this entity's winding before lighting, including its merged glove/sleeve.
+	tr.fFlipViewModel = R_AllowFlipViewModel( RI.currententity );
 	float	scale = 1.0f;
 
 	if( !m_pStudioHeader || !plight )
@@ -1911,14 +1926,43 @@ R_StudioSubmitMesh
 
 ===============
 */
+// Expanded triangle strips/fans consume more array vertices than the MDL's
+// shared vertex count. Return -1 for a truncated stream, 0 for the existing
+// immediate-mode path, or 1 when this complete mesh fits the array buffers.
+static int R_StudioMeshArrayBudget( const short *commands )
+{
+	const short *start = (const short *)m_pStudioHeader;
+	const short *end = (const short *)((const byte *)m_pStudioHeader + m_pStudioHeader->length);
+	uint vertices = 0, elements = 0;
+	qboolean fits = true;
+	if( commands < start || commands >= end ) return -1;
+	for( ;; )
+	{
+		if( commands >= end ) return -1;
+		int count = *commands++;
+		if( !count ) return fits ? 1 : 0;
+		if( count < 0 ) count = -count;
+		if( count > ( end - commands ) / 4 ) return -1;
+		vertices += count;
+		if( count >= 3 ) elements += ( count - 2 ) * 3;
+		if( vertices > MAXSTUDIOVERTS || elements > MAXSTUDIOVERTS * 6 ) fits = false;
+		commands += count * 4;
+	}
+}
+
 static void R_StudioSubmitMesh( short *ptricmds, vec3_t *pstudionorms, float s, float t, float shellscale, int tesslevel )
 {
+	const int arrayBudget = tesslevel <= 0 && r_studio_drawelements.value ? R_StudioMeshArrayBudget( ptricmds ) : 0;
+	if( arrayBudget < 0 ) return;
 	if( tesslevel > 0 )
 	{
 		// R_StudioDrawTruformMesh( ptricmds, pstudionorms, s, t, shellscale, tesslevel );
 	}
-	else if( r_studio_drawelements.value )
+	else if( arrayBudget > 0 )
 	{
+		// Each mesh is submitted immediately below. Reuse those same buffers
+		// instead of accumulating every mesh of a submodel (AUG: 18967 >16384).
+		g_studio.numverts = g_studio.numelems = 0;
 		uint startArrayVerts = g_studio.numverts;
 		uint startArrayElems = g_studio.numelems;
 
