@@ -1,4 +1,8 @@
 #include "precompiled.h"
+#include "oc2_inferno.h"
+#include "wpn_shared/wpn_molotov.h"
+#include "wpn_shared/oc2_reload.h"
+#include "wpn_shared/oc2_presentation.h"
 
 short g_sModelIndexLaser;		// holds the index for the laser beam
 short g_sModelIndexLaserDot;	// holds the index for the laser beam dot
@@ -377,6 +381,10 @@ void WeaponsPrecache()
 	UTIL_PrecacheOtherWeapon("weapon_c4");
 	UTIL_PrecacheOtherWeapon("weapon_galil");
 	UTIL_PrecacheOtherWeapon("weapon_famas");
+	// Append in AmmoType order without renumbering the stock ammo channels.
+	UTIL_PrecacheOtherWeapon("weapon_molotov");
+	UTIL_PrecacheOtherWeapon("weapon_zeus");
+	OC2_InfernoPrecache();
 
 	if (g_pGameRules->IsDeathmatch())
 	{
@@ -444,6 +452,9 @@ TYPEDESCRIPTION CBasePlayerWeapon::m_SaveData[] =
 	DEFINE_FIELD(CBasePlayerWeapon, m_iSecondaryAmmoType, FIELD_INTEGER),
 	DEFINE_FIELD(CBasePlayerWeapon, m_iClip, FIELD_INTEGER),
 	DEFINE_FIELD(CBasePlayerWeapon, m_iDefaultAmmo, FIELD_INTEGER),
+	DEFINE_FIELD(CBasePlayerWeapon, m_fInReload, FIELD_INTEGER),
+	DEFINE_FIELD(CBasePlayerWeapon, m_fInSpecialReload, FIELD_INTEGER),
+	DEFINE_FIELD(CBasePlayerWeapon, m_flNextReload, FIELD_FLOAT),
 };
 
 IMPLEMENT_SAVERESTORE(CBasePlayerWeapon, CBasePlayerItem)
@@ -959,7 +970,7 @@ void CBasePlayerWeapon::HandleInfiniteAmmo()
 	else if ((nInfiniteAmmo == WPNMODE_INFINITE_BPAMMO
 #ifdef REGAMEDLL_API
 		&&
-		((m_pPlayer->CSPlayer()->m_iWeaponInfiniteIds & (1 << m_iId)) || (m_pPlayer->CSPlayer()->m_iWeaponInfiniteIds <= 0 && !IsGrenadeWeapon(m_iId)))
+		((m_pPlayer->CSPlayer()->m_iWeaponInfiniteIds & (1U << m_iId)) || ((m_pPlayer->CSPlayer()->m_iWeaponInfiniteIds == 0 || m_pPlayer->CSPlayer()->m_iWeaponInfiniteIds == -1) && !IsGrenadeWeapon(m_iId)))
 #endif
 		)
 		|| (IsGrenadeWeapon(m_iId) && infiniteGrenades.value == 1.0f))
@@ -980,6 +991,8 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayerWeapon, ItemPostFrame)
 
 void EXT_FUNC CBasePlayerWeapon::__API_HOOK(ItemPostFrame)()
 {
+	AdvanceReload();
+	if (AdvanceInspect()) return;
 	int usableButtons = m_pPlayer->pev->button;
 
 	if (!HasSecondaryAttack())
@@ -1037,23 +1050,9 @@ void EXT_FUNC CBasePlayerWeapon::__API_HOOK(ItemPostFrame)()
 
 	if (m_fInReload && m_pPlayer->m_flNextAttack <= UTIL_WeaponTimeBase())
 	{
-		// complete the reload.
-		int j = Q_min(iMaxClip() - m_iClip, m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType]);
-
-		// Add them to the clip
-		m_iClip += j;
-
-#ifdef REGAMEDLL_ADD
-		// Do not remove bpammo of the player,
-		// if cvar allows to refill bpammo on during reloading the weapons
-		if (refill_bpammo_weapons.value < 3.0f)
-#endif
-		{
-			m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] -= j;
-		}
-
-		m_pPlayer->TabulateAmmo();
+		// The insertion already moved ammo; this only ends the firing lock.
 		m_fInReload = FALSE;
+		m_flNextReload = -1;
 	}
 
 	if ((usableButtons & IN_ATTACK2) && CanAttack(m_flNextSecondaryAttack, UTIL_WeaponTimeBase(), UseDecrement())
@@ -1221,7 +1220,7 @@ bool CBasePlayerItem::DestroyItem()
 				m_pPlayer->SetProgressBarTime(0);
 			}
 
-			m_pPlayer->pev->weapons &= ~(1 << m_iId);
+			m_pPlayer->pev->weapons &= ~(1U << m_iId);
 
 			// No more weapon
 			if ((m_pPlayer->pev->weapons & ~(1 << WEAPON_SUIT)) == 0) {
@@ -1324,7 +1323,7 @@ int CBasePlayerWeapon::AddDuplicate(CBasePlayerItem *pOriginal)
 int CBasePlayerWeapon::AddToPlayer(CBasePlayer *pPlayer)
 {
 	m_pPlayer = pPlayer;
-	pPlayer->pev->weapons |= (1 << m_iId);
+	pPlayer->pev->weapons |= (1U << m_iId);
 
 	if (!m_iPrimaryAmmoType)
 	{
@@ -1506,8 +1505,10 @@ BOOL EXT_FUNC CBasePlayerWeapon::__API_HOOK(DefaultDeploy)(char *szViewModel, ch
 	Q_strlcpy(m_pPlayer->m_szAnimExtention, szAnimExt);
 	SendWeaponAnim(iAnim, skiplocal);
 
-	m_pPlayer->m_flNextAttack = 0.75f;
-	m_flTimeWeaponIdle = 1.5f;
+	// CS:GO gates deployment and the idle transition on the actual sequence.
+	const float duration = AnimationDuration(iAnim,0.75f);
+	m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
+		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + duration;
 	m_flLastFireTime = 0.0f;
 	m_flDecreaseShotsFired = gpGlobals->time;
 
@@ -1551,6 +1552,8 @@ LINK_HOOK_CLASS_CHAIN(int, CBasePlayerWeapon, DefaultReload, (int iClipSize, int
 
 int EXT_FUNC CBasePlayerWeapon::__API_HOOK(DefaultReload)(int iClipSize, int iAnim, float fDelay)
 {
+	if (!m_pPlayer || m_fInReload || m_iPrimaryAmmoType < 0 || m_iPrimaryAmmoType >= MAX_AMMO_SLOTS)
+		return FALSE;
 	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return FALSE;
 
@@ -1560,44 +1563,105 @@ int EXT_FUNC CBasePlayerWeapon::__API_HOOK(DefaultReload)(int iClipSize, int iAn
 		return FALSE;
 	}
 
-	m_pPlayer->m_flNextAttack = fDelay;
+	fDelay = oc2_reload::Duration(m_iId,iAnim,m_pPlayer->HasShield() != FALSE,fDelay);
+	m_flNextReload = oc2_reload::PendingTail(m_iId,iAnim,m_pPlayer->HasShield() != FALSE,fDelay);
+	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + fDelay;
+	m_flNextPrimaryAttack = m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + fDelay;
 
 	ReloadSound();
 	SendWeaponAnim(iAnim, UseDecrement() ? 1 : 0);
 
 	m_fInReload = TRUE;
-	m_flTimeWeaponIdle = fDelay + 0.5f;
+	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay + 0.5f;
 
 	return TRUE;
+}
+
+float CBasePlayerWeapon::AnimationDuration(int animation, float fallback) const
+{
+	return oc2_presentation::Duration(m_iId,animation,(m_iWeaponState & (1 << 6)) != 0,
+		m_pPlayer && m_pPlayer->HasShield(),fallback);
+}
+
+void CBasePlayerWeapon::StartInspect()
+{
+	// CS:GO LookAtHeldWeapon: no reload, scope, silencer transition or draw.
+	// All state is already predicted/transmitted; no new network fields.
+	if (!m_pPlayer || m_pPlayer->m_pActiveItem != this || !m_pPlayer->IsAlive() ||
+		!m_pPlayer->pev->viewmodel || m_pPlayer->HasShield() || m_fInReload ||
+		(oc2_reload::Shotgun(m_iId) && m_fInSpecialReload != 0) ||
+		(m_pPlayer->pev->fov > 0 && m_pPlayer->pev->fov < 90) ||
+		m_pPlayer->m_flNextAttack > UTIL_WeaponTimeBase() ||
+		m_flNextPrimaryAttack > UTIL_WeaponTimeBase() || m_flNextSecondaryAttack > UTIL_WeaponTimeBase() ||
+		(m_pPlayer->pev->button & (IN_ATTACK | IN_ATTACK2 | IN_RELOAD)) ||
+		oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim)) return;
+	const int animation = oc2_presentation::InspectSequence(m_iId,m_iWeaponState);
+	if (animation < 0) return;
+	SendWeaponAnim(animation,UseDecrement());
+	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + AnimationDuration(animation,0);
+}
+
+bool CBasePlayerWeapon::AdvanceInspect()
+{
+	if (!m_pPlayer || !oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim)) return false;
+	const bool cancel = !m_pPlayer->IsAlive() || m_fInReload ||
+		(oc2_reload::Shotgun(m_iId) && m_fInSpecialReload != 0) ||
+		(m_pPlayer->pev->fov > 0 && m_pPlayer->pev->fov < 90) ||
+		(m_pPlayer->pev->button & (IN_ATTACK | IN_ATTACK2 | IN_RELOAD));
+	if (!cancel && m_flTimeWeaponIdle > UTIL_WeaponTimeBase()) return true;
+	// Return to the correct idle even with an empty magazine. Gameplay input
+	// continues this same command, so inspecting never delays fire or reload.
+	SendWeaponAnim(oc2_presentation::IdleSequence(m_iId,m_iWeaponState,m_iClip),UseDecrement());
+	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
+	return false;
+}
+
+void CBasePlayerWeapon::AdvanceReload()
+{
+	if (!m_pPlayer || m_pPlayer->m_pActiveItem != this || !m_pPlayer->IsAlive() ||
+		m_iPrimaryAmmoType < 0 || m_iPrimaryAmmoType >= MAX_AMMO_SLOTS) return;
+	const bool shell = oc2_reload::Shotgun(m_iId) && m_fInSpecialReload == 2;
+	if (!m_fInReload && !shell) return;
+	const float remaining = (shell ? m_flTimeWeaponIdle : m_pPlayer->m_flNextAttack) - UTIL_WeaponTimeBase();
+#ifdef REGAMEDLL_ADD
+	const bool consume = refill_bpammo_weapons.value < 3.0f;
+#else
+	const bool consume = true;
+#endif
+	const oc2_reload::Completion completed = oc2_reload::Advance(remaining,m_flNextReload,m_iClip,
+		m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType],iMaxClip(),shell ? 1 : 0,consume);
+	if (shell && completed.event) m_fInSpecialReload = 3;
+	if (completed.rounds) m_pPlayer->TabulateAmmo();
 }
 
 LINK_HOOK_CLASS_CHAIN(bool, CBasePlayerWeapon, DefaultShotgunReload, (int iAnim, int iStartAnim, float fDelay, float fStartDelay, const char *pszReloadSound1, const char *pszReloadSound2), iAnim, iStartAnim, fDelay, fStartDelay, pszReloadSound1, pszReloadSound2)
 
 bool EXT_FUNC CBasePlayerWeapon::__API_HOOK(DefaultShotgunReload)(int iAnim, int iStartAnim, float fDelay, float fStartDelay, const char *pszReloadSound1, const char *pszReloadSound2)
 {
-	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0 || m_iClip == iMaxClip())
-		return false;
-
-	// don't reload until recoil is done
-	if (m_flNextPrimaryAttack > UTIL_WeaponTimeBase())
-		return false;
-
-	// check to see if we're ready to reload
+	AdvanceReload();
+	if (m_fInSpecialReload == 2 || m_fInSpecialReload == 3)
+	{
+		if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase()) return false;
+		m_fInSpecialReload = 1;
+		return true;
+	}
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0 || m_iClip >= iMaxClip() ||
+		m_flNextPrimaryAttack > UTIL_WeaponTimeBase()) return false;
 	if (m_fInSpecialReload == 0)
 	{
+		fStartDelay = oc2_reload::Duration(m_iId,iStartAnim,false,fStartDelay);
 		m_pPlayer->SetAnimation(PLAYER_RELOAD);
 		SendWeaponAnim(iStartAnim, UseDecrement() != FALSE);
-
 		m_fInSpecialReload = 1;
-		m_flNextSecondaryAttack = m_flTimeWeaponIdle = m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + fStartDelay;
-		m_flNextPrimaryAttack = GetNextAttackDelay(fStartDelay);
+		m_flNextReload = -1;
+		m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
+			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fStartDelay;
 	}
-	else if (m_fInSpecialReload == 1)
+	else
 	{
 		if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
 			return false;
-
-		// was waiting for gun to move to side
+		fDelay = oc2_reload::Duration(m_iId,iAnim,false,fDelay);
 		m_fInSpecialReload = 2;
 
 		const char *pszReloadSound = nullptr;
@@ -1611,28 +1675,23 @@ bool EXT_FUNC CBasePlayerWeapon::__API_HOOK(DefaultShotgunReload)(int iAnim, int
 		}
 
 		SendWeaponAnim(iAnim, UseDecrement());
-
-		m_flTimeWeaponIdle = m_flNextReload = UTIL_WeaponTimeBase() + fDelay;
-	}
-	else
-#ifdef BUILD_LATEST_FIXES
-		if (m_flTimeWeaponIdle <= UTIL_WeaponTimeBase())
-#endif
-	{
-		m_iClip++;
-
-#ifdef REGAMEDLL_ADD
-		if (refill_bpammo_weapons.value < 3.0f)
-#endif
-		{
-			m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType]--;
-			m_pPlayer->ammo_buckshot--;
-		}
-
-		m_fInSpecialReload = 1;
+		m_flNextReload = oc2_reload::PendingTail(m_iId,iAnim,false,fDelay);
+		m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
+			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay;
 	}
 
 	return true;
+}
+
+void CBasePlayerWeapon::FinishShotgunReload(int animation, float fallback)
+{
+	AdvanceReload();
+	const float duration = oc2_reload::Duration(m_iId,animation,false,fallback);
+	SendWeaponAnim(animation,UseDecrement());
+	m_fInSpecialReload = 0;
+	m_flNextReload = -1;
+	m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
+		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + duration;
 }
 
 BOOL CBasePlayerWeapon::PlayEmptySound()
@@ -1679,14 +1738,17 @@ int CBasePlayerWeapon::SecondaryAmmoIndex()
 
 void CBasePlayerWeapon::Holster(int skiplocal)
 {
+	const bool cancelReload = m_fInReload || (oc2_reload::Shotgun(m_iId) && m_fInSpecialReload != 0);
+	AdvanceReload(); // A reached insertion survives switching; an earlier switch cancels it.
+	if (cancelReload)
+		m_flNextPrimaryAttack = m_flNextSecondaryAttack = UTIL_WeaponTimeBase();
 	// cancel any reload in progress.
 	m_fInReload = FALSE;
+	m_flNextReload = -1;
 	m_pPlayer->pev->viewmodel = 0;
 	m_pPlayer->pev->weaponmodel = 0;
 
-#ifdef REGAMEDLL_FIXES
 	m_fInSpecialReload = 0;
-#endif
 }
 
 // called by the new item with the existing item as parameter
@@ -1936,7 +1998,7 @@ bool CWeaponBox::GiveAmmoToPlayer(CBasePlayer *pPlayer, CBasePlayerWeapon *pWeap
 		int iAmmoPickup = min(m_rgAmmo[iAmmoIndex], iMaxAmmo - iCurrentAmmo);
 		if (iAmmoPickup > 0)
 		{
-			if (iCurrentAmmo == 0 && !(pPlayer->pev->weapons & (1<<pWeapon->m_iId)) && (pWeapon->iFlags() & ITEM_FLAG_EXHAUSTIBLE))
+			if (iCurrentAmmo == 0 && !(pPlayer->pev->weapons & (1U<<pWeapon->m_iId)) && (pWeapon->iFlags() & ITEM_FLAG_EXHAUSTIBLE))
 			{
 				if (m_rgAmmo[iAmmoIndex] > iMaxAmmo)
 				{
@@ -1975,6 +2037,14 @@ bool CWeaponBox::GiveAmmoToPlayer(CBasePlayer *pPlayer, CBasePlayerWeapon *pWeap
 			if (!FStringNull(m_rgiszAmmo[iAmmoIndex]) &&
 				pPlayer->GiveAmmo(iAmmoPickup, STRING(m_rgiszAmmo[iAmmoIndex]), iMaxAmmo) != -1)
 			{
+				// The old spent fire grenade can still exist during throw recovery.
+				// Replenishing its empty ammo must adopt the picked-up item's type.
+				if (pWeapon->m_iId == WEAPON_MOLOTOV && iCurrentAmmo == 0)
+				{
+					CBasePlayerItem *existing = pPlayer->GetItemById(WEAPON_MOLOTOV);
+					if (existing && existing != pWeapon)
+						OC2_AdoptFireVariant(static_cast<CBasePlayerWeapon *>(existing), pWeapon);
+				}
 				m_rgAmmo[iAmmoIndex] -= iAmmoPickup;
 
 				if (m_rgAmmo[iAmmoIndex] < 0)

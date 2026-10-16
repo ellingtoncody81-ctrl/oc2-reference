@@ -7,32 +7,32 @@ WeaponStruct g_weaponStruct[MAX_WEAPONS] =
 	{ WEAPON_P228,      P228_PRICE,         TERRORIST|CT,   AUTOBUYCLASS_SECONDARY, AMMO_357SIG_PRICE   },
 	{ WEAPON_SCOUT,     SCOUT_PRICE,        TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_762MM_PRICE    },
 	{ WEAPON_XM1014,    XM1014_PRICE,       TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_BUCKSHOT_PRICE },
-	{ WEAPON_MAC10,     MAC10_PRICE,        CT,             AUTOBUYCLASS_PRIMARY,   AMMO_45ACP_PRICE    },
-	{ WEAPON_AUG,       AUG_PRICE,          TERRORIST,      AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
-	{ WEAPON_ELITE,     ELITE_PRICE,        CT,             AUTOBUYCLASS_SECONDARY, AMMO_9MM_PRICE      },
+	{ WEAPON_MAC10,     MAC10_PRICE,        TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_45ACP_PRICE    },
+	{ WEAPON_AUG,       AUG_PRICE,          TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
+	{ WEAPON_ELITE,     ELITE_PRICE,        TERRORIST|CT,   AUTOBUYCLASS_SECONDARY, AMMO_9MM_PRICE      },
 	{ WEAPON_FIVESEVEN, FIVESEVEN_PRICE,    TERRORIST|CT,   AUTOBUYCLASS_SECONDARY, AMMO_57MM_PRICE     },
-	{ WEAPON_UMP45,     UMP45_PRICE,        TERRORIST,      AUTOBUYCLASS_PRIMARY,   AMMO_45ACP_PRICE    },
-	{ WEAPON_SG550,     SG550_PRICE,        TERRORIST,      AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
+	{ WEAPON_UMP45,     UMP45_PRICE,        TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_45ACP_PRICE    },
+	{ WEAPON_SG550,     SG550_PRICE,        TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
 	{ WEAPON_USP,       USP_PRICE,          TERRORIST|CT,   AUTOBUYCLASS_SECONDARY, AMMO_45ACP_PRICE    },
 	{ WEAPON_GLOCK18,   GLOCK18_PRICE,      TERRORIST|CT,   AUTOBUYCLASS_SECONDARY, AMMO_9MM_PRICE      },
 	{ WEAPON_MP5N,      MP5NAVY_PRICE,      TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_9MM_PRICE      },
 	{ WEAPON_AWP,       AWP_PRICE,          TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_338MAG_PRICE   },
 	{ WEAPON_M249,      M249_PRICE,         TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
 	{ WEAPON_M3,        M3_PRICE,           TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_BUCKSHOT_PRICE },
-	{ WEAPON_M4A1,      M4A1_PRICE,         TERRORIST,      AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
-	{ WEAPON_TMP,       TMP_PRICE,          TERRORIST,      AUTOBUYCLASS_PRIMARY,   AMMO_9MM_PRICE      },
-	{ WEAPON_G3SG1,     G3SG1_PRICE,        CT,             AUTOBUYCLASS_PRIMARY,   AMMO_762MM_PRICE    },
+	{ WEAPON_M4A1,      M4A1_PRICE,         TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
+	{ WEAPON_TMP,       TMP_PRICE,          TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_9MM_PRICE      },
+	{ WEAPON_G3SG1,     G3SG1_PRICE,        TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_762MM_PRICE    },
 	{ WEAPON_DEAGLE,    DEAGLE_PRICE,       TERRORIST|CT,   AUTOBUYCLASS_SECONDARY, AMMO_50AE_PRICE     },
-	{ WEAPON_SG552,     SG552_PRICE,        CT,             AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
-	{ WEAPON_AK47,      AK47_PRICE,         CT,             AUTOBUYCLASS_PRIMARY,   AMMO_762MM_PRICE    },
+	{ WEAPON_SG552,     SG552_PRICE,        TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
+	{ WEAPON_AK47,      AK47_PRICE,         TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_762MM_PRICE    },
 	{ WEAPON_P90,       P90_PRICE,          TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_57MM_PRICE     },
-	{ WEAPON_FAMAS,     FAMAS_PRICE,        TERRORIST,      AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
-	{ WEAPON_GALIL,     GALIL_PRICE,        CT,             AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
+	{ WEAPON_FAMAS,     FAMAS_PRICE,        TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
+	{ WEAPON_GALIL,     GALIL_PRICE,        TERRORIST|CT,   AUTOBUYCLASS_PRIMARY,   AMMO_556MM_PRICE    },
 				// FIX: there is a bug, the cost of galil $2000 instead $2250
 
-	{ WEAPON_SHIELDGUN, SHIELDGUN_PRICE,    TERRORIST,      AUTOBUYCLASS_PRIMARY,   0                   },
+	{ WEAPON_TASER,     TASER_PRICE,        TERRORIST|CT,   AUTOBUYCLASS_NONE,      0                   },
 
-	{ 0, 0, 0, 0, 0 },
+	{ WEAPON_MOLOTOV,   MOLOTOV_PRICE,      TERRORIST|CT,   AUTOBUYCLASS_GRENADE,   0                   },
 	{ 0, 0, 0, 0, 0 },
 	{ 0, 0, 0, 0, 0 },
 	{ 0, 0, 0, 0, 0 },
@@ -66,23 +66,38 @@ AutoBuyInfoStruct g_autoBuyInfo[] =
 	{ AUTOBUYCLASS_PRIMARY|AUTOBUYCLASS_SMG,        "ump45",    "weapon_ump45"          },
 	{ AUTOBUYCLASS_PRIMARY|AUTOBUYCLASS_SMG,        "p90",      "weapon_p90"            },
 	{ AUTOBUYCLASS_PRIMARY|AUTOBUYCLASS_MACHINEGUN, "m249",     "weapon_m249"           },
-	{ AUTOBUYCLASS_PRIMARY|AUTOBUYCLASS_AMMO,       "primammo", "primammo"              },
-	{ AUTOBUYCLASS_SECONDARY|AUTOBUYCLASS_AMMO,     "secammo",  "secammo"               },
 	{ AUTOBUYCLASS_ARMOR,                           "vest",     "item_kevlar"           },
 	{ AUTOBUYCLASS_ARMOR,                           "vesthelm", "item_assaultsuit"      },
 	{ AUTOBUYCLASS_GRENADE,                         "flash",    "weapon_flashbang"      },
 	{ AUTOBUYCLASS_GRENADE,                         "hegren",   "weapon_hegrenade"      },
 	{ AUTOBUYCLASS_GRENADE,                         "sgren",    "weapon_smokegrenade"   },
-	{ AUTOBUYCLASS_NIGHTVISION,                     "nvgs",     "nvgs"                  },
 	{ AUTOBUYCLASS_DEFUSER,                         "defuser",  "defuser"               },
-	{ AUTOBUYCLASS_PRIMARY|AUTOBUYCLASS_SHIELD,     "shield",   "shield"                },
+	{ AUTOBUYCLASS_PRIMARY|AUTOBUYCLASS_SHOTGUN,    "nova",     "weapon_m3"             },
+	{ AUTOBUYCLASS_PRIMARY|AUTOBUYCLASS_SMG,        "mp7",      "weapon_mp5navy"        },
+	{ AUTOBUYCLASS_SECONDARY|AUTOBUYCLASS_PISTOL,   "p250",     "weapon_p228"           },
+	{ AUTOBUYCLASS_PRIMARY|AUTOBUYCLASS_RIFLE,      "sg553",    "weapon_sg552"          },
+	{ AUTOBUYCLASS_PRIMARY|AUTOBUYCLASS_SMG,        "mp9",      "weapon_tmp"            },
+	{ AUTOBUYCLASS_GRENADE,                        "molotov",  "weapon_molotov"        },
+	{ AUTOBUYCLASS_GRENADE,                        "incendiary", "weapon_molotov"      },
+	{ AUTOBUYCLASS_GRENADE,                        "incgrenade", "weapon_molotov"      },
+	{ AUTOBUYCLASS_GRENADE,                        "zeus",     "weapon_zeus"           },
 	{ AUTOBUYCLASS_NONE,                            nullptr,     nullptr                },
 };
 
 WeaponAliasInfo g_weaponAliasInfo[] =
 {
+	{ "nova",       WEAPON_M3           },
+	{ "mp7",        WEAPON_MP5N         },
+	{ "p250",       WEAPON_P228         },
+	{ "sg553",      WEAPON_SG552        },
+	{ "mp9",        WEAPON_TMP          },
+	{ "zeus",       WEAPON_TASER        },
+	{ "taser",      WEAPON_TASER        },
+	{ "molotov",    WEAPON_MOLOTOV      },
+	{ "incendiary", WEAPON_MOLOTOV      },
+	{ "incgrenade", WEAPON_MOLOTOV      },
 	{ "p228",       WEAPON_P228         },
-	{ "???",        WEAPON_GLOCK        },
+
 	{ "scout",      WEAPON_SCOUT        },
 	{ "hegren",     WEAPON_HEGRENADE    },
 	{ "xm1014",     WEAPON_XM1014       },
@@ -124,6 +139,16 @@ WeaponAliasInfo g_weaponAliasInfo[] =
 
 WeaponBuyAliasInfo g_weaponBuyAliasInfo[] =
 {
+	{ "nova",       WEAPON_M3,          "Nova"                 },
+	{ "mp7",        WEAPON_MP5N,        "MP7"                  },
+	{ "p250",       WEAPON_P228,        "P250"                 },
+	{ "sg553",      WEAPON_SG552,       "SG553"                },
+	{ "mp9",        WEAPON_TMP,         "MP9"                  },
+	{ "zeus",       WEAPON_TASER,       "Zeus x27"             },
+	{ "taser",      WEAPON_TASER,       "Zeus x27"             },
+	{ "molotov",    WEAPON_MOLOTOV,     "Molotov"              },
+	{ "incendiary", WEAPON_MOLOTOV,     "Incendiary Grenade"    },
+	{ "incgrenade", WEAPON_MOLOTOV,     "Incendiary Grenade"    },
 	{ "galil",      WEAPON_GALIL,       "#Galil"               },
 	{ "defender",   WEAPON_GALIL,       "#Galil"               },
 	{ "ak47",       WEAPON_AK47,        "#AK47"                },
@@ -171,8 +196,16 @@ WeaponBuyAliasInfo g_weaponBuyAliasInfo[] =
 
 WeaponClassAliasInfo g_weaponClassAliasInfo[] =
 {
+	{ "nova",       WEAPONCLASS_SHOTGUN         },
+	{ "mp7",        WEAPONCLASS_SUBMACHINEGUN   },
+	{ "p250",       WEAPONCLASS_PISTOL          },
+	{ "sg553",      WEAPONCLASS_RIFLE           },
+	{ "mp9",        WEAPONCLASS_SUBMACHINEGUN   },
+	{ "zeus",       WEAPONCLASS_KNIFE           },
+	{ "taser",      WEAPONCLASS_KNIFE           },
+	{ "molotov",    WEAPONCLASS_GRENADE         },
 	{ "p228",       WEAPONCLASS_PISTOL          },
-	{ "???",        WEAPONCLASS_PISTOL          },
+
 	{ "scout",      WEAPONCLASS_SNIPERRIFLE     },
 	{ "hegren",     WEAPONCLASS_GRENADE         },
 	{ "xm1014",     WEAPONCLASS_SHOTGUN         },
@@ -223,12 +256,9 @@ WeaponInfoStruct g_weaponInfo_default[] =
 {
 	{ WEAPON_P228,      P228_PRICE,         AMMO_357SIG_PRICE,                           AMMO_357SIG_BUY,       P228_MAX_CLIP,      MAX_AMMO_357SIG,        AMMO_357SIG,        "weapon_p228",         "ammo_357sig",     "357SIG"       },
 
-// fix collision with glock18
-#ifdef REGAMEDLL_FIXES
-	{ WEAPON_GLOCK,     GLOCK18_PRICE,      AMMO_9MM_PRICE,                              AMMO_9MM_BUY,          GLOCK18_MAX_CLIP,   MAX_AMMO_9MM,           AMMO_9MM,           "weapon_glock",        "ammo_9mm",        "9mm"          },
-#else
-	{ WEAPON_GLOCK,     GLOCK18_PRICE,      AMMO_9MM_PRICE,                              AMMO_9MM_BUY,          GLOCK18_MAX_CLIP,   MAX_AMMO_9MM,           AMMO_9MM,           "weapon_glock18",      "ammo_9mm",        "9mm"          },
-#endif
+// OC2: the formerly unused ID 2 belongs to a one-charge Zeus, with no reserve.
+	{ WEAPON_TASER,     TASER_PRICE,        0,                                           0,                     1,                  0,                      AMMO_TASER,        "weapon_zeus",         nullptr,           "TaserCharge"  },
+	{ WEAPON_MOLOTOV,   MOLOTOV_PRICE,      0,                                           0,                     WEAPON_NOCLIP,      1,                      AMMO_MOLOTOV,      "weapon_molotov",      nullptr,           "Molotov"      },
 
 	{ WEAPON_GLOCK18,   GLOCK18_PRICE,      AMMO_9MM_PRICE,                              AMMO_9MM_BUY,          GLOCK18_MAX_CLIP,   MAX_AMMO_9MM,           AMMO_9MM,           "weapon_glock18",      "ammo_9mm",        "9mm"          },
 	{ WEAPON_SCOUT,     SCOUT_PRICE,        AMMO_762MM_PRICE,                            AMMO_762NATO_BUY,      SCOUT_MAX_CLIP,     MAX_AMMO_762NATO,       AMMO_762NATO,       "weapon_scout",        "ammo_762nato",    "762Nato"      },
@@ -286,6 +316,8 @@ AmmoInfoStruct g_ammoInfo_default[] =
 	{ AMMO_HEGRENADE,    AMMO_HEGRENADE_PRICE,    AMMO_HEGRENADE_BUY,    MAX_AMMO_HEGRENADE,    nullptr,           "HEGrenade"    },
 	{ AMMO_SMOKEGRENADE, AMMO_SMOKEGRENADE_PRICE, AMMO_SMOKEGRENADE_BUY, MAX_AMMO_SMOKEGRENADE, nullptr,           "SmokeGrenade" },
 	{ AMMO_C4,           0,                       0,                     MAX_AMMO_C4,           nullptr,           "C4"           },
+	{ AMMO_MOLOTOV,      0,                       0,                     1,                     nullptr,           "Molotov"      },
+	{ AMMO_TASER,        0,                       0,                     0,                     nullptr,           "TaserCharge"  },
 };
 
 AmmoInfoStruct g_ammoInfo[ARRAYSIZE(g_ammoInfo_default)];
@@ -294,7 +326,8 @@ WeaponSlotInfo g_weaponSlotInfo_default[] = {
 	{ WEAPON_C4,            C4_SLOT,                "weapon_c4"             },
 	{ WEAPON_KNIFE,         KNIFE_SLOT,             "weapon_knife"          },
 	{ WEAPON_P228,          PISTOL_SLOT,            "weapon_p228"           },
-	{ WEAPON_GLOCK,         PISTOL_SLOT,            "weapon_glock"          },
+	{ WEAPON_TASER,         KNIFE_SLOT,             "weapon_zeus"           },
+	{ WEAPON_MOLOTOV,       GRENADE_SLOT,           "weapon_molotov"        },
 	{ WEAPON_ELITE,         PISTOL_SLOT,            "weapon_elite"          },
 	{ WEAPON_FIVESEVEN,     PISTOL_SLOT,            "weapon_fiveseven"      },
 	{ WEAPON_USP,           PISTOL_SLOT,            "weapon_usp"            },
@@ -501,6 +534,7 @@ bool IsGrenadeWeapon(int id)
 	case WEAPON_HEGRENADE:
 	case WEAPON_FLASHBANG:
 	case WEAPON_SMOKEGRENADE:
+	case WEAPON_MOLOTOV:
 		return true;
 	default:
 		break;
@@ -522,13 +556,15 @@ WeaponInfoStruct *GetWeaponInfo(int weaponID)
 
 WeaponInfoStruct *GetWeaponInfo(const char *weaponName)
 {
-	for (auto& info : g_weaponInfo) {
-		if (!Q_stricmp(info.entityName, weaponName)) {
-			return &info;
-		}
-	}
+	if (!weaponName) return nullptr;
+	for (auto& info : g_weaponInfo)
+		if (info.entityName && !Q_stricmp(info.entityName, weaponName)) return &info;
 
-	return nullptr;
+	// Canonical CS:GO names address the existing predicted slot/entity for
+	// converted guns; legacy entity names above remain valid.
+	const char *alias = !Q_strnicmp(weaponName, "weapon_", 7) ? weaponName + 7 : weaponName;
+	const WeaponIdType id = AliasToWeaponID(alias);
+	return id != WEAPON_NONE ? GetWeaponInfo(int(id)) : nullptr;
 }
 
 WeaponInfoStruct *GetDefaultWeaponInfo(int weaponID)
@@ -584,122 +620,23 @@ WeaponSlotInfo *GetWeaponSlot(WeaponIdType weaponID)
 
 WeaponSlotInfo *GetWeaponSlot(const char *weaponName)
 {
-	for (auto& infoSlot : g_weaponSlotInfo) {
-		if (!Q_stricmp(infoSlot.weaponName, weaponName)) {
-			return &infoSlot;
-		}
-	}
-
-	return nullptr;
+	if (!weaponName) return nullptr;
+	for (auto& info : g_weaponSlotInfo)
+		if (info.weaponName && !Q_stricmp(info.weaponName, weaponName)) return &info;
+	const char *alias = !Q_strnicmp(weaponName, "weapon_", 7) ? weaponName + 7 : weaponName;
+	const WeaponIdType id = AliasToWeaponID(alias);
+	return id != WEAPON_NONE ? GetWeaponSlot(id) : nullptr;
 }
 
-bool CanBuyWeaponByMaptype(int playerTeam, WeaponIdType weaponID, bool useAssasinationRestrictions)
+bool CanBuyWeaponByMaptype(int playerTeam, WeaponIdType weaponID, bool /*useAssasinationRestrictions*/)
 {
-	if (useAssasinationRestrictions)
-	{
-		if (playerTeam == CT)
-		{
-			switch (weaponID)
-			{
-			case WEAPON_P228:
-			case WEAPON_XM1014:
-			case WEAPON_AUG:
-			case WEAPON_FIVESEVEN:
-			case WEAPON_UMP45:
-			case WEAPON_SG550:
-			case WEAPON_FAMAS:
-			case WEAPON_USP:
-			case WEAPON_GLOCK18:
-			case WEAPON_MP5N:
-			case WEAPON_M249:
-			case WEAPON_M3:
-			case WEAPON_M4A1:
-			case WEAPON_TMP:
-			case WEAPON_DEAGLE:
-			case WEAPON_P90:
-			case WEAPON_SHIELDGUN:
-				return true;
-			default:
-				return false;
-			}
-		}
-		else if (playerTeam == TERRORIST)
-		{
-			switch (weaponID)
-			{
-			case WEAPON_P228:
-			case WEAPON_MAC10:
-			case WEAPON_ELITE:
-			case WEAPON_UMP45:
-			case WEAPON_GALIL:
-			case WEAPON_USP:
-			case WEAPON_GLOCK18:
-			case WEAPON_AWP:
-			case WEAPON_DEAGLE:
-			case WEAPON_AK47:
-				return true;
-			default:
-				return false;
-			}
-		}
-
+	if (playerTeam != CT && playerTeam != TERRORIST)
 		return false;
-	}
-	if (playerTeam == CT)
-	{
-		switch (weaponID)
-		{
-		case WEAPON_P228:
-		case WEAPON_SCOUT:
-		case WEAPON_XM1014:
-		case WEAPON_AUG:
-		case WEAPON_FIVESEVEN:
-		case WEAPON_UMP45:
-		case WEAPON_SG550:
-		case WEAPON_FAMAS:
-		case WEAPON_USP:
-		case WEAPON_GLOCK18:
-		case WEAPON_AWP:
-		case WEAPON_MP5N:
-		case WEAPON_M249:
-		case WEAPON_M3:
-		case WEAPON_M4A1:
-		case WEAPON_TMP:
-		case WEAPON_DEAGLE:
-		case WEAPON_P90:
-		case WEAPON_SHIELDGUN:
-			return true;
-		default:
-			return false;
-		}
-	}
-	else if (playerTeam == TERRORIST)
-	{
-		switch (weaponID)
-		{
-		case WEAPON_P228:
-		case WEAPON_SCOUT:
-		case WEAPON_XM1014:
-		case WEAPON_MAC10:
-		case WEAPON_ELITE:
-		case WEAPON_UMP45:
-		case WEAPON_GALIL:
-		case WEAPON_USP:
-		case WEAPON_GLOCK18:
-		case WEAPON_AWP:
-		case WEAPON_MP5N:
-		case WEAPON_M249:
-		case WEAPON_M3:
-		case WEAPON_G3SG1:
-		case WEAPON_DEAGLE:
-		case WEAPON_SG552:
-		case WEAPON_AK47:
-		case WEAPON_P90:
-			return true;
-		default:
-			return false;
-		}
-	}
 
-	return false;
+	// Equipment availability is shared by both teams. VIP-player and map-wide
+	// no-buy rules remain authoritative in CBasePlayer::CanPlayerBuy.
+	if (weaponID == WEAPON_SHIELDGUN)
+		return false;
+	return IsPrimaryWeapon(weaponID) || IsSecondaryWeapon(weaponID) ||
+		IsGrenadeWeapon(weaponID) || weaponID == WEAPON_TASER;
 }

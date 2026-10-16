@@ -86,8 +86,8 @@ const int DEFAULT_FOV      = 90;	// the default field of view
 #define HUD_PRINTTALK    3
 #define HUD_PRINTCENTER  4
 
-#define WEAPON_SUIT       31
-#define WEAPON_ALLWEAPONS (~(1<<WEAPON_SUIT))
+#define WEAPON_SUIT       0
+#define WEAPON_ALLWEAPONS (~(1U<<WEAPON_SUIT))
 
 // custom enum
 enum VGUIMenu

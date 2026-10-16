@@ -91,8 +91,8 @@ void CM4A1::SecondaryAttack()
 		Q_strlcpy(m_pPlayer->m_szAnimExtention, "rifle");
 	}
 
-	m_flTimeWeaponIdle = m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 2.0f;
-	m_flNextPrimaryAttack = GetNextAttackDelay(2.0);
+	const float duration = AnimationDuration(m_pPlayer->pev->weaponanim,2.0f);
+	m_flNextPrimaryAttack = m_flNextSecondaryAttack = m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + duration;
 }
 
 void CM4A1::PrimaryAttack()

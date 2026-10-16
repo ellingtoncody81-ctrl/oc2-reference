@@ -226,7 +226,7 @@ EXT_FUNC bool CCSPlayer::RemovePlayerItemEx(const char* pszItemName, bool bRemov
 			if (pItem == pPlayer->m_pActiveItem) {
 				((CBasePlayerWeapon *)pItem)->RetireWeapon();
 
-				if (pItem->CanHolster() && pItem != pPlayer->m_pActiveItem && !(pPlayer->pev->weapons &(1 << pItem->m_iId))) {
+				if (pItem->CanHolster() && pItem != pPlayer->m_pActiveItem && !(pPlayer->pev->weapons &(1U << pItem->m_iId))) {
 					return true;
 				}
 			}

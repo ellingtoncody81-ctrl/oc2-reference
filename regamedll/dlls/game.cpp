@@ -1,4 +1,6 @@
 #include "precompiled.h"
+#include "oc2_inferno.h"
+#include "wpn_shared/oc2_weapon_params.h"
 
 cvar_t *g_pskill          = nullptr;
 cvar_t *g_psv_gravity     = nullptr;
@@ -257,10 +259,109 @@ void GameDLL_SwapTeams_f()
 
 SpewRetval_t GameDLL_SpewHandler(SpewType_t spewType, int level, const char *pMsg);
 
+// Read-only server-console diagnostics. No cheat flag is needed because these
+// commands never change money, health, inventory, or weapon state.
+static void OC2_EquipmentDump()
+{
+	static const WeaponIdType ids[] = { WEAPON_NOVA, WEAPON_MP7, WEAPON_P250, WEAPON_SG553, WEAPON_MP9 };
+	static const char *const names[] = { "nova", "mp7", "p250", "sg553", "mp9" };
+	ALERT(at_console, "oc2equipment: t=%.3f clients=%d\n", gpGlobals->time, gpGlobals->maxClients);
+	for (int kind = 0; kind < ARRAYSIZE(ids); ++kind)
+	{
+		const oc2_weapon::Params &p = oc2_weapon::Get(static_cast<oc2_weapon::Kind>(kind));
+		const WeaponInfoStruct *info = GetWeaponInfo(ids[kind]);
+		ALERT(at_console, "oc2params: name=%s id=%d damage=%d clip=%d reserve=%d pellets=%d price=%d registry_price=%d cycle=%.5f range=%.1f range_modifier=%.5f penetration=%d speed=%.3f/%.3f spread=%.6f/%.6f\n",
+			names[kind], ids[kind], p.damage, p.clip, p.reserve, p.pellets, p.price,
+			info ? info->cost : -1, p.cycle, p.range, p.rangeModifier, p.penetration,
+			p.speed[0], p.speed[1], p.spread[0], p.spread[1]);
+		ALERT(at_console, "oc2accuracy: name=%s crouch=%.6f/%.6f stand=%.6f/%.6f fire=%.6f move=%.6f/%.6f jump=%.6f jump_initial=%.6f ladder=%.6f/%.6f recovery_crouch=%.6f recovery_stand=%.6f land=%.6f recoil_seed=%d recoil=%.3f/%.3f recoil_variance=%.3f full_auto=%d\n",
+			names[kind], p.crouch[0], p.crouch[1], p.stand[0], p.stand[1], p.fire,
+			p.move[0], p.move[1], p.jump, p.jumpInitial, p.ladder[0], p.ladder[1],
+			p.recoveryCrouch, p.recoveryStand, p.land, p.recoilSeed,
+			p.recoilMagnitude[0], p.recoilMagnitude[1], p.recoilMagnitudeVariance, int(p.fullAuto));
+	}
+	for (int index = 1; index <= gpGlobals->maxClients; ++index)
+	{
+		CBasePlayer *player = UTIL_PlayerByIndex(index);
+		if (!UTIL_IsValidPlayer(player)) continue;
+		CBasePlayerItem *active = player->m_pActiveItem;
+		CBasePlayerWeapon *activeWeapon = active ? static_cast<CBasePlayerWeapon *>(active->GetWeaponPtr()) : nullptr;
+		CBasePlayerItem *molotov = player->GetItemById(WEAPON_MOLOTOV);
+		const int ammoIndex = molotov ? molotov->PrimaryAmmoIndex() : -1;
+		const int ammo31 = ammoIndex >= 0 && ammoIndex < MAX_AMMO_SLOTS ? player->m_rgAmmo[ammoIndex] : 0;
+		ALERT(at_console, "oc2player: index=%d userid=%d team=%d alive=%d health=%.3f armor=%.3f money=%d weaponbits=%08x active=%d classname=%s clip=%d ammo31=%d ammo31_index=%d zeus_buys=%d origin=%.3f/%.3f/%.3f\n",
+			index, GETPLAYERUSERID(player->edict()), player->m_iTeam, int(player->IsAlive()),
+			player->pev->health, player->pev->armorvalue, player->m_iAccount,
+			static_cast<unsigned int>(player->pev->weapons), active ? active->m_iId : 0,
+			active ? STRING(active->pev->classname) : "none", activeWeapon ? activeWeapon->m_iClip : -1,
+			ammo31, ammoIndex, player->m_iOc2ZeusPurchases,
+			player->pev->origin.x, player->pev->origin.y, player->pev->origin.z);
+		for (int kind = 0; kind < ARRAYSIZE(ids); ++kind)
+		{
+			CBasePlayerItem *item = player->GetItemById(ids[kind]);
+			CBasePlayerWeapon *weapon = item ? static_cast<CBasePlayerWeapon *>(item->GetWeaponPtr()) : nullptr;
+			if (!weapon) continue;
+			const int primary = weapon->PrimaryAmmoIndex();
+			float damage = float(oc2_weapon::Get(static_cast<oc2_weapon::Kind>(kind)).damage);
+#ifdef REGAMEDLL_API
+			damage = weapon->CSPlayerWeapon()->m_flBaseDamage;
+#endif
+			ALERT(at_console, "oc2owned: index=%d name=%s id=%d damage=%.3f clip=%d ammo_index=%d reserve=%d maxspeed=%.3f accuracy=%.6f shots=%d next_primary=%.6f\n",
+				index, names[kind], ids[kind], damage, weapon->m_iClip, primary,
+				primary >= 0 && primary < MAX_AMMO_SLOTS ? player->m_rgAmmo[primary] : 0,
+				weapon->GetMaxSpeed(), weapon->m_flAccuracy, weapon->m_iShotsFired, weapon->m_flNextPrimaryAttack);
+		}
+	}
+}
+
+static void OC2_FireInventoryDump()
+{
+	for (int index=1;index<=gpGlobals->maxClients;++index)
+	{
+		CBasePlayer *player=UTIL_PlayerByIndex(index);
+		if (!UTIL_IsValidPlayer(player)) continue;
+		CBasePlayerItem *item=player->GetItemById(WEAPON_MOLOTOV);
+		const int ammo=item ? item->PrimaryAmmoIndex() : -1;
+		ALERT(at_console,"oc2fireheld: player=%d team=%d ammo=%d state=%d\n",index,player->m_iTeam,
+			ammo>=0 && ammo<MAX_AMMO_SLOTS ? player->m_rgAmmo[ammo] : 0,
+			item ? static_cast<CBasePlayerWeapon *>(item)->m_iWeaponState : 0);
+	}
+	CBaseEntity *entity=nullptr;
+	while ((entity=UTIL_FindEntityByClassname(entity,"weaponbox")))
+	{
+		CWeaponBox *box=static_cast<CWeaponBox *>(entity);
+		for (int slot=0;slot<MAX_ITEM_TYPES;++slot)
+			for (CBasePlayerItem *item=box->m_rgpPlayerItems[slot];item;item=item->m_pNext)
+				if (item->m_iId==WEAPON_MOLOTOV)
+					ALERT(at_console,"oc2firebox: index=%d state=%d model=%s origin=%.3f/%.3f/%.3f\n",entity->entindex(),static_cast<CBasePlayerWeapon *>(item)->m_iWeaponState,STRING(entity->pev->model),entity->pev->origin.x,entity->pev->origin.y,entity->pev->origin.z);
+	}
+}
+
+static void OC2_WeaponDump()
+{
+	const int index = CMD_ARGC() > 1 ? Q_atoi(CMD_ARGV(1)) : 1;
+	if (index < 1 || index > gpGlobals->maxClients) return;
+	CBasePlayer *player = UTIL_PlayerByIndex(index);
+	if (!UTIL_IsValidPlayer(player) || !player->m_pActiveItem) return;
+	CBasePlayerWeapon *weapon = static_cast<CBasePlayerWeapon *>(player->m_pActiveItem->GetWeaponPtr());
+	if (!weapon) return;
+	const int ammo = weapon->PrimaryAmmoIndex();
+	ALERT(at_console, "oc2weapon: t=%.6f player=%d id=%d class=%s clip=%d reserve=%d maxclip=%d reload=%d special=%d insert=%.6f next=%.6f primary=%.6f state=%d view=%s world=%s\n",
+		gpGlobals->time, index, weapon->m_iId, STRING(weapon->pev->classname), weapon->m_iClip,
+		ammo >= 0 && ammo < MAX_AMMO_SLOTS ? player->m_rgAmmo[ammo] : 0, weapon->iMaxClip(),
+		int(weapon->m_fInReload), weapon->m_fInSpecialReload, weapon->m_flNextReload,
+		player->m_flNextAttack, weapon->m_flNextPrimaryAttack, weapon->m_iWeaponState,
+		STRING(player->pev->viewmodel), STRING(weapon->pev->model));
+}
+
 void EXT_FUNC GameDLLInit()
 {
 	// By default, direct dbg reporting...
 	SpewOutputFunc(GameDLL_SpewHandler);
+	ADD_SERVER_COMMAND("oc2_equipment_dump", OC2_EquipmentDump);
+	ADD_SERVER_COMMAND("oc2_weapon_dump", OC2_WeaponDump);
+	ADD_SERVER_COMMAND("oc2_fire_inventory_dump", OC2_FireInventoryDump);
+	ADD_SERVER_COMMAND("oc2_inferno_dump", OC2_InfernoDump);
 
 	g_pskill          = CVAR_GET_POINTER("skill");
 	g_psv_gravity     = CVAR_GET_POINTER("sv_gravity");
