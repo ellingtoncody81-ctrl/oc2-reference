@@ -296,3 +296,4 @@ extern int gmsgAccount;
 extern int gmsgHealthInfo;
 extern int gmsgHudRound;
 extern int gmsgBuyState;
+extern int gmsgEquipment;

@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_inferno.h"
 
 int gmsgWeapPickup = 0;
 int gmsgHudText = 0;
@@ -85,6 +86,8 @@ int gmsgAccount = 0;
 int gmsgHealthInfo = 0;
 int gmsgHudRound = 0;
 int gmsgBuyState = 0;
+int gmsgEquipment = 0;
+int gmsgFireVariant = 0;
 bool g_bClientPrintEnable = true;
 
 char *sPlayerModelFiles[] =
@@ -234,6 +237,8 @@ void LinkUserMessages()
 #endif
 	gmsgHudRound      = REG_USER_MSG("HudRound", 0);
 	gmsgBuyState      = REG_USER_MSG("BuyState", 3);
+	gmsgEquipment     = REG_USER_MSG("Equipment", 2); // version byte + Zeus purchases this round
+	gmsgFireVariant   = REG_USER_MSG("FireVariant", 1); // Physical fire-grenade variant, independent of team.
 }
 
 void WriteSigonMessages()
@@ -1134,8 +1139,46 @@ void EXT_FUNC __API_HOOK(SendSayMessage)(CBasePlayer *pPlayer, const char *pszCm
 	}
 }
 
+namespace
+{
+bool OC2RemovedBuyCommand(const char *command)
+{
+	if (!command) return false;
+	const char *const removed[] = {"primammo", "secammo", "buyammo1", "buyammo2", "nvgs", "nvg", "nightvision", "shield"};
+	for (const char *entry : removed)
+		if (!Q_stricmp(command, entry)) return true;
+	return false;
+}
+
+CBasePlayerItem *OC2OwnedWeapon(CBasePlayer *player, int weaponID)
+{
+	for (int slot = 0; slot < MAX_ITEM_TYPES; ++slot)
+		for (CBasePlayerItem *item = player->m_rgpPlayerItems[slot]; item; item = item->m_pNext)
+			if (item->m_iId == weaponID) return item;
+	return nullptr;
+}
+}
+
 bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
 {
+	if (iWeapon == WEAPON_SHIELDGUN)
+		return false;
+	if (iWeapon == WEAPON_TASER && (pPlayer->m_iOc2ZeusPurchases >= 1 || OC2OwnedWeapon(pPlayer, iWeapon)))
+	{
+		if (g_bClientPrintEnable) ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cannot_Carry_Anymore");
+		return false;
+	}
+	if (IsGrenadeWeapon(iWeapon))
+	{
+		WeaponInfoStruct *info = GetWeaponInfo(iWeapon);
+		const int ammo = info && info->ammoName2 ? pPlayer->GetAmmoIndex(info->ammoName2) : -1;
+		if (!info || ammo < 0 || ammo >= MAX_AMMO_SLOTS || pPlayer->m_rgAmmo[ammo] >= info->maxRounds)
+		{
+			if (g_bClientPrintEnable) ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cannot_Carry_Anymore");
+			return false;
+		}
+	}
+
 	if (pPlayer->HasShield() && iWeapon == WEAPON_ELITE)
 		return false;
 
@@ -1301,16 +1344,10 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 	if (!pPlayer->CanPlayerBuy(true))
 		return;
 
-	if (pPlayer->m_iTeam == CT)
-	{
-		if (iSlot < 1 || iSlot > 8)
-			return;
-	}
-	else
-	{
-		if (iSlot < 1 || iSlot > 6)
-			return;
-	}
+	if ((pPlayer->m_iTeam != CT && pPlayer->m_iTeam != TERRORIST) || iSlot < 1 || iSlot > 8)
+		return;
+	if (iSlot == MENU_SLOT_ITEM_NVG || iSlot == MENU_SLOT_ITEM_SHIELD)
+		return;
 
 	bool bFullArmor = (pPlayer->pev->armorvalue >= 100);
 	bool bHasHelmet = (pPlayer->m_iKevlar == ARMOR_VESTHELM);
@@ -1479,39 +1516,6 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 			}
 			break;
 		}
-		case MENU_SLOT_ITEM_NVG:
-		{
-#ifdef REGAMEDLL_ADD
-			if (pPlayer->HasRestrictItem(ITEM_NVG, ITEM_TYPE_BUYING))
-				return;
-#endif
-			if (pPlayer->m_bHasNightVision)
-			{
-				if (g_bClientPrintEnable)
-				{
-					ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Already_Have_One");
-				}
-
-				return;
-			}
-
-			if (pPlayer->m_iAccount >= NVG_PRICE)
-			{
-				if (!(pPlayer->m_flDisplayHistory & DHF_NIGHTVISION))
-				{
-					pPlayer->HintMessage("#Hint_use_nightvision");
-					pPlayer->m_flDisplayHistory |= DHF_NIGHTVISION;
-				}
-
-				EMIT_SOUND(ENT(pPlayer->pev), CHAN_ITEM, "items/equip_nvg.wav", VOL_NORM, ATTN_NORM);
-
-				bEnoughMoney = true;
-				pPlayer->m_bHasNightVision = true;
-				pPlayer->AddAccount(-NVG_PRICE, RT_PLAYER_BOUGHT_SOMETHING);
-				pPlayer->SendItemStatus();
-			}
-			break;
-		}
 		case MENU_SLOT_ITEM_DEFUSEKIT:
 		{
 #ifdef REGAMEDLL_ADD
@@ -1545,27 +1549,6 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 			}
 			break;
 		}
-		case MENU_SLOT_ITEM_SHIELD:
-		{
-#ifdef REGAMEDLL_ADD
-			if (pPlayer->HasRestrictItem(ITEM_SHIELDGUN, ITEM_TYPE_BUYING))
-				return;
-#endif
-
-			if (!CanBuyThis(pPlayer, WEAPON_SHIELDGUN))
-				return;
-
-			if (pPlayer->m_iAccount >= SHIELDGUN_PRICE)
-			{
-				bEnoughMoney = true;
-				pPlayer->DropPrimary();
-				pPlayer->GiveShield();
-				pPlayer->AddAccount(-SHIELDGUN_PRICE, RT_PLAYER_BOUGHT_SOMETHING);
-
-				EMIT_SOUND(ENT(pPlayer->pev), CHAN_ITEM, "items/gunpickup2.wav", VOL_NORM, ATTN_NORM);
-			}
-			break;
-		}
 	}
 
 	if (!bEnoughMoney)
@@ -1581,11 +1564,19 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 
 	if (pszItem)
 	{
+		const int acquired = iSlot == MENU_SLOT_ITEM_FLASHGREN ? WEAPON_FLASHBANG :
+			iSlot == MENU_SLOT_ITEM_HEGREN ? WEAPON_HEGRENADE :
+			iSlot == MENU_SLOT_ITEM_SMOKEGREN ? WEAPON_SMOKEGRENADE : 0;
+		const int ammoIndex = acquired == WEAPON_FLASHBANG ? AMMO_FLASHBANG :
+			acquired == WEAPON_HEGRENADE ? AMMO_HEGRENADE : acquired == WEAPON_SMOKEGRENADE ? AMMO_SMOKEGRENADE : 0;
+		const int ammoBefore = acquired ? pPlayer->AmmoInventory(ammoIndex) : 0;
 		g_bItemCreatedByBuying = true;
 		pPlayer->GiveNamedItem(pszItem);
 		g_bItemCreatedByBuying = false;
 
 		pPlayer->AddAccount(-iItemPrice, RT_PLAYER_BOUGHT_SOMETHING);
+		if (acquired && OC2OwnedWeapon(pPlayer,acquired) && pPlayer->AmmoInventory(ammoIndex) > ammoBefore)
+			pPlayer->RecordBuyPresentation(acquired);
 	}
 
 	if (TheTutor)
@@ -1602,57 +1593,66 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
 		return nullptr;
 
 #ifdef REGAMEDLL_ADD
-	if (pPlayer->HasRestrictItem((ItemID)weaponID, ITEM_TYPE_BUYING))
+	// New IDs have no corresponding legacy ItemID: 31 used to mean NVG.
+	// Keep existing item restrictions for old guns without mislabeling Molotov.
+	if (weaponID != WEAPON_TASER && weaponID != WEAPON_MOLOTOV &&
+		pPlayer->HasRestrictItem((ItemID)weaponID, ITEM_TYPE_BUYING))
 		return nullptr;
 #endif
-
 	if (!CanBuyThis(pPlayer, weaponID))
 		return nullptr;
-
 	WeaponInfoStruct *info = GetWeaponInfo(weaponID);
 	if (!info || !info->entityName)
 		return nullptr;
-
-	if (pPlayer->m_iAccount < info->cost)
+	const bool fireGrenade = weaponID == WEAPON_MOLOTOV;
+	if (fireGrenade && pPlayer->m_iTeam != CT && pPlayer->m_iTeam != TERRORIST) return nullptr;
+	const bool incendiary = fireGrenade && pPlayer->m_iTeam == CT;
+	const int cost = incendiary ? 600 : info->cost;
+	const char *entityName = incendiary ? "weapon_incendiary" : info->entityName;
+	if (pPlayer->m_iAccount < cost)
 	{
 		if (g_bClientPrintEnable)
 		{
 			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Not_Enough_Money");
 			BlinkAccount(pPlayer);
 		}
-
 		return nullptr;
 	}
 
+	const bool grenade = IsGrenadeWeapon(weaponID);
+	const int ammoIndex = grenade && info->ammoName2 ? pPlayer->GetAmmoIndex(info->ammoName2) : -1;
+	const int ammoBefore = ammoIndex >= 0 && ammoIndex < MAX_AMMO_SLOTS ? pPlayer->m_rgAmmo[ammoIndex] : 0;
 	if (IsPrimaryWeapon(weaponID))
-	{
 		pPlayer->DropPrimary();
-	}
-	else
+	else if (IsSecondaryWeapon(weaponID))
+		pPlayer->DropSecondary(); // Zeus/knife/grenade purchases must preserve the pistol.
+
+	const bool previousBuying = g_bItemCreatedByBuying;
+	g_bItemCreatedByBuying = true;
+	CBaseEntity *created = pPlayer->GiveNamedItem(entityName);
+	g_bItemCreatedByBuying = previousBuying;
+	CBasePlayerItem *owned = OC2OwnedWeapon(pPlayer, weaponID);
+	// DispatchTouch may reject a created entity. Creation alone is not a sale.
+	if (!created || !owned || (grenade && (ammoIndex < 0 || ammoIndex >= MAX_AMMO_SLOTS || pPlayer->m_rgAmmo[ammoIndex] <= ammoBefore)))
+		return nullptr;
+
+	pPlayer->AddAccount(-cost, RT_PLAYER_BOUGHT_SOMETHING);
+	pPlayer->RecordBuyPresentation(weaponID);
+	if (weaponID == WEAPON_TASER)
+		++pPlayer->m_iOc2ZeusPurchases; // Source default: one successful purchase per real round.
+
+	// Gun purchases include reserve ammo. Exhaustible equipment such as Zeus
+	// has no reserve and must never gain a second charge through this path.
+	if (IsPrimaryWeapon(weaponID) || IsSecondaryWeapon(weaponID))
 	{
-		pPlayer->DropSecondary();
+		const int maximum = owned->iMaxAmmo1();
+		const int index = owned->PrimaryAmmoIndex();
+		if (maximum > 0 && owned->pszAmmo1() && index >= 0 && index < MAX_AMMO_SLOTS && pPlayer->m_rgAmmo[index] < maximum)
+			pPlayer->GiveAmmo(maximum - pPlayer->m_rgAmmo[index], owned->pszAmmo1(), maximum);
 	}
-
-	auto pEntity = pPlayer->GiveNamedItem(info->entityName);
-	pPlayer->AddAccount(-info->cost, RT_PLAYER_BOUGHT_SOMETHING);
-
-#ifdef REGAMEDLL_ADD
-	if (refill_bpammo_weapons.value > 1)
-	{
-		CBasePlayerItem *pItem = static_cast<CBasePlayerItem *>(pEntity);
-
-		if (pItem) {
-			pPlayer->GiveAmmo(pItem->iMaxAmmo1(), pItem->pszAmmo1(), pItem->iMaxAmmo1());
-		}
-	}
-#endif
-
 	if (TheTutor)
-	{
 		TheTutor->OnEvent(EVENT_PLAYER_BOUGHT_SOMETHING, pPlayer);
-	}
-
-	return pEntity;
+	return owned;
 }
 
 LINK_HOOK_VOID_CHAIN(HandleMenu_ChooseAppearance, (CBasePlayer *pPlayer, int slot), pPlayer, slot)
@@ -2331,90 +2331,13 @@ LINK_HOOK_CHAIN(bool, BuyGunAmmo, (CBasePlayer *pPlayer, CBasePlayerItem *weapon
 
 bool EXT_FUNC __API_HOOK(BuyGunAmmo)(CBasePlayer *pPlayer, CBasePlayerItem *weapon, bool bBlinkMoney)
 {
-	if (!pPlayer->CanPlayerBuy(true))
-		return false;
-
-	// Ensure that the weapon uses ammo
-	int nAmmo = weapon->PrimaryAmmoIndex();
-	if (nAmmo == -1)
-		return false;
-
-	// Can only buy if the player does not already have full ammo
-	if (pPlayer->m_rgAmmo[nAmmo] >= weapon->iMaxAmmo1())
-		return false;
-
-	WeaponInfoStruct *info = GetWeaponInfo(weapon->m_iId);
-	if (!info)
-	{
-		ALERT(at_console, "Tried to buy ammo for an unrecognized gun\n");
-		return false;
-	}
-
-	// Purchase the ammo if the player has enough money
-	if (pPlayer->m_iAccount >= info->clipCost)
-	{
-#ifdef REGAMEDLL_FIXES
-		if (pPlayer->GiveAmmo(info->buyClipSize, weapon->pszAmmo1(), weapon->iMaxAmmo1()) == -1)
-			return false;
-
-		EMIT_SOUND(ENT(weapon->pev), CHAN_ITEM, "items/9mmclip1.wav", VOL_NORM, ATTN_NORM);
-#else
-		if (!pPlayer->GiveNamedItemEx(info->ammoName1)) {
-			return false;
-		}
-#endif
-
-		pPlayer->AddAccount(-info->clipCost, RT_PLAYER_BOUGHT_SOMETHING);
-		return true;
-	}
-
-	if (bBlinkMoney)
-	{
-		if (g_bClientPrintEnable)
-		{
-			// Not enough money.. let the player know
-			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Not_Enough_Money");
-			BlinkAccount(pPlayer);
-		}
-	}
-
+	// Retain the hook ABI but disable every old paid-ammunition route.
 	return false;
 }
 
 bool BuyAmmo(CBasePlayer *pPlayer, int nSlot, bool bBlinkMoney)
 {
-	if (!pPlayer->CanPlayerBuy(true))
-		return false;
-
-	if (nSlot < PRIMARY_WEAPON_SLOT || nSlot > PISTOL_SLOT)
-		return false;
-
-	// Buy one ammo clip for all weapons in the given slot
-	//
-	// nSlot == 1 : Primary weapons
-	// nSlot == 2 : Secondary weapons
-
-	CBasePlayerItem *pItem = pPlayer->m_rgpPlayerItems[nSlot];
-
-	if (pPlayer->HasShield())
-	{
-		if (pPlayer->m_rgpPlayerItems[PISTOL_SLOT])
-			pItem = pPlayer->m_rgpPlayerItems[PISTOL_SLOT];
-	}
-
-	if (pItem)
-	{
-		while (BuyGunAmmo(pPlayer, pItem, bBlinkMoney))
-		{
-			pItem = pItem->m_pNext;
-
-			if (!pItem)
-			{
-				return true;
-			}
-		}
-	}
-
+	// Reserve ammunition is included only after a successful gun purchase.
 	return false;
 }
 
@@ -2468,145 +2391,51 @@ NOXREF int CountPlayersInServer()
 // ** Returns TRUE if we've handled the command **
 BOOL HandleBuyAliasCommands(CBasePlayer *pPlayer, const char *pszCommand)
 {
-	// Let them buy it if it's got a weapon data string.
-	BOOL bRetVal = FALSE;
-	const char *pszFailItem = nullptr;
+	if (!pszCommand) return FALSE;
+	if (OC2RemovedBuyCommand(pszCommand)) return TRUE;
+	// Team affects the shop, never a carried/dropped item's identity. Direct
+	// aliases must obey the same distinction as the ID-31 menu purchase.
+	const bool asksMolotov = !Q_stricmp(pszCommand, "molotov");
+	const bool asksIncendiary = !Q_stricmp(pszCommand, "incendiary") || !Q_stricmp(pszCommand, "incgrenade");
+	if ((asksMolotov && pPlayer->m_iTeam != TERRORIST) || (asksIncendiary && pPlayer->m_iTeam != CT))
+	{
+		if (g_bClientPrintEnable) ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cannot_Buy_This");
+		return TRUE;
+	}
 
+	BOOL handled = FALSE;
 	WeaponIdType weaponID = WEAPON_NONE;
-	const char *weaponFailName = BuyAliasToWeaponID(pszCommand, weaponID);
-
-	// Ok, we have weapon info ID.
+	const char *failName = BuyAliasToWeaponID(pszCommand, weaponID);
 	if (weaponID != WEAPON_NONE)
 	{
-		// assasination maps have a specific set of weapons that can be used in them.
+		handled = TRUE;
 		if (CanBuyWeaponByMaptype(pPlayer->m_iTeam, weaponID, CSGameRules()->m_bMapHasVIPSafetyZone == TRUE))
-		{
-			bRetVal = TRUE;
 			BuyWeaponByWeaponID(pPlayer, weaponID);
-		}
-		else if (weaponFailName)
+		else if (g_bClientPrintEnable)
 		{
-			bRetVal = TRUE;
-			if (g_bClientPrintEnable)
-			{
-				ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Alias_Not_Avail", weaponFailName);
-			}
-		}
-		else
-		{
-			bRetVal = TRUE;
-			if (g_bClientPrintEnable)
-			{
-				ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cannot_Buy_This");
-			}
+			if (failName) ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Alias_Not_Avail", failName);
+			else ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cannot_Buy_This");
 		}
 	}
 	else
 	{
-		// primary ammo
-		if (FStrEq(pszCommand, "primammo"))
+		const struct { const char *alias; int slot; } equipment[] = {
+			{"vest", MENU_SLOT_ITEM_VEST}, {"vesthelm", MENU_SLOT_ITEM_VESTHELM},
+			{"flash", MENU_SLOT_ITEM_FLASHGREN}, {"hegren", MENU_SLOT_ITEM_HEGREN},
+			{"sgren", MENU_SLOT_ITEM_SMOKEGREN}, {"defuser", MENU_SLOT_ITEM_DEFUSEKIT}
+		};
+		for (const auto &item : equipment)
 		{
-			bRetVal = TRUE;
-
-			// Buy as much primary ammo as possible
-			// Blink money only if player doesn't have enough for the
-			// first clip
-			if (BuyAmmo(pPlayer, PRIMARY_WEAPON_SLOT, true))
+			if (!Q_stricmp(pszCommand, item.alias))
 			{
-				while (BuyAmmo(pPlayer, PRIMARY_WEAPON_SLOT, false))
-					;
-
-				if (TheTutor)
-				{
-					TheTutor->OnEvent(EVENT_PLAYER_BOUGHT_SOMETHING, pPlayer);
-				}
-			}
-		}
-		// secondary ammo
-		else if (FStrEq(pszCommand, "secammo"))
-		{
-			bRetVal = TRUE;
-
-			// Buy as much secondary ammo as possible
-			// Blink money only if player doesn't have enough for the
-			// first clip
-			if (BuyAmmo(pPlayer, PISTOL_SLOT, true))
-			{
-				while (BuyAmmo(pPlayer, PISTOL_SLOT, false))
-					;
-
-				if (TheTutor)
-				{
-					TheTutor->OnEvent(EVENT_PLAYER_BOUGHT_SOMETHING, pPlayer);
-				}
-			}
-		}
-		// equipment
-		else if (FStrEq(pszCommand, "vest"))
-		{
-			bRetVal = TRUE;
-			BuyItem(pPlayer, MENU_SLOT_ITEM_VEST);
-		}
-		else if (FStrEq(pszCommand, "vesthelm"))
-		{
-			bRetVal = TRUE;
-			BuyItem(pPlayer, MENU_SLOT_ITEM_VESTHELM);
-		}
-		else if (FStrEq(pszCommand, "flash"))
-		{
-			bRetVal = TRUE;
-			BuyItem(pPlayer, MENU_SLOT_ITEM_FLASHGREN);
-		}
-		else if (FStrEq(pszCommand, "hegren"))
-		{
-			bRetVal = TRUE;
-			BuyItem(pPlayer, MENU_SLOT_ITEM_HEGREN);
-		}
-		else if (FStrEq(pszCommand, "sgren"))
-		{
-			bRetVal = TRUE;
-			BuyItem(pPlayer, MENU_SLOT_ITEM_SMOKEGREN);
-		}
-		else if (FStrEq(pszCommand, "nvgs"))
-		{
-			bRetVal = TRUE;
-			BuyItem(pPlayer, MENU_SLOT_ITEM_NVG);
-		}
-		else if (FStrEq(pszCommand, "defuser"))
-		{
-			bRetVal = TRUE;
-			if (pPlayer->m_iTeam == CT)
-			{
-				BuyItem(pPlayer, MENU_SLOT_ITEM_DEFUSEKIT);
-			}
-			else
-			{
-				// fail gracefully
-				pszFailItem = "#Bomb_Defusal_Kit";
-			}
-		}
-		else if (FStrEq(pszCommand, "shield"))
-		{
-			bRetVal = TRUE;
-			if (pPlayer->m_iTeam == CT)
-			{
-				BuyItem(pPlayer, MENU_SLOT_ITEM_SHIELD);
-			}
-			else
-			{
-				// fail gracefully
-				pszFailItem = "#TactShield_Desc";
+				handled = TRUE;
+				BuyItem(pPlayer, item.slot);
+				break;
 			}
 		}
 	}
-
-	if (g_bClientPrintEnable && pszFailItem)
-	{
-		ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Alias_Not_Avail", pszFailItem);
-	}
-
 	pPlayer->BuildRebuyStruct();
-	return bRetVal;
+	return handled;
 }
 
 struct RadioStruct
@@ -2660,6 +2489,13 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
 	const char *pstr = nullptr;
 	entvars_t *pev = &pEntity->v;
 	CBasePlayer *pPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pev);
+	if (OC2RemovedBuyCommand(pcmd)) return;
+	if (FStrEq(pcmd,"oc2_buymenu_open") || FStrEq(pcmd,"oc2_buymenu_close"))
+	{
+		pPlayer->SetBuyPresentationOpen(FStrEq(pcmd,"oc2_buymenu_open"));
+		return;
+	}
+
 
 	if (FStrEq(pcmd, "say"))
 	{
@@ -3691,7 +3527,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
 					const auto pInfo = GetWeaponInfo(parg1);
 					if (pInfo)
 					{
-						if (pInfo->id != WEAPON_GLOCK && pInfo->id != WEAPON_C4 /* && pInfo->id != WEAPON_KNIFE */)
+						if (pInfo->id != WEAPON_C4) // ID 2 now belongs to the real Zeus, not a fake Glock.
 						{
 							pPlayer->GiveNamedItemEx(pInfo->entityName);
 							pPlayer->GiveAmmo(pInfo->maxRounds, pInfo->ammoName2);
@@ -3797,6 +3633,8 @@ void EXT_FUNC ServerDeactivate()
 		return;
 
 	g_bServerActive = false;
+	OC2_InfernoRoundReset(); // Current-map edicts are still valid here.
+
 
 	// Peform any shutdown operations here...
 	g_pGameRules->ServerDeactivate();

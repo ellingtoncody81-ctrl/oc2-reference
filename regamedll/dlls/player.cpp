@@ -27,7 +27,11 @@
 */
 
 #include "precompiled.h"
+#include "oc2_inferno.h"
+#include "wpn_shared/wpn_molotov.h"
 #include <limits.h>
+
+extern int gmsgFireVariant;
 
 BOOL gInitHUD = TRUE;
 
@@ -189,7 +193,7 @@ const char *GetCSModelName(int item_id)
 	case WEAPON_USP:          modelName = "models/w_usp.mdl"; break;
 	case WEAPON_GLOCK18:      modelName = "models/w_glock18.mdl"; break;
 	case WEAPON_AWP:          modelName = "models/w_awp.mdl"; break;
-	case WEAPON_MP5N:         modelName = "models/w_mp5.mdl"; break;
+	case WEAPON_MP5N:         modelName = "models/w_mp7.mdl"; break;
 	case WEAPON_M249:         modelName = "models/w_m249.mdl"; break;
 	case WEAPON_M3:           modelName = "models/w_m3.mdl"; break;
 	case WEAPON_M4A1:         modelName = "models/w_m4a1.mdl"; break;
@@ -201,12 +205,22 @@ const char *GetCSModelName(int item_id)
 	case WEAPON_AK47:         modelName = "models/w_ak47.mdl"; break;
 	case WEAPON_KNIFE:        modelName = "models/w_knife.mdl"; break;
 	case WEAPON_P90:          modelName = "models/w_p90.mdl"; break;
+	case WEAPON_TASER:       modelName = "models/w_zeus.mdl"; break;
+	case WEAPON_MOLOTOV:     modelName = "models/w_molotov.mdl"; break;
 	case WEAPON_SHIELDGUN:    modelName = "models/w_shield.mdl"; break;
 	default:
 		ALERT(at_console, "CBasePlayer::PackDeadPlayerItems(): Unhandled item- not creating weaponbox\n");
 	}
 
 	return modelName;
+}
+
+static const char *OC2DroppedModel(CBasePlayerItem *item)
+{
+	if (item->m_iId == WEAPON_MOLOTOV &&
+		(static_cast<CBasePlayerWeapon *>(item)->m_iWeaponState & CMolotovGrenade::INCENDIARY_STATE))
+		return "models/w_incendiary.mdl";
+	return GetCSModelName(item->m_iId);
 }
 
 LINK_HOOK_CLASS_CHAIN(bool, CBasePlayer, SetClientUserInfoName, (char *infobuffer, char *szNewName), infobuffer, szNewName)
@@ -824,6 +838,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(TraceAttack)(entvars_t *pevAttacker, float
 
 const char *CBasePlayer::GetKillerWeaponName(entvars_t *pevInflictor, entvars_t *pevKiller) const
 {
+	if (pevInflictor && (FClassnameIs(pevInflictor,"oc2_inferno") || FClassnameIs(pevInflictor,"oc2_molotov_projectile")))
+		return pevInflictor->iuser1 ? "incendiary" : "molotov";
+	if (pevInflictor && FClassnameIs(pevInflictor,"weapon_zeus")) return "zeus";
 	// by default, the player is killed by the world
 	const char *killer_weapon_name = "world";
 
@@ -909,6 +926,11 @@ LINK_HOOK_CLASS_CHAIN(BOOL, CBasePlayer, TakeDamage, (entvars_t *pevInflictor, e
 // etc are implemented with subsequent calls to TakeDamage using DMG_GENERIC.
 BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entvars_t *pevAttacker, FloatRef flDamage, int bitsDamageType)
 {
+    const bool oc2Burn=pevInflictor && FClassnameIs(pevInflictor,"oc2_inferno") && (bitsDamageType&DMG_BURN);
+    const bool oc2Shock=pevInflictor && FClassnameIs(pevInflictor,"weapon_zeus") && (bitsDamageType&DMG_SHOCK);
+    const bool oc2Elemental=oc2Burn || oc2Shock;
+    if (oc2Elemental) { m_LastHitGroup=HITGROUP_GENERIC; m_bHeadshotKilled=false; }
+
 	BOOL bTookDamage;
 	float flRatio = ARMOR_RATIO;
 	float flBonus = ARMOR_BONUS;
@@ -1183,7 +1205,7 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
 #endif
 		}
 
-		if (pAttack->m_pActiveItem)
+		if (!oc2Elemental && pAttack->m_pActiveItem)
 		{
 			iGunType = pAttack->m_pActiveItem->m_iId;
 			flRatio += flShieldRatio;
@@ -1207,14 +1229,17 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
 				flRatio *= 0.95;
 				break;
 			case WEAPON_P228:
-				flRatio *= 1.25;
+				flRatio *= 1.28;
 				break;
 			case WEAPON_SCOUT:
 			case WEAPON_KNIFE:
 				flRatio *= 1.7;
 				break;
+			case WEAPON_SG552: flRatio *= 2.0; break;
+			case WEAPON_MP5N: flRatio *= 1.25; break;
+			case WEAPON_TMP: flRatio *= 1.20; break;
+			case WEAPON_M3: flRatio *= 1.0; break;
 			case WEAPON_FAMAS:
-			case WEAPON_SG552:
 				flRatio *= 1.4;
 				break;
 			case WEAPON_GALIL:
@@ -1224,6 +1249,8 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
 			}
 		}
 
+		if (!oc2Elemental)
+		{
 		if (!ShouldDoLargeFlinch(m_LastHitGroup, iGunType))
 		{
 			TakeDamageImpulse(pAttack, 0.0f, 0.5f);
@@ -1250,11 +1277,12 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
 
 			SetAnimation(PLAYER_LARGE_FLINCH);
 		}
+		}
 	}
 
 	// Armor
 	// armor doesn't protect against fall or drown damage!
-	if (pev->armorvalue != 0.0f && !(bitsDamageType & (DMG_DROWN | DMG_FALL)) && IsArmored(m_LastHitGroup))
+	if (!oc2Elemental && pev->armorvalue != 0.0f && !(bitsDamageType & (DMG_DROWN | DMG_FALL)) && IsArmored(m_LastHitGroup))
 	{
 		real_t flNew = flRatio * flDamage;
 		real_t flArmor = (flDamage - flNew) * flBonus;
@@ -1298,7 +1326,7 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
 
 	// this cast to INT is critical!!! If a player ends up with 0.5 health, the engine will get that
 	// as an int (zero) and think the player is dead! (this will incite a clientside screentilt, etc)
-	bTookDamage = CBaseMonster::TakeDamage(pevInflictor, pevAttacker, int(flDamage), bitsDamageType);
+	bTookDamage = CBaseMonster::TakeDamage(pevInflictor, pevAttacker, oc2Elemental ? float(flDamage) : float(int(flDamage)), bitsDamageType);
 
 	if (bTookDamage)
 	{
@@ -1450,7 +1478,7 @@ CWeaponBox *PackPlayerItem(CBasePlayer *pPlayer, CBasePlayerItem *pItem, bool pa
 	if (!pItem)
 		return nullptr;
 
-	const char *modelName = GetCSModelName(pItem->m_iId);
+	const char *modelName = OC2DroppedModel(pItem);
 	if (modelName)
 	{
 		Vector vecOrigin   = pPlayer->pev->origin;
@@ -1480,7 +1508,7 @@ void PackPlayerNade(CBasePlayer *pPlayer, CBasePlayerItem *pItem, bool packAmmo)
 		return;
 	}
 
-	const char *modelName = GetCSModelName(pItem->m_iId);
+	const char *modelName = OC2DroppedModel(pItem);
 	if (modelName)
 	{
 		float flOffset = 0.0f;
@@ -1840,6 +1868,7 @@ LINK_HOOK_CLASS_VOID_CHAIN(CBasePlayer, RemoveAllItems, (BOOL removeSuit), remov
 
 void EXT_FUNC CBasePlayer::__API_HOOK(RemoveAllItems)(BOOL removeSuit)
 {
+	ResetBuyPresentation();
 	int i;
 
 #ifdef REGAMEDLL_FIXES
@@ -2231,6 +2260,7 @@ LINK_HOOK_CLASS_VOID_CHAIN(CBasePlayer, Killed, (entvars_t *pevAttacker, int iGi
 
 void EXT_FUNC CBasePlayer::__API_HOOK(Killed)(entvars_t *pevAttacker, int iGib)
 {
+	ResetBuyPresentation();
 	m_canSwitchObserverModes = false;
 
 	if (m_LastHitGroup == HITGROUP_HEAD)
@@ -2398,6 +2428,21 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Killed)(entvars_t *pevAttacker, int iGib)
 				pSmoke->m_flStartThrow = 0;
 #endif
 			}
+			break;
+		}
+		case WEAPON_MOLOTOV:
+		{
+			CBasePlayerWeapon *molotov = static_cast<CBasePlayerWeapon *>(m_pActiveItem);
+			const int ammo = molotov->PrimaryAmmoIndex();
+			// Only a pin-pulled grenade becomes live on death. The prediction
+			// timestamp tracks the last held update, never a cooked fuse start.
+			if (molotov->m_flStartThrow > 0.0f && ammo >= 0 && ammo < MAX_AMMO_SLOTS && m_rgAmmo[ammo] > 0)
+			{
+				if (ThrowGrenade(molotov, pev->origin + pev->view_ofs, pev->velocity, 2.0f))
+					--m_rgAmmo[ammo];
+			}
+			molotov->m_flStartThrow = 0.0f;
+			molotov->m_flReleaseThrow = -1.0f;
 			break;
 		}
 		default:
@@ -3537,6 +3582,8 @@ CGrenade *CBasePlayer::__API_HOOK(ThrowGrenade)(CBasePlayerWeapon *pWeapon, Vect
 	case WEAPON_HEGRENADE:    return CGrenade::ShootTimed2(pev, vecSrc, vecThrow, time, m_iTeam, usEvent);
 	case WEAPON_FLASHBANG:    return CGrenade::ShootTimed(pev, vecSrc, vecThrow, time);
 	case WEAPON_SMOKEGRENADE: return CGrenade::ShootSmokeGrenade(pev, vecSrc, vecThrow, time, usEvent);
+	case WEAPON_MOLOTOV: return OC2_ThrowMolotov(pev,vecSrc,vecThrow,
+		(pWeapon->m_iWeaponState & CMolotovGrenade::INCENDIARY_STATE) != 0);
 	}
 
 	return nullptr;
@@ -4089,6 +4136,9 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, RoundRespawn)
 
 void EXT_FUNC CBasePlayer::__API_HOOK(RoundRespawn)()
 {
+	ResetBuyPresentation();
+	m_iOc2ZeusPurchases=0;
+	m_iClientEquipment=-1;
 	m_canSwitchObserverModes = true;
 
 	// teamkill punishment..
@@ -5749,8 +5799,10 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, Spawn)
 
 void EXT_FUNC CBasePlayer::__API_HOOK(Spawn)()
 {
+	ResetBuyPresentation();
 	int i;
 	m_iClientBuyState = -1;
+	m_iClientEquipment = -1;
 
 #ifdef REGAMEDLL_FIXES
 	// Do not allow to do spawn, if player chooses a team or appearance.
@@ -6149,6 +6201,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Precache)()
 	m_iClientBattery = -1;
 	m_iTrain = TRAIN_NEW;
 	m_iClientBuyState = -1;
+	m_iClientEquipment = -1;
 
 	// Make sure any necessary user messages have been registered
 	LinkUserMessages();
@@ -6692,6 +6745,7 @@ void CBasePlayer::FlashlightTurnOff()
 void CBasePlayer::ForceClientDllUpdate()
 {
 	m_iClientBuyState = -1;
+	m_iClientEquipment = -1;
 #ifdef REGAMEDLL_FIXES
 	// fix for https://github.com/ValveSoftware/halflife/issues/1567
 	m_iClientHideHUD = -1;
@@ -6808,6 +6862,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(ImpulseCommands)()
 
 	switch (iImpulse)
 	{
+		case 180: // lookatweapon: command-local, mirrored in client prediction.
+			if (m_pActiveItem) static_cast<CBasePlayerWeapon *>(m_pActiveItem)->StartInspect();
+			break;
 		case 99:
 		{
 			int iOn;
@@ -7422,6 +7479,11 @@ void CBasePlayer::ItemPostFrame()
 	if (m_pTank)
 		return;
 
+	// CS:GO's reload-complete animation event stocks ammo before the full
+	// reload ends. Advance that stage even while m_flNextAttack blocks firing.
+	if (m_pActiveItem && m_pActiveItem->IsWeapon())
+		static_cast<CBasePlayerWeapon *>(m_pActiveItem)->AdvanceReload();
+
 	if (m_pActiveItem)
 	{
 		if (HasShield() && IsReloading())
@@ -7582,6 +7644,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
 	if (m_fInitHUD)
 	{
 		m_iClientBuyState = -1;
+	m_iClientEquipment = -1;
 		m_fInitHUD = FALSE;
 		gInitHUD = FALSE;
 #ifdef REGAMEDLL_FIXES
@@ -7985,8 +8048,75 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
 	SendBuyState();
 }
 
+void CBasePlayer::ResetBuyPresentation()
+{
+	m_bOc2BuyMenuOpen = false;
+	m_iOc2BuyMenuTeam = m_iOc2PurchasedWeapon = 0;
+	m_flOc2PurchaseTime = 0;
+}
+
+void CBasePlayer::RecordBuyPresentation(int weaponID)
+{
+	if (!m_bOc2BuyMenuOpen || !IsAlive() || m_iTeam != m_iOc2BuyMenuTeam || weaponID <= 0 || weaponID >= MAX_WEAPONS)
+		return;
+	m_iOc2PurchasedWeapon = weaponID;
+	m_flOc2PurchaseTime = gpGlobals->time;
+}
+
+void CBasePlayer::SetBuyPresentationOpen(bool open)
+{
+	// CS:GO cs_player::SetBuyMenuOpen has paired explicit UI notifications.
+	// GoldSrc hides the viewmodel in this UI, so defer the visible deploy until close.
+	if (open)
+	{
+		if (m_bOc2BuyMenuOpen || !CanPlayerBuy(false)) return;
+		ResetBuyPresentation();
+		m_bOc2BuyMenuOpen = true;
+		m_iOc2BuyMenuTeam = m_iTeam;
+		return;
+	}
+	const int weaponID = m_iOc2PurchasedWeapon;
+	const bool valid = m_bOc2BuyMenuOpen && IsAlive() && m_iTeam == m_iOc2BuyMenuTeam &&
+		gpGlobals->time >= m_flOc2PurchaseTime && gpGlobals->time - m_flOc2PurchaseTime <= 120.0f;
+	ResetBuyPresentation(); // Repeated/forged close cannot replay a completed purchase.
+	if (!valid || weaponID <= 0 || weaponID >= MAX_WEAPONS || m_bIsDefusing) return;
+	CBasePlayerItem *item = GetItemById(static_cast<WeaponIdType>(weaponID));
+	if (!item || !item->CanDeploy() || (m_pActiveItem && !m_pActiveItem->CanHolster())) return;
+	CBasePlayerWeapon *weapon = static_cast<CBasePlayerWeapon *>(item);
+	if (m_pActiveItem == item)
+	{
+		item->Holster(); // Preserve committed reload ammo; cancel any unfinished presentation.
+		if (!item->Deploy()) return;
+		ResetMaxSpeed();
+	}
+	else if (!SwitchWeapon(item)) return;
+	// This server command is outside weapon prediction. Force an animation
+	// message even if the sequence number equals the hidden, already-ended draw.
+	weapon->SendWeaponAnim(pev->weaponanim,0);
+}
+
 void CBasePlayer::SendBuyState()
 {
+	if (m_bOc2BuyMenuOpen && (!IsAlive() || m_iTeam != m_iOc2BuyMenuTeam ||
+		(m_iOc2PurchasedWeapon && (gpGlobals->time < m_flOc2PurchaseTime || gpGlobals->time-m_flOc2PurchaseTime > 120.0f))))
+		ResetBuyPresentation();
+	CBasePlayerItem *fire = GetItemById(WEAPON_MOLOTOV);
+	const int ammo = fire ? fire->PrimaryAmmoIndex() : -1;
+	const bool incendiary = fire && ammo >= 0 && ammo < MAX_AMMO_SLOTS && m_rgAmmo[ammo] > 0 &&
+		(static_cast<CBasePlayerWeapon *>(fire)->m_iWeaponState & CMolotovGrenade::INCENDIARY_STATE);
+	const int equipment = clamp(m_iOc2ZeusPurchases,0,255) | (incendiary ? 256 : 0);
+    if (m_iClientEquipment != equipment)
+    {
+        MESSAGE_BEGIN(MSG_ONE,gmsgEquipment,nullptr,pev);
+            WRITE_BYTE(2); // Paired equipment: ID31 also carries the Incendiary item variant.
+            WRITE_BYTE(clamp(m_iOc2ZeusPurchases,0,255));
+        MESSAGE_END();
+		MESSAGE_BEGIN(MSG_ONE,gmsgFireVariant,nullptr,pev);
+			WRITE_BYTE(incendiary ? 1 : 0);
+		MESSAGE_END();
+        m_iClientEquipment = equipment;
+    }
+
 	// The existing server rule remains authoritative, including VIP/team/map
 	// restrictions. The short carries its time window, even outside a buy zone.
 	const int canBuy = CanPlayerBuy(false) ? 1 : 0;
@@ -8503,7 +8633,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
 		}
 
 		// take item off hud
-		pev->weapons &= ~(1 << pWeapon->m_iId);
+		pev->weapons &= ~(1U << pWeapon->m_iId);
 
 #ifdef REGAMEDLL_FIXES
 		// No more weapon
@@ -8558,7 +8688,7 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
 			}
 		}
 
-		const char *modelname = GetCSModelName(pWeapon->m_iId);
+		const char *modelname = OC2DroppedModel(pWeapon);
 
 		Vector vecOrigin   = pev->origin + gpGlobals->v_forward * 10;
 		Vector vecAngles   = pev->angles;
@@ -8647,6 +8777,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, SwitchTeam)
 
 void CBasePlayer::__API_HOOK(SwitchTeam)()
 {
+	ResetBuyPresentation();
 	int oldTeam;
 	char *szOldTeam;
 	char *szNewTeam;
