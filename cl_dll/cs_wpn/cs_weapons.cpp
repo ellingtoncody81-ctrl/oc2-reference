@@ -31,6 +31,11 @@
 
 #include "nodes.h"
 #include "player.h"
+#include "wpn_shared/wpn_molotov.h"
+#include "wpn_shared/wpn_zeus.h"
+#include "wpn_shared/oc2_weapon_params.h"
+#include "wpn_shared/oc2_reload.h"
+#include "wpn_shared/oc2_presentation.h"
 
 #include "usercmd.h"
 #include "entity_state.h"
@@ -85,6 +90,36 @@ static CBasePlayerWeapon *g_pWpns[ 32 ];
 //
 static int s_iBobPredictedWeapon = 0;
 
+static bool OC2_GunKind(int id, oc2_weapon::Kind &kind)
+{
+    switch(id) {
+    case WEAPON_M3: kind=oc2_weapon::Nova; return true;
+    case WEAPON_MP5N: kind=oc2_weapon::MP7; return true;
+    case WEAPON_P228: kind=oc2_weapon::P250; return true;
+    case WEAPON_SG552: kind=oc2_weapon::SG553; return true;
+    case WEAPON_TMP: kind=oc2_weapon::MP9; return true;
+    default: return false;
+    }
+}
+static bool OC2_CurrentCommandWeapon(int id)
+{
+    oc2_weapon::Kind kind;
+    return OC2_GunKind(id,kind) || id==WEAPON_MOLOTOV || id==WEAPON_TASER;
+}
+static float OC2_DisplaySpread(CBasePlayerWeapon *weapon)
+{
+    oc2_weapon::Kind kind;
+    if (!OC2_GunKind(weapon->m_iId,kind)) return weapon->m_flAccuracy;
+    const auto &params=oc2_weapon::Get(kind);
+    const int mode=weapon->m_iId==WEAPON_SG552 && player.pev->fov>0 && player.pev->fov<90 ? 1 : 0;
+    const oc2_weapon::Motion motion={player.pev->velocity.Length2D(),player.pev->velocity.z,
+        (player.pev->flags&FL_ONGROUND)!=0,(player.pev->flags&FL_DUCKING)!=0,
+        player.pev->movetype==MOVETYPE_FLY,(player.pev->button&IN_RUN)!=0};
+    const auto sample=oc2_weapon::SampleShot(params,motion,mode,gpGlobals->time,
+        weapon->m_flStartThrow/1024.0f,weapon->m_flReleaseThrow/64.0f,weapon->m_flLastFire);
+    return sample.inaccuracy+params.spread[mode];
+}
+
 extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload, float *max_speed, float *accuracy, int *weapon_state, int *clip )
 {
 	CBasePlayerWeapon *pWeapon = static_cast<CBasePlayerWeapon *>( player.m_pActiveItem );
@@ -105,7 +140,7 @@ extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload,
 	if ( shots_fired ) *shots_fired = pWeapon->m_iShotsFired;
 	if ( in_reload )   *in_reload = pWeapon->m_fInReload ? 1 : 0;
 	if ( max_speed )   *max_speed = pWeapon->GetMaxSpeed();
-	if ( accuracy )    *accuracy = pWeapon->m_flAccuracy;
+	if ( accuracy )    *accuracy = OC2_DisplaySpread(pWeapon);
 	if ( weapon_state ) *weapon_state = pWeapon->m_iWeaponState;
 	if ( clip )        *clip = pWeapon->m_iClip;
 
@@ -144,6 +179,8 @@ static CTMP g_TMP;
 static CUMP45 g_UMP45;
 static CUSP g_USP;
 static CXM1014 g_XM1014;
+static CMolotovGrenade g_Molotov;
+static CZeus g_Zeus;
 
 int    g_iWeaponFlags;
 bool   g_bInBombZone;
@@ -239,6 +276,7 @@ CBaseEntity *EHANDLE::operator ->(void)
 
 void HUD_PrepEntity( CBaseEntity *pEntity )
 {
+	if (num_ents >= int(sizeof(ev)/sizeof(ev[0]))) { gEngfuncs.Con_Printf("Prediction entity pool exhausted\n"); return; }
 	memset( &ev[ num_ents ], 0, sizeof( entvars_t ) );
 	pEntity->pev = &ev[ num_ents++ ];
 
@@ -251,6 +289,7 @@ void HUD_PrepEntity( CBasePlayerWeapon *pEntity, CBasePlayer *pWeaponOwner )
 {
 	ItemInfo info = {};
 
+	if (num_ents >= int(sizeof(ev)/sizeof(ev[0]))) { gEngfuncs.Con_Printf("Prediction entity pool exhausted\n"); return; }
 	memset( &ev[ num_ents ], 0, sizeof( entvars_t ) );
 	pEntity->pev = &ev[ num_ents++ ];
 
@@ -259,6 +298,7 @@ void HUD_PrepEntity( CBasePlayerWeapon *pEntity, CBasePlayer *pWeaponOwner )
 	pEntity->m_pPlayer = pWeaponOwner;
 	pEntity->GetItemInfo( &info );
 
+	if (info.iId <= 0 || info.iId >= MAX_WEAPONS) return;
 	g_pWpns[ info.iId ] = pEntity;
 	CBasePlayerItem::ItemInfoArray[ info.iId ] = info;
 }
@@ -282,7 +322,8 @@ CBasePlayerWeapon :: DefaultReload
 */
 BOOL CBasePlayerWeapon :: DefaultReload( int iClipSize, int iAnim, float fDelay, int body )
 {
-	if( !m_pPlayer->m_pActiveItem )
+	if( !m_pPlayer || !m_pPlayer->m_pActiveItem || m_fInReload ||
+		m_iPrimaryAmmoType < 0 || m_iPrimaryAmmoType >= MAX_AMMO_SLOTS )
 		return FALSE;
 
 	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
@@ -293,7 +334,10 @@ BOOL CBasePlayerWeapon :: DefaultReload( int iClipSize, int iAnim, float fDelay,
 	if (j == 0)
 		return FALSE;
 
+	fDelay = oc2_reload::Duration(m_iId,iAnim,m_pPlayer->HasShield() != FALSE,fDelay);
+	m_flNextReload = oc2_reload::PendingTail(m_iId,iAnim,m_pPlayer->HasShield() != FALSE,fDelay);
 	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + fDelay;
+	m_flNextPrimaryAttack = m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + fDelay;
 
 	//!!UNDONE -- reload sound goes here !!!
 	SendWeaponAnim( iAnim, UseDecrement() );
@@ -302,6 +346,112 @@ BOOL CBasePlayerWeapon :: DefaultReload( int iClipSize, int iAnim, float fDelay,
 
 	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay + 0.5f;
 	return TRUE;
+}
+
+float CBasePlayerWeapon::AnimationDuration(int animation, float fallback) const
+{
+	return oc2_presentation::Duration(m_iId,animation,(m_iWeaponState & (1 << 6)) != 0,
+		m_pPlayer && m_pPlayer->HasShield(),fallback);
+}
+
+void HUD_WeaponPresentationDump()
+{
+	CBasePlayerWeapon *weapon = static_cast<CBasePlayerWeapon *>(player.m_pActiveItem);
+	if (!weapon || !player.pev) { gEngfuncs.Con_Printf("PRESENTATION no active weapon\n"); return; }
+	gEngfuncs.Con_Printf("PRESENTATION id=%d anim=%d inspect=%d duration=%.3f next=%.3f primary=%.3f secondary=%.3f idle=%.3f clip=%d reload=%d state=%d\n",
+		weapon->m_iId,player.pev->weaponanim,oc2_presentation::IsInspect(weapon->m_iId,player.pev->weaponanim),
+		weapon->AnimationDuration(player.pev->weaponanim,0),player.m_flNextAttack,weapon->m_flNextPrimaryAttack,
+		weapon->m_flNextSecondaryAttack,weapon->m_flTimeWeaponIdle,weapon->m_iClip,weapon->m_fInReload,weapon->m_iWeaponState);
+}
+
+void CBasePlayerWeapon::StartInspect()
+{
+	// CS:GO LookAtHeldWeapon: no reload, scope, silencer transition or draw.
+	// All state is already predicted/transmitted; no new network fields.
+	if (!m_pPlayer || m_pPlayer->m_pActiveItem != this || !m_pPlayer->IsAlive() ||
+		!m_pPlayer->pev->viewmodel || m_pPlayer->HasShield() || m_fInReload ||
+		(oc2_reload::Shotgun(m_iId) && m_fInSpecialReload != 0) ||
+		(m_pPlayer->pev->fov > 0 && m_pPlayer->pev->fov < 90) ||
+		m_pPlayer->m_flNextAttack > UTIL_WeaponTimeBase() ||
+		m_flNextPrimaryAttack > UTIL_WeaponTimeBase() || m_flNextSecondaryAttack > UTIL_WeaponTimeBase() ||
+		(m_pPlayer->pev->button & (IN_ATTACK | IN_ATTACK2 | IN_RELOAD)) ||
+		oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim)) return;
+	const int animation = oc2_presentation::InspectSequence(m_iId,m_iWeaponState);
+	if (animation < 0) return;
+	SendWeaponAnim(animation,UseDecrement());
+	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + AnimationDuration(animation,0);
+}
+
+bool CBasePlayerWeapon::AdvanceInspect()
+{
+	if (!m_pPlayer || !oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim)) return false;
+	const bool cancel = !m_pPlayer->IsAlive() || m_fInReload ||
+		(oc2_reload::Shotgun(m_iId) && m_fInSpecialReload != 0) ||
+		(m_pPlayer->pev->fov > 0 && m_pPlayer->pev->fov < 90) ||
+		(m_pPlayer->pev->button & (IN_ATTACK | IN_ATTACK2 | IN_RELOAD));
+	if (!cancel && m_flTimeWeaponIdle > UTIL_WeaponTimeBase()) return true;
+	// Return to the correct idle even with an empty magazine. Gameplay input
+	// continues this same command, so inspecting never delays fire or reload.
+	SendWeaponAnim(oc2_presentation::IdleSequence(m_iId,m_iWeaponState,m_iClip),UseDecrement());
+	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
+	return false;
+}
+
+void CBasePlayerWeapon::AdvanceReload()
+{
+	if (!m_pPlayer || m_pPlayer->m_pActiveItem != this || !m_pPlayer->IsAlive() ||
+		m_iPrimaryAmmoType < 0 || m_iPrimaryAmmoType >= MAX_AMMO_SLOTS) return;
+	const bool shell = oc2_reload::Shotgun(m_iId) && m_fInSpecialReload == 2;
+	if (!m_fInReload && !shell) return;
+	const float remaining = (shell ? m_flTimeWeaponIdle : m_pPlayer->m_flNextAttack) - UTIL_WeaponTimeBase();
+	const oc2_reload::Completion completed = oc2_reload::Advance(remaining,m_flNextReload,m_iClip,
+		m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType],iMaxClip(),shell ? 1 : 0);
+	if (shell && completed.event) m_fInSpecialReload = 3;
+}
+
+bool CBasePlayerWeapon::DefaultShotgunReload(int iAnim, int iStartAnim, float fDelay, float fStartDelay,
+	const char *, const char *)
+{
+	AdvanceReload();
+	if (m_fInSpecialReload == 2 || m_fInSpecialReload == 3)
+	{
+		if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase()) return false;
+		m_fInSpecialReload = 1;
+		return true;
+	}
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0 || m_iClip >= iMaxClip() ||
+		m_flNextPrimaryAttack > UTIL_WeaponTimeBase()) return false;
+	if (m_fInSpecialReload == 0)
+	{
+		fStartDelay = oc2_reload::Duration(m_iId,iStartAnim,false,fStartDelay);
+		SendWeaponAnim(iStartAnim,UseDecrement());
+		m_fInSpecialReload = 1;
+		m_flNextReload = -1;
+		m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
+			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fStartDelay;
+	}
+	else
+	{
+		if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase()) return false;
+		fDelay = oc2_reload::Duration(m_iId,iAnim,false,fDelay);
+		SendWeaponAnim(iAnim,UseDecrement());
+		m_fInSpecialReload = 2;
+		m_flNextReload = oc2_reload::PendingTail(m_iId,iAnim,false,fDelay);
+		m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
+			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay;
+	}
+	return true;
+}
+
+void CBasePlayerWeapon::FinishShotgunReload(int animation, float fallback)
+{
+	AdvanceReload();
+	const float duration = oc2_reload::Duration(m_iId,animation,false,fallback);
+	SendWeaponAnim(animation,UseDecrement());
+	m_fInSpecialReload = 0;
+	m_flNextReload = -1;
+	m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
+		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + duration;
 }
 
 /*
@@ -474,8 +624,10 @@ BOOL CBasePlayerWeapon :: DefaultDeploy( const char *szViewModel, const char *sz
 
 	SendWeaponAnim( iAnim, skiplocal );
 
-	m_pPlayer->m_flNextAttack = 0.75f;
-	m_flTimeWeaponIdle = 1.5f;
+	// CS:GO gates deployment and the idle transition on the actual sequence.
+	const float duration = AnimationDuration(iAnim,0.75f);
+	m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
+		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + duration;
 	return TRUE;
 }
 
@@ -529,7 +681,13 @@ Put away weapon
 */
 void CBasePlayerWeapon::Holster( int skiplocal /* = 0 */ )
 {
+	const bool cancelReload = m_fInReload || (oc2_reload::Shotgun(m_iId) && m_fInSpecialReload != 0);
+	AdvanceReload(); // A reached insertion survives switching; an earlier switch cancels it.
+	if (cancelReload)
+		m_flNextPrimaryAttack = m_flNextSecondaryAttack = UTIL_WeaponTimeBase();
 	m_fInReload = FALSE; // cancel any reload in progress.
+	m_fInSpecialReload = 0;
+	m_flNextReload = -1;
 	m_pPlayer->pev->viewmodel = 0;
 }
 
@@ -585,6 +743,8 @@ Handles weapon firing, reloading, etc.
 */
 void CBasePlayerWeapon::ItemPostFrame( void )
 {
+	AdvanceReload();
+	if (AdvanceInspect()) return;
 	int button = m_pPlayer->pev->button;
 
 	if (!HasSecondaryAttack())
@@ -636,11 +796,9 @@ void CBasePlayerWeapon::ItemPostFrame( void )
 
 	if ((m_fInReload) && m_pPlayer->m_flNextAttack <= UTIL_WeaponTimeBase())
 	{
-		int j = min(iMaxClip() - m_iClip, m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType]);
-
-		m_iClip += j;
-		m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] -= j;
+		// The insertion already moved ammo; this only ends the firing lock.
 		m_fInReload = FALSE;
+		m_flNextReload = -1;
 	}
 
 	if ((button & IN_ATTACK2) && m_flNextSecondaryAttack <= UTIL_WeaponTimeBase())
@@ -958,6 +1116,8 @@ void HUD_InitClientWeapons( void )
 		HUD_PrepEntity( &g_AK47, &player);
 		HUD_PrepEntity( &g_Knife, &player);
 		HUD_PrepEntity( &g_P90, &player );
+		HUD_PrepEntity( &g_Molotov, &player );
+		HUD_PrepEntity( &g_Zeus, &player );
 	}
 }
 
@@ -1054,6 +1214,8 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 
 	// Get current clock
 	gpGlobals->time = time;
+	// Server PlayerPostThink samples the end of this movement command.
+	if (OC2_CurrentCommandWeapon(from->client.m_iId)) gpGlobals->time += cmd->msec/1000.0f;
 
 	// Fill in data based on selected weapon
 	switch ( from->client.m_iId )
@@ -1173,6 +1335,12 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 		case WEAPON_P90:
 			pWeapon = &g_P90;
 			break;
+		case WEAPON_MOLOTOV:
+			pWeapon = &g_Molotov;
+			break;
+		case WEAPON_TASER:
+			pWeapon = &g_Zeus;
+			break;
 
 		/*case WEAPON_NONE:
 			break;
@@ -1218,6 +1386,7 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 
 		pCurrent->m_fInReload			= pfrom->m_fInReload;
 		pCurrent->m_fInSpecialReload	= pfrom->m_fInSpecialReload;
+		pCurrent->m_flNextReload		= pfrom->m_flNextReload;
 		pCurrent->m_iClip				= pfrom->m_iClip;
 		pCurrent->m_flNextPrimaryAttack	= pfrom->m_flNextPrimaryAttack;
 		pCurrent->m_flNextSecondaryAttack = pfrom->m_flNextSecondaryAttack;
@@ -1264,6 +1433,7 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 	player.pev->velocity = from->client.velocity;
 
 	player.pev->deadflag   = from->client.deadflag;
+	player.pev->health     = from->client.health; // IsAlive guards must use the restored prediction snapshot.
 	player.pev->waterlevel = from->client.waterlevel;
 	player.pev->maxspeed   = from->client.maxspeed;
 	player.pev->punchangle = from->client.punchangle;
@@ -1296,6 +1466,23 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 		player.pev->angles	= pplayer->angles;
 		player.pev->v_angle = v_angles;
 	}
+
+    if (OC2_CurrentCommandWeapon(pWeapon->m_iId))
+    {
+        // Engine CL_FinishPMove has already written the current command to 'to'.
+        player.pev->origin=to->client.origin;
+        player.pev->velocity=to->client.velocity;
+        player.pev->flags=to->client.flags;
+        player.pev->punchangle=to->client.punchangle;
+        player.pev->waterlevel=to->client.waterlevel;
+        player.pev->maxspeed=to->client.maxspeed;
+        player.pev->movetype=to->playerstate.movetype;
+        player.pev->v_angle=cmd->viewangles;
+        g_iPlayerFlags=player.pev->flags;
+        g_vPlayerVelocity=player.pev->velocity;
+        g_flPlayerSpeed=player.pev->velocity.Length();
+        g_iWaterLevel=player.pev->waterlevel;
+    }
 
 	flags = from->client.iuser3;
 	g_bHoldingKnife		= pWeapon->m_iId == WEAPON_KNIFE;
@@ -1331,11 +1518,12 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 	if ( ( player.pev->deadflag != ( DEAD_DISCARDBODY + 1 ) ) &&
 		 !CL_IsDead() && player.pev->viewmodel && !g_iUser1 )
 	{
-		if( g_bHoldingKnife && pWeapon->m_iClientWeaponState &&
-				player.pev->button & IN_FORWARD )
-			player.m_flNextAttack = 0;
-		else if( player.m_flNextAttack <= 0 )
+		// Reload events keep advancing while the end-of-sequence attack gate
+		// prevents ItemPostFrame. State and ammo are restored on every replay.
+		pWeapon->AdvanceReload();
+		if( player.m_flNextAttack <= 0 )
 		{
+			if (cmd->impulse == oc2_presentation::InspectImpulse) pWeapon->StartInspect();
 			pWeapon->ItemPostFrame();
 		}
 	}
@@ -1443,7 +1631,7 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 		pto->m_fAimedDamage				= pCurrent->m_flLastFire;
 
 		// Decrement weapon counters, server does this at same time ( during post think, after doing everything else )
-		pto->m_flNextReload				-= cmd->msec / 1000.0f;
+		// m_flNextReload is an insertion-tail threshold, not a countdown.
 		pto->m_fNextAimBonus			-= cmd->msec / 1000.0f;
 		pto->m_flNextPrimaryAttack		-= cmd->msec / 1000.0f;
 		pto->m_flNextSecondaryAttack	-= cmd->msec / 1000.0f;
@@ -1515,7 +1703,9 @@ void DLLEXPORT HUD_PostRunCmd( local_state_t *from, local_state_t *to, struct us
 	g_runfuncs = runfuncs;
 
 	HUD_WeaponsPostThink( from, to, cmd, time, random_seed );
-	to->client.fov = g_lastFOV;
+	if (from->client.m_iId != WEAPON_SG552 && to->client.m_iId != WEAPON_SG552 &&
+		from->client.m_iId != WEAPON_AUG && to->client.m_iId != WEAPON_AUG)
+		to->client.fov = g_lastFOV;
 
 	if ( g_runfuncs )
 	{

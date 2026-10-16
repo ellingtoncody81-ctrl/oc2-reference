@@ -21,6 +21,10 @@
 #include "hud.h"
 #include "match_ui.h"
 #include "match_status.h"
+#include "buy_menu_state.h"
+#include "weapon_pickup_feedback.h"
+#include "weapon_hud_layout.h"
+#include "view_ads.h"
 #include "cvardef.h"
 #include "cl_util.h"
 #include "parsemsg.h"
@@ -50,15 +54,63 @@ client_sprite_t *GetSpriteList(client_sprite_t *pList, const char *psz, int iRes
 
 WeaponsResource gWR;
 
+namespace
+{
+weapon_pickup::State s_PickupFeedback;
+struct PanelBox { float x=0,y=0,w=0,h=0; };
+struct PanelItemLayout
+{
+	int id=0,slot=0,count=0;
+	PanelBox icon,quantity;
+	char path[MAX_WEAPON_NAME+32] = {};
+	float flash=0;
+};
+struct PanelRowLayout { int slot=0; PanelBox key,name; };
+PanelItemLayout s_PanelItems[MAX_WEAPONS];
+PanelRowLayout s_PanelRows[MAX_WEAPON_SLOTS];
+int s_PanelItemCount=0,s_PanelRowCount=0;
+float s_PanelDrawTime=0;
+bool PanelGrenade(const WEAPON *weapon);
+void WeaponHudLayoutDump()
+{
+	gEngfuncs.Con_Printf("weaponhud: time=%.4f screen=%d,%d scale=%.5f items=%d rows=%d\n",
+		s_PanelDrawTime,ScreenWidth,ScreenHeight,gHUD.m_flScale,s_PanelItemCount,s_PanelRowCount);
+	for (int i=0;i<s_PanelItemCount;++i)
+	{
+		const auto &p=s_PanelItems[i];
+		gEngfuncs.Con_Printf("weaponhud: id=%d slot=%d rect=%.3f,%.3f,%.3f,%.3f quantity=%.3f,%.3f,%.3f,%.3f count=%d flash=%.5f path=%s\n",
+			p.id,p.slot,p.icon.x,p.icon.y,p.icon.w,p.icon.h,p.quantity.x,p.quantity.y,p.quantity.w,p.quantity.h,p.count,p.flash,p.path);
+	}
+	for (int i=0;i<s_PanelRowCount;++i)
+	{
+		const auto &p=s_PanelRows[i];
+		gEngfuncs.Con_Printf("weaponhud: row=%d key=%.3f,%.3f,%.3f,%.3f name=%.3f,%.3f,%.3f,%.3f\n",
+			p.slot,p.key.x,p.key.y,p.key.w,p.key.h,p.name.x,p.name.y,p.name.w,p.name.h);
+	}
+}
+void WeaponFeedbackDump()
+{
+	gEngfuncs.Con_Printf("weaponfeedback: events=%u menu=%d owned=%08x time=%.3f count_height=32 slot_height=16 icon_width=180 icon_height=78 icon_only=1\n",
+		s_PickupFeedback.events,int(buy_menu_state::IsOpen()),unsigned(gHUD.m_iWeaponBits),gHUD.m_flTime);
+	for (int id = 1; id < MAX_WEAPONS; ++id)
+	{
+		const auto &item = s_PickupFeedback.items[id];
+		if (item.received < 0) continue;
+		gEngfuncs.Con_Printf("weaponfeedback: id=%d pending=%d start=%.3f received=%.3f strength=%.3f\n",
+			id,int(item.pending),item.start,item.received,weapon_pickup::Strength(item,gHUD.m_flTime));
+	}
+}
+}
+
 int g_weaponselect = 0;
 int g_weaponselect_frames = 0;
 int g_iShotsFired;
 
 void WeaponsResource :: LoadAllWeaponSprites( void )
 {
-	for( int i = 0; i < MAX_WEAPONS; i++ )
+	for( int i = 1; i < MAX_WEAPONS; i++ )
 	{
-		if ( rgWeapons[i].iId )
+		if ( rgWeapons[i].iId == i && rgWeapons[i].szName[0] )
 			LoadWeaponSprites( &rgWeapons[i] );
 	}
 }
@@ -277,6 +329,8 @@ int CHudAmmo::Init(void)
 	HOOK_COMMAND(gHUD.m_Ammo, "adjust_crosshair", Adjust_Crosshair);
 	HOOK_COMMAND(gHUD.m_Ammo, "rebuy", Rebuy);
 	HOOK_COMMAND(gHUD.m_Ammo, "autobuy", Autobuy);
+	gEngfuncs.pfnAddCommand("weapon_feedback_dump", WeaponFeedbackDump);
+	gEngfuncs.pfnAddCommand("weapon_hud_layout_dump", WeaponHudLayoutDump);
 
 	Reset();
 
@@ -331,6 +385,8 @@ void CHudAmmo::Reset(void)
 
 	gWR.Reset();
 	gHR.Reset();
+	weapon_pickup::Clear(s_PickupFeedback);
+	s_PanelItemCount=s_PanelRowCount=0;
 
 	//	VidInit();
 
@@ -363,6 +419,10 @@ int CHudAmmo::VidInit(void)
 //
 void CHudAmmo::Think(void)
 {
+	// CS:GO weapon-selection panels activate on acquisition/count growth.
+	// We use confirmed pickup messages, never CurWeapon, reload or ResetHUD.
+	weapon_pickup::Tick(s_PickupFeedback,gHUD.m_flTime,buy_menu_state::IsOpen(),
+		std::uint32_t(gHUD.m_iWeaponBits),!gHUD.m_fPlayerDead && !g_iUser1);
 	if ( gHUD.m_fPlayerDead )
 		return;
 
@@ -370,13 +430,13 @@ void CHudAmmo::Think(void)
 	{
 		gWR.iOldWeaponBits = gHUD.m_iWeaponBits;
 
-		for (int i = 0; i < MAX_WEAPONS-1; i++ )
+		for (int i = 1; i < MAX_WEAPONS; i++ )
 		{
 			WEAPON *p = gWR.GetWeapon(i);
 
-			if ( p )
+			if ( p && p->iId == i && p->szName[0] )
 			{
-				if ( gHUD.m_iWeaponBits & ( 1 << p->iId ) )
+				if ( gHUD.m_iWeaponBits & ( 1U << p->iId ) )
 				{
 					gWR.PickupWeapon( p );
 				}
@@ -417,8 +477,9 @@ void CHudAmmo::Think(void)
 
 HSPRITE* WeaponsResource :: GetAmmoPicFromWeapon( int iAmmoId, wrect_t& rect )
 {
-	for ( int i = 0; i < MAX_WEAPONS; i++ )
+	for ( int i = 1; i < MAX_WEAPONS; i++ )
 	{
+		if (rgWeapons[i].iId != i || !rgWeapons[i].szName[0]) continue;
 		if ( rgWeapons[i].iAmmoType == iAmmoId )
 		{
 			rect = rgWeapons[i].rcAmmo;
@@ -451,10 +512,10 @@ void WeaponsResource :: SelectSlot( int iSlot, int fAdvance, int iDirection )
 	if ( gHUD.m_fPlayerDead || gHUD.m_iHideHUDDisplay & ( HIDEHUD_WEAPONS | HIDEHUD_ALL ) )
 		return;
 
-	if (!(gHUD.m_iWeaponBits & (1<<(WEAPON_SUIT)) ))
+	if (!(gHUD.m_iWeaponBits & (1U << WEAPON_SUIT) ))
 		return;
 
-	if ( ! ( gHUD.m_iWeaponBits & ~(1<<(WEAPON_SUIT)) ))
+	if ( ! ( gHUD.m_iWeaponBits & ~(1U << WEAPON_SUIT) ))
 		return;
 
 	WEAPON *p = NULL;
@@ -527,6 +588,17 @@ int CHudAmmo::MsgFunc_AmmoPickup( const char *pszName, int iSize, void *pbuf )
 
 	// Add ammo to the history
 	gHR.AddToHistory( HISTSLOT_AMMO, iIndex, abs(iCount) );
+	if (!reader.Bad() && iCount > 0 && iIndex >= 0 && iIndex < MAX_AMMO_TYPES)
+	{
+		// Only additional throwables represent another item. Shared gun ammo
+		// must not flash every weapon that happens to use the same calibre.
+		for (int id = 1; id < MAX_WEAPONS; ++id)
+		{
+			const WEAPON *weapon = gWR.GetWeapon(id);
+			if (weapon && weapon->iId == id && PanelGrenade(weapon) && weapon->iAmmoType == iIndex)
+				weapon_pickup::Receive(s_PickupFeedback,id,gHUD.m_flTime);
+		}
+	}
 
 	return 1;
 }
@@ -538,6 +610,8 @@ int CHudAmmo::MsgFunc_WeapPickup( const char *pszName, int iSize, void *pbuf )
 
 	// Add the weapon to the history
 	gHR.AddToHistory( HISTSLOT_WEAP, iIndex );
+	if (!reader.Bad() && iIndex > 0 && iIndex < MAX_WEAPONS)
+		weapon_pickup::Receive(s_PickupFeedback,iIndex,gHUD.m_flTime);
 
 	if( gHUD.GetGameType() == GAME_CZERODS )
 	{
@@ -682,7 +756,7 @@ int CHudAmmo::MsgFunc_WeaponList(const char *pszName, int iSize, void *pbuf )
 	Weapon.iFlags = reader.ReadByte();
 	Weapon.iClip = 0;
 
-	if( Weapon.iId < 0 || Weapon.iId >= MAX_WEAPONS )
+	if( Weapon.iId < 1 || Weapon.iId >= MAX_WEAPONS || !Weapon.szName[0] || reader.Bad() )
 		return 0;
 	if( Weapon.iSlot < 0 || Weapon.iSlot >= MAX_WEAPON_SLOTS + 1 )
 		return 0;
@@ -692,7 +766,7 @@ int CHudAmmo::MsgFunc_WeaponList(const char *pszName, int iSize, void *pbuf )
 		return 0;
 	if( Weapon.iAmmo2Type < -1 || Weapon.iAmmo2Type >= MAX_AMMO_TYPES )
 		return 0;
-	if( Weapon.iAmmoType >= 0 && Weapon.iMax1 == 0 )
+	if( Weapon.iAmmoType >= 0 && Weapon.iMax1 == 0 && Weapon.iId != WEAPON_TASER )
 		return 0;
 	if( Weapon.iAmmo2Type >= 0 && Weapon.iMax2 == 0 )
 		return 0;
@@ -1085,7 +1159,11 @@ int CHudAmmo::Draw(float flTime)
 	int AmmoWidth;
 
 	// place it here, so pretty dynamic crosshair will work even in spectator!
-	if( gHUD.m_iFOV > 40 )
+	if (V_DrawADSCrosshair())
+	{
+		// Physical AUG/SG553 sight replaces both the dynamic and sprite crosshair.
+	}
+	else if( gHUD.m_iFOV > 40 )
 	{
 		// draw a dynamic crosshair
 		if( !( gHUD.m_iHideHUDDisplay & HIDEHUD_CROSSHAIR ) )
@@ -1103,7 +1181,7 @@ int CHudAmmo::Draw(float flTime)
 		}
 	}
 
-	if (!(gHUD.m_iWeaponBits & (1<<(WEAPON_SUIT)) ))
+	if (!(gHUD.m_iWeaponBits & (1U << WEAPON_SUIT) ))
 		return 1;
 
 	if( gHUD.m_iHideHUDDisplay & ( HIDEHUD_WEAPONS | HIDEHUD_ALL ) )
@@ -1932,7 +2010,7 @@ int DrawBar(int x, int y, int width, int height, float f)
 
 void DrawAmmoBar(WEAPON *p, int x, int y, int width, int height)
 {
-	if ( !p )
+	if ( !p || p->iMax1 <= 0 )
 		return;
 	
 	if (p->iAmmoType != -1)
@@ -1947,7 +2025,7 @@ void DrawAmmoBar(WEAPON *p, int x, int y, int width, int height)
 
 		// Do we have secondary ammo too?
 
-		if (p->iAmmo2Type != -1)
+		if (p->iAmmo2Type != -1 && p->iMax2 > 0)
 		{
 			f = (float)gWR.CountAmmo(p->iAmmo2Type)/(float)p->iMax2;
 
@@ -1966,7 +2044,7 @@ namespace
 bool PanelGrenade(const WEAPON *weapon)
 {
 	return weapon->iId == WEAPON_HEGRENADE || weapon->iId == WEAPON_FLASHBANG
-		|| weapon->iId == WEAPON_SMOKEGRENADE;
+		|| weapon->iId == WEAPON_SMOKEGRENADE || weapon->iId == WEAPON_MOLOTOV;
 }
 
 int PanelAmmo(int type)
@@ -1982,12 +2060,12 @@ bool PanelHasAmmo(const WEAPON *weapon)
 
 void PanelWeaponName(const WEAPON *weapon, char *text, size_t size)
 {
-	// GoldSrc has no skin/custom-name field here. These are the actual CS1.6
-	// weapons, not cosmetic names inferred from the available artwork.
+	// GoldSrc has no skin/custom-name field here. Five converted slots now
+	// implement their schema weapon; the other names retain their real rules.
 	const char *name = nullptr;
 	switch (weapon->iId)
 	{
-	case WEAPON_P228: name = "P228"; break;
+	case WEAPON_P228: name = "P250"; break;
 	case WEAPON_SCOUT: name = "Scout"; break;
 	case WEAPON_HEGRENADE: name = "HE Grenade"; break;
 	case WEAPON_XM1014: name = "XM1014"; break;
@@ -2004,18 +2082,20 @@ void PanelWeaponName(const WEAPON *weapon, char *text, size_t size)
 	case WEAPON_USP: name = "USP"; break;
 	case WEAPON_GLOCK18: name = "Glock-18"; break;
 	case WEAPON_AWP: name = "AWP"; break;
-	case WEAPON_MP5N: name = "MP5"; break;
+	case WEAPON_MP5N: name = "MP7"; break;
 	case WEAPON_M249: name = "M249"; break;
-	case WEAPON_M3: name = "M3"; break;
+	case WEAPON_M3: name = "Nova"; break;
 	case WEAPON_M4A1: name = "M4A1"; break;
-	case WEAPON_TMP: name = "TMP"; break;
+	case WEAPON_TMP: name = "MP9"; break;
 	case WEAPON_G3SG1: name = "G3SG1"; break;
 	case WEAPON_FLASHBANG: name = "Flashbang"; break;
 	case WEAPON_DEAGLE: name = "Desert Eagle"; break;
-	case WEAPON_SG552: name = "SG552"; break;
+	case WEAPON_SG552: name = "SG553"; break;
 	case WEAPON_AK47: name = "AK-47"; break;
 	case WEAPON_KNIFE: name = "Knife"; break;
 	case WEAPON_P90: name = "P90"; break;
+	case WEAPON_TASER: name = "Zeus x27"; break;
+	case WEAPON_MOLOTOV: name = buy_menu_state::FireIsIncendiary() ? "Incendiary Grenade" : "Molotov"; break;
 	default:
 		name = !strncmp(weapon->szName, "weapon_", 7) ? weapon->szName+7 : weapon->szName;
 		break;
@@ -2023,16 +2103,19 @@ void PanelWeaponName(const WEAPON *weapon, char *text, size_t size)
 	strlcpy(text, name, size);
 }
 
-int PanelWeaponTexture(const WEAPON *weapon)
+bool PanelWeaponPath(const WEAPON *weapon, char *path, size_t size)
 {
+	// The MP5 slot is now actual MP7 gameplay/model, not MP5-SD artwork.
+	if (weapon->iId == WEAPON_MP5N) { strlcpy(path,"gfx/weaponlist/weapon_mp7.tga",size); return true; }
+	if (weapon->iId == WEAPON_MOLOTOV && buy_menu_state::FireIsIncendiary())
+	{ strlcpy(path,"gfx/weaponlist/weapon_incendiary.tga",size); return true; }
 	// WeaponList is server input: allow one resource basename, never a path.
-	if (!weapon->szName[0]) return 0;
+	if (!weapon->szName[0]) return false;
 	for (const unsigned char *p = (const unsigned char *)weapon->szName; *p; ++p)
 		if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')
-			|| (*p >= '0' && *p <= '9') || *p == '_')) return 0;
-	char path[MAX_WEAPON_NAME+32];
-	snprintf(path, sizeof(path), "gfx/weaponlist/%s.tga", weapon->szName);
-	return match_ui::Texture(path);
+			|| (*p >= '0' && *p <= '9') || *p == '_')) return false;
+	snprintf(path, size, "gfx/weaponlist/%s.tga", weapon->szName);
+	return true;
 }
 
 bool PanelSprite(const WEAPON *weapon, bool active, float x, float y,
@@ -2049,7 +2132,7 @@ bool PanelSprite(const WEAPON *weapon, bool active, float x, float y,
 	if (gRenderAPI.GL_SelectTexture) gRenderAPI.GL_SelectTexture(0);
 	if (!tri->SpriteTexture(const_cast<model_s *>(model), 0)) return false;
 	const float fit = min(width/rectWidth, height/rectHeight);
-	x += width-rectWidth*fit;
+	x += (width-rectWidth*fit)*0.5f;
 	y += (height-rectHeight*fit)*0.5f;
 	width = rectWidth*fit; height = rectHeight*fit;
 	const float scale = gHUD.m_flScale > 0 ? gHUD.m_flScale : 1.0f;
@@ -2072,6 +2155,7 @@ int DrawModernWeaponList(const WEAPON *active, const WEAPON *selection)
 	// CS:GO csgo_hudweaponselection.cpp:1388-1440 derives the inventory from
 	// owned weapons, marks GetActiveWeapon(), and reads real grenade counts.
 	// GoldSrc gWR/CurWeapon supply that state; selection remains a preview.
+	s_PanelItemCount=s_PanelRowCount=0; s_PanelDrawTime=gHUD.m_flTime;
 	if (g_iUser1 || gHUD.m_Health.m_iHealth <= 0) return 0;
 	const WEAPON *rows[MAX_WEAPON_SLOTS][MAX_WEAPON_POSITIONS] = {};
 	int counts[MAX_WEAPON_SLOTS] = {}, rowCount = 0;
@@ -2081,7 +2165,8 @@ int DrawModernWeaponList(const WEAPON *active, const WEAPON *selection)
 		for (int pos = 0; pos < MAX_WEAPON_POSITIONS; ++pos)
 		{
 			const WEAPON *weapon = gWR.GetWeaponSlot(slot,pos);
-			if (!weapon || weapon->iId < 1 || weapon->iId >= MAX_WEAPONS || seen[weapon->iId]) continue;
+			if (!weapon || weapon->iId < 1 || weapon->iId >= MAX_WEAPONS || !weapon->szName[0] ||
+				gWR.GetWeapon(weapon->iId)->iId != weapon->iId || seen[weapon->iId]) continue;
 			seen[weapon->iId] = true;
 			// Guns remain visible when empty. A spent grenade is no longer an
 			// inventory item; knives have no ammo type and must stay visible.
@@ -2091,51 +2176,77 @@ int DrawModernWeaponList(const WEAPON *active, const WEAPON *selection)
 		if (counts[slot]) ++rowCount;
 	}
 	if (!rowCount) return 0;
+	using namespace weapon_hud_layout;
 	float scale = match_ui::Scale();
-	scale = min(scale, ScreenHeight*0.70f/(40+110*rowCount));
-	int row = 0;
+	float totalHeight = 0;
+	for (int slot = 0; slot < MAX_WEAPON_SLOTS; ++slot)
+		if (counts[slot]) totalHeight += PanelGrenade(rows[slot][0]) ? grenadeRowHeight : gunRowHeight;
+	scale = min(scale, ScreenHeight*0.70f/(40+totalHeight));
+	float y = ScreenHeight-(40+totalHeight)*scale;
 	for (int slot = 0; slot < MAX_WEAPON_SLOTS; ++slot)
 	{
 		if (!counts[slot]) continue;
-		// APK resource layout: W-180, 150x65, 110 vertical pitch; extra
-		// weapons in the same slot extend left by 80. Its UVs are ordinary.
-		const float maxWidth = min(ScreenWidth*0.45f,420*scale);
-		const float rowScale = min(scale,maxWidth/(150+80*(counts[slot]-1)));
-		const float y = ScreenHeight-40*scale-110*scale*(rowCount-row++);
+		const bool grenades = PanelGrenade(rows[slot][0]);
+		// Separate cells keep four grenade counters and knife + Zeus legible.
+		// The slot key stays at 16px, distinct from the 32px item quantity.
+		const float cellWidth = grenades ? grenadeWidth : gunWidth, gap = grenades ? grenadeGap : gunGap;
+		const float maxWidth = min(ScreenWidth*0.45f,maxRowWidth*scale);
+		const float rowScale = min(scale,maxWidth/(cellWidth*counts[slot]+gap*(counts[slot]-1)));
+		const float right = ScreenWidth-30*scale;
+		char number[8]; snprintf(number,sizeof(number),"%d",slot+1);
+		match_ui::Text(number,ScreenWidth-10*scale,y+slotOffset*scale,slotHeight*scale,{220,220,220,190},true);
+		PanelRowLayout &rowLayout=s_PanelRows[s_PanelRowCount++]; rowLayout=PanelRowLayout(); rowLayout.slot=slot+1;
+		const float keyWidth=match_ui::TextWidth(number,slotHeight*scale);
+		rowLayout.key={ScreenWidth-10*scale-keyWidth,y+slotOffset*scale,keyWidth,slotHeight*scale};
+		const WEAPON *rowActive = nullptr;
 		for (int item = 0; item < counts[slot]; ++item)
 		{
 			const WEAPON *weapon = rows[slot][item];
 			const bool current = weapon == active, preview = weapon == selection && !current;
-			const float x = ScreenWidth-30*scale-(150+80*item)*rowScale;
+			if (current) rowActive = weapon;
+			const float x = right-(cellWidth+(cellWidth+gap)*item)*rowScale;
+			const float flash = weapon_pickup::Strength(s_PickupFeedback.items[weapon->iId],gHUD.m_flTime);
 			// Keep silhouettes opaque; the APK dims inactive RGB, not opacity.
 			const int dim = current ? 0 : 30;
 			const match_ui::Color gold = PanelHasAmmo(weapon)
 				? match_ui::Color(237-dim,199-dim,97-dim) : match_ui::Color(145,135,108,150);
-			const int texture = PanelWeaponTexture(weapon);
-			if (texture) match_ui::Picture(texture,x,y,150*rowScale,65*rowScale,gold);
-			else if (!PanelSprite(weapon,current,x,y,150*rowScale,65*rowScale,gold))
+			// Acquisition affects the silhouette alone. Names, quantities, slot
+			// keys and the world behind it retain their ordinary colors.
+			match_ui::Color iconColor = gold;
+			iconColor.r += int((255-iconColor.r)*flash);
+			iconColor.g += int((255-iconColor.g)*flash);
+			iconColor.b += int((255-iconColor.b)*flash);
+			char path[MAX_WEAPON_NAME+32] = {};
+			const bool texture = PanelWeaponPath(weapon,path,sizeof(path))
+				&& match_ui::Silhouette(path,x,y,cellWidth*rowScale,iconHeight*rowScale,iconColor);
+			PanelItemLayout &layout=s_PanelItems[s_PanelItemCount++]; layout=PanelItemLayout();
+			layout.id=weapon->iId; layout.slot=slot+1; layout.icon={x,y,cellWidth*rowScale,iconHeight*rowScale};
+			layout.flash=flash; strlcpy(layout.path,path,sizeof(layout.path));
+			if (!texture && !PanelSprite(weapon,current,x,y,cellWidth*rowScale,iconHeight*rowScale,iconColor))
 			{
 				char name[MAX_WEAPON_NAME]; PanelWeaponName(weapon,name,sizeof(name));
-				match_ui::Text(name,x+145*rowScale,y+24*rowScale,18*rowScale,gold,true,150*rowScale);
+				match_ui::Text(name,x+cellWidth*rowScale,y+29*rowScale,22*rowScale,gold,true,cellWidth*rowScale);
 			}
 			if (preview)
-				FillRGBABlend(int(x-4*rowScale),int(y+8*rowScale),max(1,int(2*rowScale)),int(49*rowScale),255,255,255,210);
-			if (!item)
-			{
-				char number[8]; snprintf(number,sizeof(number),"%d",slot+1);
-				match_ui::Text(number,x+170*rowScale,y+24*rowScale,16*rowScale,{220,220,220,190},true);
-			}
+				FillRGBABlend(int(x-4*rowScale),int(y+10*rowScale),max(1,int(2*rowScale)),int(59*rowScale),255,255,255,210);
 			if (PanelGrenade(weapon))
 			{
-				char count[16]; snprintf(count,sizeof(count),"%d",PanelAmmo(weapon->iAmmoType));
-				match_ui::Text(count,x+175*rowScale,y+50*rowScale,16*rowScale,{255,255,255},true);
-			}
-			if (current)
-			{
-				char name[MAX_WEAPON_NAME]; PanelWeaponName(weapon,name,sizeof(name));
-				match_ui::Text(name,x+145*rowScale,y+80*scale,22*scale,{255,255,255},true,min(260*scale,ScreenWidth*0.24f));
+				char count[16]; snprintf(count,sizeof(count),"x%d",PanelAmmo(weapon->iAmmoType));
+				const float textHeight = quantityHeight*rowScale, width = match_ui::TextWidth(count,textHeight);
+				const float countX = x+(cellWidth*rowScale-width)*0.5f, countY = y+quantityOffset*rowScale;
+				layout.count=PanelAmmo(weapon->iAmmoType); layout.quantity={countX,countY,width,textHeight};
+				match_ui::Text(count,countX+scale,countY+scale,textHeight,{0,0,0,220});
+				match_ui::Text(count,countX,countY,textHeight,{255,255,255});
 			}
 		}
+		if (rowActive)
+		{
+			char name[MAX_WEAPON_NAME]; PanelWeaponName(rowActive,name,sizeof(name));
+			const float nameWidth=min(match_ui::TextWidth(name,nameHeight*scale),min(384*scale,ScreenWidth*0.30f));
+			rowLayout.name={right-nameWidth,y+(grenades ? grenadeNameOffset : gunNameOffset)*scale,nameWidth,nameHeight*scale};
+			match_ui::Text(name,right,y+(grenades ? grenadeNameOffset : gunNameOffset)*scale,nameHeight*scale,{255,255,255},true,min(384*scale,ScreenWidth*0.30f));
+		}
+		y += (grenades ? grenadeRowHeight : gunRowHeight)*scale;
 	}
 	return 1;
 }

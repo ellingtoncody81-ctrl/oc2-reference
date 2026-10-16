@@ -1,13 +1,14 @@
 #pragma once
 
-// CS1.6 predicted weapon spread, adapted as the precision input to CS:GO bob.
-// This is not the CS:GO item-schema inaccuracy model. No engine state is read.
+// Predicted weapon spread used as the precision input to CS:GO bob.
+// Five converted guns use the shared CS:GO schema adapter; others retain CS1.6.
+// No engine state is read here.
 namespace oc2_weapon_spread
 {
 struct SpreadInput
 {
 	int weapon_id = 0;
-	float accuracy = 0.0f; // Current predicted CBasePlayerWeapon::m_flAccuracy.
+	float accuracy = 0.0f; // Predicted accuracy; converted guns supply total radius.
 	int weapon_state = 0; // WPNSTATE_* bits from dlls/weapontype.h.
 	float speed = 0.0f; // Horizontal velocity length, in GoldSrc units/second.
 	bool grounded = true;
@@ -29,7 +30,7 @@ struct SpreadOutput
 // Burst mode describes PrimaryAttack's first round. FireRemaining emits the
 // later Glock rounds with a fixed 0.05 cone and FAMAS rounds with saved spread;
 // their pending-shot timing is deliberately outside this continuous API.
-// M3/XM1014 return their fixed horizontal pellet cone, so they add no dynamic
-// accuracy drift. Knife, grenades, C4 and unrecognized IDs return zero.
+// XM1014 retains its fixed horizontal pellet cone. Nova uses the shared
+// dynamic radius. Knife, grenades, C4 and unrecognized IDs return zero.
 SpreadOutput Calculate(const SpreadInput &input);
 }

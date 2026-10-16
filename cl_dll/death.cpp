@@ -25,6 +25,7 @@
 #include "strl.h"
 #include "kill_feedback.h"
 #include "match_ui.h"
+#include "weapon_hud_layout.h"
 #include <cmath>
 
 float color[3];
@@ -102,12 +103,56 @@ void NoticeBackground(float x, float y, float width, float height, const DeathNo
 	FillRGBABlend((int)x,(int)y,(int)width,(int)height,0,0,0,opacity*alpha/255);
 }
 
+bool NoticeGunFlips(const char *path)
+{
+	// Only firearm silhouettes have a muzzle direction. Grenades, knives,
+	// bomb/world symbols and headshots keep their original orientation.
+	static const char *guns[] = {"ak47","aug","awp","deagle","elite","famas","fiveseven",
+		"g3sg1","galil","glock18","m249","m3","m4a1","mac10","mp5navy","mp7",
+		"p228","p90","scout","sg550","sg552","tmp","ump45","usp","xm1014","zeus"};
+	for (const char *name : guns)
+	{
+		char candidate[64]; snprintf(candidate,sizeof(candidate),"gfx/vgui/death/d_%s.tga",name);
+		if (!strcmp(path,candidate)) return true;
+	}
+	return false;
+}
+
+float NoticeIconWidth(const char *path, int sprite, float scale)
+{
+	const auto bounds = match_ui::SilhouetteBounds(path);
+	float aspect = 1.0f;
+	if (bounds.valid) aspect = float(bounds.right-bounds.left)/(bounds.bottom-bounds.top);
+	else if (sprite >= 0 && sprite < gHUD.SpriteCount())
+	{
+		const wrect_t &rect = gHUD.GetSpriteRect(sprite);
+		if (rect.bottom > rect.top) aspect = float(rect.right-rect.left)/(rect.bottom-rect.top);
+	}
+	return max(26.0f,min(90.0f,33.0f*aspect))*scale;
+}
+
+void DeathIconDump()
+{
+	static const char *names[] = {"ak47","aug","awp","deagle","elite","famas","fiveseven",
+		"g3sg1","galil","glock18","m249","m3","m4a1","mac10","mp7","p228","p90",
+		"scout","sg550","sg552","tmp","ump45","usp","xm1014","zeus","knife",
+		"hegrenade","flashbang","smokegrenade","molotov","incendiary","c4","worldspawn"};
+	for (const char *name : names)
+	{
+		char path[64]; snprintf(path,sizeof(path),"gfx/vgui/death/d_%s.tga",name);
+		const auto b = match_ui::SilhouetteBounds(path);
+		gEngfuncs.Con_Printf("deathicon: name=%s valid=%d source=%dx%d contour=%d,%d,%d,%d width=%.2f height=33 flip=%d\n",
+			name,int(b.valid),b.width,b.height,b.left,b.top,b.right,b.bottom,NoticeIconWidth(path,-1,1),int(NoticeGunFlips(path)));
+	}
+}
+
 void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int headshot, float time)
 {
-	// OC2 resource layout: size 1.5 -> weapon 90x33, row pitch 70/1.5,
-	// padding 32, notice background eight units taller than the glyph.
+	// Fit the visible contour, not the common 89x32 canvas. In particular,
+	// the bottle/canister artwork occupies only its rightmost 11-20 pixels.
 	const float scale = match_ui::Scale();
-	const float weaponW = 90.0f*scale, weaponH = 33.0f*scale;
+	const int id = item.iId >= 0 ? item.iId : skull;
+	const float weaponW = NoticeIconWidth(item.weaponResource,id,scale), weaponH = 33.0f*scale;
 	const float iconW = 33.0f*scale, padding = 6.0f*scale;
 	const float textH = 28.0f*scale;
 	const float maxName = min(240.0f*scale, ScreenWidth*0.24f);
@@ -134,25 +179,24 @@ void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int heads
 		match_ui::Text(item.szKiller,cursor,y+(weaponH-textH)*0.5f+4.0f*scale,textH,killerColor,false,maxName);
 		cursor += killerW+padding;
 	}
-	const int id = item.iId >= 0 ? item.iId : skull;
-	const int weaponTexture = item.weaponResource[0] ? match_ui::Texture(item.weaponResource) : 0;
-	// OC2 weapon TGAs face left; the reference notice points toward the
-	// victim on the right. Keep world/death symbols and headshots unchanged.
-	const bool flipWeaponTexture = strcmp(item.weaponResource,"gfx/vgui/death/d_worldspawn.tga") != 0
-		&& strcmp(item.weaponResource,"gfx/vgui/death/d_skull.tga") != 0
-		&& strcmp(item.weaponResource,"gfx/vgui/death/d_headshot.tga") != 0;
-	if (weaponTexture) match_ui::Picture(weaponTexture,cursor,y+4.0f*scale,weaponW,weaponH,iconColor,false,flipWeaponTexture);
-	// Native GoldSrc death sprites already face right (AK/deagle/Glock/M4).
-	// Explicitly retain that orientation, including the skull fallback.
-	else if (id >= 0) match_ui::Sprite(id,cursor,y+4.0f*scale,weaponW,weaponH,iconColor,false);
-	else match_ui::Text("X",cursor,y+4.0f*scale,textH,iconColor);
+	if (!match_ui::Silhouette(item.weaponResource,cursor,y+4.0f*scale,weaponW,weaponH,iconColor,NoticeGunFlips(item.weaponResource)))
+	{
+		// Native GoldSrc sprites already face right. Contain the fallback too.
+		if (id >= 0 && id < gHUD.SpriteCount())
+		{
+			const wrect_t &rect = gHUD.GetSpriteRect(id);
+			const float fit = min(weaponW/max(1,rect.right-rect.left),weaponH/max(1,rect.bottom-rect.top));
+			const float w = (rect.right-rect.left)*fit, h = (rect.bottom-rect.top)*fit;
+			match_ui::Sprite(id,cursor+(weaponW-w)*0.5f,y+4*scale+(weaponH-h)*0.5f,w,h,iconColor,false);
+		}
+		else match_ui::Text("X",cursor,y+4.0f*scale,textH,iconColor);
+	}
 	cursor += weaponW;
 	if (item.iHeadShotId)
 	{
 		cursor += padding;
-		const int texture = match_ui::Texture("gfx/vgui/death/headshot.tga");
-		if (texture) match_ui::Picture(texture,cursor,y+4.0f*scale,iconW,weaponH,iconColor);
-		else if (headshot >= 0) match_ui::Sprite(headshot,cursor,y+4.0f*scale,iconW,weaponH,iconColor);
+		if (!match_ui::Silhouette("gfx/vgui/death/headshot.tga",cursor,y+4.0f*scale,iconW,weaponH,iconColor)
+			&& headshot >= 0) match_ui::Sprite(headshot,cursor,y+4.0f*scale,iconW,weaponH,iconColor);
 		cursor += iconW;
 	}
 	if (!item.bNonPlayerKill)
@@ -181,17 +225,19 @@ void DrawKillCard(float time)
 	color.r += (int)((255-color.r)*flash);
 	color.g += (int)((255-color.g)*flash);
 	color.b += (int)((255-color.b)*flash);
-	if (texture) match_ui::Picture(texture,center-195*scale,ScreenHeight-195*scale,390*scale,150*scale,color);
+	using namespace weapon_hud_layout;
+	const float cardTop = ScreenHeight-(cardHeight+cardBottomMargin)*scale;
+	if (texture) match_ui::Picture(texture,center-cardWidth*scale*0.5f,cardTop,cardWidth*scale,cardHeight*scale,color);
 	else
 	{
-		FillRGBABlend((int)(center-100*scale),(int)(ScreenHeight-175*scale),(int)(200*scale),(int)(60*scale),12,16,22,185);
-		match_ui::Text("KILL",center-match_ui::TextWidth("KILL",24*scale)*0.5f,ScreenHeight-170*scale,24*scale,color);
+		FillRGBABlend((int)(center-120*scale),(int)(cardTop+24*scale),(int)(240*scale),(int)(72*scale),12,16,22,185);
+		match_ui::Text("KILL",center-match_ui::TextWidth("KILL",cardCountHeight*scale)*0.5f,cardTop+30*scale,cardCountHeight*scale,color);
 	}
 	if (s_KillFeedback.round_kills > 5 || !texture)
 	{
 		char count[24]; snprintf(count,sizeof(count),"x%d",s_KillFeedback.round_kills);
-		const float height = 24*scale;
-		match_ui::Text(count,center-match_ui::TextWidth(count,height)*0.5f,ScreenHeight-140*scale,height,color);
+		const float height = cardCountHeight*scale;
+		match_ui::Text(count,center-match_ui::TextWidth(count,height)*0.5f,cardTop+cardCountOffset*scale,height,color);
 	}
 }
 }
@@ -212,6 +258,12 @@ void HUD_KillFeedbackDump()
 		s_KillFeedback.round_headshots,(int)s_KillFeedback.card_visible,(int)s_KillFeedback.local_dead);
 	int count=0; while(count<MAX_DEATHNOTICES && rgDeathNoticeList[count].iId) ++count;
 	gEngfuncs.Con_Printf("%d\n",count);
+	const float scale=match_ui::Scale();
+	gEngfuncs.Con_Printf("killcardlayout: width=%.3f height=%.3f x=%.3f y=%.3f scale=%.5f frame=%d\n",
+		weapon_hud_layout::cardWidth*scale,weapon_hud_layout::cardHeight*scale,
+		(ScreenWidth-weapon_hud_layout::cardWidth*scale)*0.5f,
+		ScreenHeight-(weapon_hud_layout::cardHeight+weapon_hud_layout::cardBottomMargin)*scale,
+		gHUD.m_flScale,kill_feedback::CardFrame(s_KillFeedback,gHUD.m_flTime));
 }
 
 cvar_t *cl_killsound;
@@ -223,6 +275,7 @@ int CHudDeathNotice :: Init( void )
 
 	HOOK_MESSAGE( gHUD.m_DeathNotice, DeathMsg );
 	HOOK_MESSAGE( gHUD.m_DeathNotice, HudRound );
+	gEngfuncs.pfnAddCommand("death_icon_dump", DeathIconDump);
 
 	hud_deathnotice_time = CVAR_CREATE( "hud_deathnotice_time", "6", FCVAR_ARCHIVE );
 	cl_killsound = CVAR_CREATE( "cl_killsound", "0", FCVAR_ARCHIVE );
@@ -405,8 +458,14 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	}
 	// A reused queue entry must not inherit suicide/TK flags or colors.
 	rgDeathNoticeList[i] = DeathNoticeItem();
-	if (kill_feedback::WeaponResourceName(weaponName))
-		snprintf(rgDeathNoticeList[i].weaponResource,sizeof(rgDeathNoticeList[i].weaponResource),"gfx/vgui/death/d_%s.tga",weaponName);
+	// Resource alias only: retain the original event weapon name for kill state.
+	const char *resourceName = !strcmp(weaponName,"mp5navy") || !strcmp(weaponName,"mp5") ? "mp7" : weaponName;
+	if (!strcmp(resourceName,"taser")) resourceName = "zeus";
+	if (!strcmp(resourceName,"incgrenade")) resourceName = "incendiary";
+	if (!strcmp(resourceName,"grenade")) resourceName = "hegrenade";
+	if (!strcmp(resourceName,"world")) resourceName = "worldspawn";
+	if (kill_feedback::WeaponResourceName(resourceName))
+		snprintf(rgDeathNoticeList[i].weaponResource,sizeof(rgDeathNoticeList[i].weaponResource),"gfx/vgui/death/d_%s.tga",resourceName);
 
 	//if (gViewPort)
 		//gViewPort->GetAllPlayersInfo();
