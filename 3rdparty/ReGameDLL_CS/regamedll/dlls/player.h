@@ -571,6 +571,9 @@ public:
 	Vector AutoaimDeflection(Vector &vecSrc, float flDist, float flDelta);
 	void ForceClientDllUpdate();
 	void SendBuyState();
+	void ResetBuyPresentation();
+	void SetBuyPresentationOpen(bool open);
+	void RecordBuyPresentation(int weaponID);
 	void DeathMessage(entvars_t *pevAttacker) {};
 	void SetCustomDecalFrames(int nFrames);
 	int GetCustomDecalFrames();
@@ -925,6 +928,13 @@ public:
 #endif
 
 	// UI replication cache only; -1 forces the first reliable update.
+	// Server-only, bounded menu session. No protocol or save-game ABI expansion.
+	bool m_bOc2BuyMenuOpen = false;
+	int m_iOc2BuyMenuTeam = 0;
+	int m_iOc2PurchasedWeapon = 0;
+	float m_flOc2PurchaseTime = 0;
+	int m_iOc2ZeusPurchases = 0;
+	int m_iClientEquipment = -1;
 	int m_iClientBuyState = -1;
 	int m_iClientBuySeconds = 0;
 };

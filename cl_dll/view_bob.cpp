@@ -154,7 +154,7 @@ namespace view_bob
 
 		if( have_weapon )
 		{
-			int weapon_id = input.weapon_id > 0 && input.weapon_id < 31 ? input.weapon_id : 0;
+			int weapon_id = input.weapon_id > 0 && input.weapon_id < 32 ? input.weapon_id : 0;
 			if( weapon_id != state.active_weapon_id )
 			{
 				state.weapon_acc_pos[state.active_weapon_id] = state.gun_acc_pos;

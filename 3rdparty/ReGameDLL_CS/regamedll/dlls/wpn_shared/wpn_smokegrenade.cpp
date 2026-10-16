@@ -237,8 +237,9 @@ void CSmokeGrenade::WeaponIdle()
 			return;
 		}
 
-		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + RANDOM_FLOAT(10, 15);
-		m_flReleaseThrow = -1;
+		m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
+			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + AnimationDuration(SMOKEGRENADE_DRAW,.75f);
+		m_flReleaseThrow = -1.0f;
 	}
 	else if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
 	{

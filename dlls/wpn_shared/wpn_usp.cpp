@@ -119,8 +119,8 @@ void CUSP::SecondaryAttack()
 		strcpy(m_pPlayer->m_szAnimExtention, "onehanded");
 	}
 
-	m_flNextSecondaryAttack = m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 3.0f;
-	m_flNextPrimaryAttack = GetNextAttackDelay(3.0);
+	const float duration = AnimationDuration(m_pPlayer->pev->weaponanim,3.0f);
+	m_flNextPrimaryAttack = m_flNextSecondaryAttack = m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + duration;
 }
 
 void CUSP::PrimaryAttack()

@@ -1,4 +1,5 @@
 #include "weapon_spread.h"
+#include "../dlls/wpn_shared/oc2_weapon_params.h"
 
 #include <cmath>
 
@@ -21,18 +22,33 @@ enum WeaponState
 	M4A1_SILENCED = 1 << 2, FAMAS_BURST = 1 << 4
 };
 
+const oc2_weapon::Params *SchemaWeapon(int id)
+{
+	// The five converted slots publish a total radius in m_flAccuracy.
+	// Other slots retain their original CS1.6 accuracy-factor interpretation.
+	switch (id)
+	{
+	case M3: return &oc2_weapon::Get(oc2_weapon::Nova);
+	case MP5N: return &oc2_weapon::Get(oc2_weapon::MP7);
+	case P228: return &oc2_weapon::Get(oc2_weapon::P250);
+	case SG552: return &oc2_weapon::Get(oc2_weapon::SG553);
+	case TMP: return &oc2_weapon::Get(oc2_weapon::MP9);
+	default: return nullptr;
+	}
+}
+
 float DefaultAccuracy(int id)
 {
 	// Values assigned by each dlls/wpn_shared/wpn_*.cpp Deploy method.
 	switch (id)
 	{
-	case P228: case DEAGLE: case GLOCK18: return 0.9f;
+	case DEAGLE: case GLOCK18: return 0.9f;
 	case ELITE: return 0.88f;
 	case FIVESEVEN: case USP: return 0.92f;
 	case MAC10: return 0.15f;
 	case AK47: case AUG: case GALIL: case FAMAS: case M249:
-	case M4A1: case SG552: case TMP: case G3SG1: case P90: return 0.2f;
-	// MP5N/UMP45 explicitly reset to zero. SG550 never initializes accuracy
+	case M4A1: case G3SG1: case P90: return 0.2f;
+	// UMP45 explicitly resets to zero. SG550 never initializes accuracy
 	// in Spawn/Deploy: its static predicted entity begins at zero and retains
 	// accuracy on redeploy. Zero here describes that initial baseline only.
 	default: return 0.0f;
@@ -63,7 +79,7 @@ float SpreadAt(const SpreadInput &in, float a)
 	{
 	// PrimaryAttack branch ordering is air, movement, duck, stand; rifle
 	// ducking does not change the PrimaryAttack spread in this client.
-	case P228: case FIVESEVEN:
+	case FIVESEVEN:
 		return PistolSpread(in, a, 1.5f, 0.255f, 0.075f, 0.15f);
 	case DEAGLE:
 		return PistolSpread(in, a, 1.5f, 0.25f, 0.115f, 0.13f);
@@ -81,8 +97,6 @@ float SpreadAt(const SpreadInput &in, float a)
 		return RifleSpread(in, a, 0.04f, 0.4f, 0.04f, 0.07f, 0.0275f);
 	case AUG:
 		return RifleSpread(in, a, 0.035f, 0.4f, 0.035f, 0.07f, 0.02f);
-	case SG552:
-		return RifleSpread(in, a, 0.035f, 0.45f, 0.035f, 0.075f, 0.02f);
 	case GALIL:
 		return RifleSpread(in, a, 0.04f, 0.3f, 0.04f, 0.07f, 0.0375f);
 	case FAMAS:
@@ -97,8 +111,6 @@ float SpreadAt(const SpreadInput &in, float a)
 	case P90:
 		return RifleSpread(in, a, 0.0f, 0.3f, 0.0f, 0.115f, 0.045f, 170.0f);
 	case MAC10: return (in.grounded ? 0.03f : 0.375f) * a;
-	case MP5N: return (in.grounded ? 0.04f : 0.2f) * a;
-	case TMP: return (in.grounded ? 0.03f : 0.25f) * a;
 	case UMP45: return (in.grounded ? 0.04f : 0.24f) * a;
 	case AWP:
 		return (!in.grounded ? 0.85f : in.speed > 140.0f ? 0.25f
@@ -118,7 +130,6 @@ float SpreadAt(const SpreadInput &in, float a)
 		return (!in.grounded ? 0.45f * (1.0f - a) : in.speed > 0.0f
 			? 0.15f : (in.ducking ? 0.04f : 0.05f) * (1.0f - a))
 			+ (unscoped ? 0.025f : 0.0f);
-	case M3: return 0.0675f; // M3_CONE_VECTOR.x in dlls/wpn_shared.h.
 	case XM1014: return 0.0725f; // XM1014_CONE_VECTOR.x.
 	default: return 0.0f;
 	}
@@ -135,6 +146,16 @@ SpreadOutput Calculate(const SpreadInput &input)
 	SpreadInput in = input;
 	if (!std::isfinite(in.speed) || in.speed < 0.0f) in.speed = 0.0f;
 	if (!std::isfinite(in.fov) || in.fov <= 0.0f) in.fov = 90.0f;
+	if (const oc2_weapon::Params *schema = SchemaWeapon(in.weapon_id))
+	{
+		const int mode = in.weapon_id == SG552 && in.fov != 90.0f ? 1 : 0;
+		SpreadOutput output;
+		output.stand = schema->stand[mode] + schema->spread[mode];
+		output.crouch = schema->crouch[mode] + schema->spread[mode];
+		output.current = std::isfinite(in.accuracy)
+			? oc2_weapon::Clamp(in.accuracy, 0.0f, 1.0f) : output.stand;
+		return output;
+	}
 	if (!std::isfinite(in.accuracy)) in.accuracy = DefaultAccuracy(in.weapon_id);
 	// The real weapon values are at most 1.65 (MAC10). A broad finite bound
 	// preserves those values while preventing corrupted state from reaching bob.

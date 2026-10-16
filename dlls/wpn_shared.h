@@ -286,9 +286,11 @@ enum knife_shield_e
 
 
 
-//m3
-#define M3_MAX_SPEED		230
-#define M3_CONE_VECTOR		Vector(0.0675, 0.0675, 0.0)	// special shotgun spreads
+//m3 slot: CS:GO Nova
+#define M3_MAX_SPEED		220
+#define M3_DAMAGE		26
+#define M3_RANGE_MODIFER	0.70
+#define M3_CONE_VECTOR		Vector(0.040, 0.040, 0.0) // Nova intrinsic spread; schema inaccuracy is additional.
 
 enum m3_e
 {
@@ -367,11 +369,11 @@ enum mac10_e
 
 
 
-//mp5navy
-#define MP5N_MAX_SPEED			250
-#define MP5N_DAMAGE			26
-#define MP5N_RANGE_MODIFER		0.84
-#define MP5N_RELOAD_TIME		2.63
+//mp5navy slot: CS:GO MP7
+#define MP5N_MAX_SPEED			220
+#define MP5N_DAMAGE			29
+#define MP5N_RANGE_MODIFER		0.85
+#define MP5N_RELOAD_TIME		3.133333333
 
 enum mp5n_e
 {
@@ -403,11 +405,11 @@ enum p90_e
 
 
 
-//p228
-#define P228_MAX_SPEED		250
-#define P228_DAMAGE		32
-#define P228_RANGE_MODIFER	0.8
-#define P228_RELOAD_TIME	2.7
+//p228 slot: CS:GO P250
+#define P228_MAX_SPEED		240
+#define P228_DAMAGE		38
+#define P228_RANGE_MODIFER	0.90
+#define P228_RELOAD_TIME	2.266666667
 
 enum p228_e
 {
@@ -471,12 +473,12 @@ enum sg550_e
 
 
 
-//sg552
-#define SG552_MAX_SPEED			235
-#define SG552_MAX_SPEED_ZOOM		200
-#define SG552_DAMAGE			33
-#define SG552_RANGE_MODIFER		0.955
-#define SG552_RELOAD_TIME		3
+//sg552 slot: CS:GO SG553
+#define SG552_MAX_SPEED			210
+#define SG552_MAX_SPEED_ZOOM		150
+#define SG552_DAMAGE			30
+#define SG552_RANGE_MODIFER		0.98
+#define SG552_RELOAD_TIME		2.766666667
 
 enum sg552_e
 {
@@ -504,11 +506,11 @@ enum smokegrenade_e
 
 
 
-//tmp
-#define TMP_MAX_SPEED			250
-#define TMP_DAMAGE			20
-#define TMP_RANGE_MODIFER		0.85
-#define TMP_RELOAD_TIME			2.12
+//tmp slot: CS:GO MP9
+#define TMP_MAX_SPEED			240
+#define TMP_DAMAGE			26
+#define TMP_RANGE_MODIFER		0.87
+#define TMP_RELOAD_TIME			2.133333333
 
 enum tmp_e
 {

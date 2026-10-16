@@ -1,4 +1,5 @@
 #pragma once
+#include "hud_icon_bounds.h"
 
 // Coordinates are HUD logical units. Only raw textured quads apply m_flScale.
 namespace match_ui
@@ -19,6 +20,11 @@ float Scale();
 int Texture(const char *path);
 void Picture(int texture, float x, float y, float width, float height,
 	Color color = Color(), bool crop = false, bool flipX = false);
+hud_icon::Bounds SilhouetteBounds(const char *path);
+// Trim transparent padding, contain the contour without changing its aspect,
+// and center it inside the supplied box. Original Picture semantics stay intact.
+bool Silhouette(const char *path, float x, float y, float width, float height,
+	Color color = Color(), bool flipX = false);
 // Circular UV crop, equivalent to the APK's stencil disc without a new renderer API.
 void Circle(int texture, float x, float y, float diameter, Color color = Color());
 void Sprite(int hudSpriteIndex, float x, float y, float width, float height,

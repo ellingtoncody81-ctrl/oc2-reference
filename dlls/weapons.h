@@ -113,8 +113,8 @@ public:
 #define ITEM_SECURITY 3
 #define ITEM_BATTERY 4
 
-#define WEAPON_ALLWEAPONS (~(1 << WEAPON_SUIT))
-#define WEAPON_SUIT 31
+#define WEAPON_ALLWEAPONS (~(1U << WEAPON_SUIT))
+#define WEAPON_SUIT 0
 #define MAX_WEAPONS 32
 
 #define MAX_NORMAL_BATTERY 100
@@ -267,6 +267,14 @@ public:
 public:
 	BOOL DefaultDeploy(const char *szViewModel, const char *szWeaponModel, int iAnim, const char *szAnimExt, int skiplocal = 0);
 	int DefaultReload(int iClipSize, int iAnim, float fDelay, int body = 0);
+	// Paired prediction/server presentation, using existing animation + idle state.
+	float AnimationDuration(int animation, float fallback) const;
+	void StartInspect();
+	bool AdvanceInspect();
+	void AdvanceReload(void); // Ammo insertion event; the sequence-end attack lock remains active.
+	bool DefaultShotgunReload(int iAnim, int iStartAnim, float fDelay, float fStartDelay,
+		const char *sound1 = 0, const char *sound2 = 0);
+	void FinishShotgunReload(int animation, float fallback);
 	void ReloadSound(void);
 	BOOL AddPrimaryAmmo(int iCount, char *szName, int iMaxClip, int iMaxCarry) { return true; }
 	BOOL AddSecondaryAmmo(int iCount, char *szName, int iMaxCarry) { return true; }
@@ -314,7 +322,7 @@ public:
 	int m_iFamasShotsFired;
 	float m_fBurstSpread;
 	int m_iWeaponState;
-	float m_flNextReload;
+	float m_flNextReload; // Pending insertion's remaining tail; negative after the one-shot commit.
 	float m_flDecreaseShotsFired;
 	unsigned short m_usFireGlock18;
 	unsigned short m_usFireFamas;
@@ -930,7 +938,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 230; }
+	float GetMaxSpeed(void) { return 220; }
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -1021,7 +1029,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 250; }
+	float GetMaxSpeed(void) { return 220; }
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -1240,7 +1248,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 250; }
+	float GetMaxSpeed(void) { return 240; }
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);

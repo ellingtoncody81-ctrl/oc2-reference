@@ -27,6 +27,7 @@
 */
 #include "events.h"
 #include "wpn_shared.h"
+#include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
 
 static const char *SOUNDS_NAME[] =
@@ -76,11 +77,14 @@ void EV_FireTMP(event_args_s *args)
 	VectorCopy( forward, vecAiming );
 	Vector vSpread;
 	
-	vSpread.x = args->fparam1;
-	vSpread.y = args->fparam2;
+	vSpread.x = args->fparam1 / 1024;
+	vSpread.y = args->fparam2 / 1024;
+	// Reconstruct the already sampled Source offset; never randomize it twice.
+	vecAiming = (forward + vSpread.x * right + vSpread.y * up).Normalize();
+	vSpread = Vector(0, 0, 0);
 	EV_HLDM_FireBullets( idx,
 		forward, right,	up,
 		1, vecSrc, vecAiming,
-		vSpread, 8192.0, BULLET_PLAYER_9MM,
-		2 );
+		vSpread, 3600.0, BULLET_PLAYER_9MM,
+		1 );
 }

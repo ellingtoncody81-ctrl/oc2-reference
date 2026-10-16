@@ -19,6 +19,7 @@
 #include <math.h>
 #include "hud.h"
 #include "cl_util.h"
+#include "view_ads.h"
 #include <stdlib.h>
 #include <memory.h>
 
@@ -38,7 +39,9 @@ int CHud::UpdateClientData(client_data_t *cdata, float time)
 
 	Think();
 
-	cdata->fov = m_iFOV;
+	cdata->fov = V_ADSWorldFOV(m_iFOV,time);
+	if (fabs(cdata->fov-m_iFOV)>.001f)
+		m_flMouseSensitivity=sensitivity->value*(cdata->fov/default_fov->value)*zoom_sens_ratio->value;
 	
 	v_idlescale = m_iConcussionEffect;
 

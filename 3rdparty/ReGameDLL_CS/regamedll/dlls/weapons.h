@@ -388,6 +388,12 @@ public:
 	BOOL AddSecondaryAmmo(int iCount, char *szName, int iMaxCarry);
 	BOOL DefaultDeploy(char *szViewModel, char *szWeaponModel, int iAnim, char *szAnimExt, int skiplocal = 0);
 	int DefaultReload(int iClipSize, int iAnim, float fDelay);
+	// Paired prediction/server presentation, using existing animation + idle state.
+	float AnimationDuration(int animation, float fallback) const;
+	void StartInspect();
+	bool AdvanceInspect();
+	void AdvanceReload(); // Ammo insertion event; the sequence-end attack lock remains active.
+	void FinishShotgunReload(int animation, float fallback);
 	void FireRemaining(int &shotsFired, float &shootTime, BOOL isGlock18);
 	void KickBack(float up_base, float lateral_base, float up_modifier, float lateral_modifier, float up_max, float lateral_max, int direction_change);
 	void EjectBrassLate();
@@ -451,7 +457,7 @@ public:
 	int m_iFamasShotsFired;
 	float m_fBurstSpread;
 	int m_iWeaponState;
-	float m_flNextReload;
+	float m_flNextReload; // Pending insertion's remaining tail; negative after the one-shot commit.
 	float m_flDecreaseShotsFired;
 	unsigned short m_usFireGlock18;
 	unsigned short m_usFireFamas;
@@ -592,10 +598,10 @@ private:
 };
 
 
-const float MP5N_MAX_SPEED     = 250.0f;
-const float MP5N_DAMAGE        = 26.0f;
-const float MP5N_RANGE_MODIFER = 0.84f;
-const float MP5N_RELOAD_TIME   = 2.63f;
+const float MP5N_MAX_SPEED     = 220.0f;
+const float MP5N_DAMAGE        = 29.0f;
+const float MP5N_RANGE_MODIFER = 0.85f;
+const float MP5N_RELOAD_TIME   = 3.133333333f;
 #ifdef REGAMEDLL_FIXES
 const float MP5N_ACCURACY_DIVISOR = 220.1f;
 #else
@@ -644,11 +650,11 @@ private:
 };
 
 
-const float SG552_MAX_SPEED      = 235.0f;
-const float SG552_MAX_SPEED_ZOOM = 200.0f;
-const float SG552_DAMAGE         = 33.0f;
-const float SG552_RANGE_MODIFER  = 0.955f;
-const float SG552_RELOAD_TIME    = 3.0f;
+const float SG552_MAX_SPEED      = 210.0f;
+const float SG552_MAX_SPEED_ZOOM = 150.0f;
+const float SG552_DAMAGE         = 30.0f;
+const float SG552_RANGE_MODIFER  = 0.98f;
+const float SG552_RELOAD_TIME    = 2.766666667f;
 #ifdef REGAMEDLL_FIXES
 const float SG552_ACCURACY_DIVISOR = 220.0f;
 #else
@@ -1330,8 +1336,9 @@ private:
 };
 
 
-const float M3_MAX_SPEED   = 230.0f;
-const float M3_DAMAGE      = 20.0f;
+const float M3_MAX_SPEED   = 220.0f;
+const float M3_DAMAGE      = 26.0f;
+const float M3_RANGE_MODIFER = 0.70f;
 
 enum m3_e
 {
@@ -1495,10 +1502,10 @@ private:
 };
 
 
-const float P228_MAX_SPEED     = 250.0f;
-const float P228_DAMAGE        = 32.0f;
-const float P228_RANGE_MODIFER = 0.8f;
-const float P228_RELOAD_TIME   = 2.7f;
+const float P228_MAX_SPEED     = 240.0f;
+const float P228_DAMAGE        = 38.0f;
+const float P228_RANGE_MODIFER = 0.90f;
+const float P228_RELOAD_TIME   = 2.266666667f;
 
 enum p228_e
 {
@@ -1707,10 +1714,10 @@ public:
 };
 
 
-const float TMP_MAX_SPEED     = 250.0f;
-const float TMP_DAMAGE        = 20.0f;
-const float TMP_RANGE_MODIFER = 0.85f;
-const float TMP_RELOAD_TIME   = 2.12f;
+const float TMP_MAX_SPEED     = 240.0f;
+const float TMP_DAMAGE        = 26.0f;
+const float TMP_RANGE_MODIFER = 0.87f;
+const float TMP_RELOAD_TIME   = 2.133333333f;
 #ifdef REGAMEDLL_FIXES
 const float TMP_ACCURACY_DIVISOR = 200.0f;
 #else

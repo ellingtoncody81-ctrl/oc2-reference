@@ -70,7 +70,7 @@ BOOL CSCOUT::Deploy()
 {
 	if (DefaultDeploy("models/v_scout.mdl", "models/p_scout.mdl", SCOUT_DRAW, "rifle", UseDecrement() != FALSE))
 	{
-		m_flNextPrimaryAttack = m_pPlayer->m_flNextAttack = GetNextAttackDelay(1.25);
+		// DefaultDeploy applies the resource sequence duration.
 		m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 1.0f;
 
 		return TRUE;

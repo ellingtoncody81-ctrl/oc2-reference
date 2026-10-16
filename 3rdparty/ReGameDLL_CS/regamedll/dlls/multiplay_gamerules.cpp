@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_inferno.h"
 
 CCStrikeGameMgrHelper g_GameMgrHelper;
 CHalfLifeMultiplay *g_pMPGameRules = nullptr;
@@ -1674,6 +1675,7 @@ LINK_HOOK_CLASS_VOID_CUSTOM_CHAIN2(CHalfLifeMultiplay, CSGameRules, RestartRound
 
 void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 {
+	OC2_InfernoRoundReset();
 	// tell bots that the round is restarting
 	if (TheBots)
 	{
@@ -4052,7 +4054,9 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(PlayerKilled)(CBasePlayer *pVictim,
 
 				UTIL_LogPrintf("\"%s<%i><%s><TERRORIST>\" triggered \"Assassinated_The_VIP\"\n", STRING(killer->pev->netname), GETPLAYERUSERID(killer->edict()), GETPLAYERAUTHID(killer->edict()));
 			}
-			else
+			else if (!pInflictor || !FClassnameIs(pInflictor, "weapon_zeus"))
+				// CS:GO weapon_taser_prefab kill award is zero. Identify the actual
+				// inflictor, so a later weapon switch cannot change this reward.
 				killer->AddAccount(REWARD_KILLED_ENEMY, RT_ENEMY_KILLED);
 
 			if (!(killer->m_flDisplayHistory & DHF_ENEMY_KILLED))

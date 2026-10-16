@@ -38,11 +38,11 @@ struct Presentation
 
 // Resource body names and sequence indices were read directly from these
 // IDST v10 assets (buy_model_presentation_indices.json). This table maps
-// existing CS1.6 IDs to presentation art; it does not add gameplay weapons.
+// paired client weapon IDs to their verified presentation body and pose.
 const Presentation kPresentations[] =
 {
-	{ 1, 24, 328, 366 }, // P228 -> P250 artwork.
-	{ 2, 22, 327, 359 }, // Legacy Glock ID.
+	{ 1, 24, 328, 366 }, // P250 in the paired legacy P228 slot.
+	{ 2, 43, 371, 371 }, // Independent Zeus in the former unused ID 2.
 	{ 3, 5, 306, 340 },  // Scout -> SSG08 artwork.
 	{ 4, 11, 375, 375 }, // HE grenade.
 	{ 5, 37, 313, 349 }, // XM1014.
@@ -59,25 +59,22 @@ const Presentation kPresentations[] =
 	{ 16, 17, 326, 361 }, // USP.
 	{ 17, 22, 327, 359 }, // Glock18.
 	{ 18, 2, 308, 343 }, // AWP.
-	{ 19, 40, 321, 355 }, // MP5 -> MP5SD artwork.
+	{ 19, 41, 320, 356 }, // MP7: w_smg_mp7 body and verified CT/T poses.
 	{ 20, 15, 317, 351 }, // M249.
-	{ 21, 35, 312, 348 }, // M3 -> NOVA artwork.
+	{ 21, 35, 312, 348 }, // Nova in the paired legacy M3 slot.
 	{ 22, 32, 302, 337 }, // M4A1-S presentation of the CS1.6 M4A1.
-	{ 23, 42, 318, 353 }, // TMP -> MP9 artwork.
+	{ 23, 42, 318, 353 }, // MP9 in the paired legacy TMP slot.
 	{ 24, 3, 311, 344 }, // G3SG1.
 	{ 25, 10, 372, 372 }, // Flashbang.
 	{ 26, 19, 332, 365 }, // Deagle.
-	{ 27, 33, 310, 341 }, // SG552 -> SG553 artwork.
+	{ 27, 33, 310, 341 }, // SG553 in the paired legacy SG552 slot.
 	{ 28, 27, 303, 336 }, // AK47.
 	{ 29, 14, 369, 369 }, // Knife.
 	{ 30, 0, 323, 357 }, // P90 (body zero is a real model).
-	{ 99, -1, 379, 379 }, // Shield is absent from this weapon bundle.
+	{ 31, 12, 373, 373 }, // Molotov: w_eq_molotov body.
 	{ 1001, 6, 377, 377 }, // Armor.
 	{ 1002, 7, 377, 377 }, // Armor and helmet.
-	{ 1003, 9, 376, 376 }, // Defuser.
-	{ 1004, -1, 379, 379 }, // No NVG overlay model in this bundle.
-	{ 1005, -1, 379, 379 }, // Primary ammunition.
-	{ 1006, -1, 379, 379 }  // Secondary ammunition.
+	{ 1003, 9, 376, 376 } // Defuser.
 };
 
 ModelMetadata s_tMetadata = {}, s_ctMetadata = {}, s_weaponMetadata = {};
@@ -193,7 +190,10 @@ bool OC2_DrawBuyPreview(int team, int weaponId, int x, int y, int width, int hei
 	const bool ct = team == 2;
 	const char *actorPath = ct ? kCTActor : kTActor;
 	ModelMetadata &actorMetadata = ct ? s_ctMetadata : s_tMetadata;
-	const Presentation selected = SelectPresentation(weaponId);
+	Presentation selected = SelectPresentation(weaponId);
+	// The shop's stable fire slot offers CT Incendiary, while the carried
+	// item's variant is tracked independently by the game client/server.
+	if (weaponId == 31 && ct) selected.weaponBody = 44; // w_eq_incendiarygrenade.
 	const int sequence = ct ? selected.ctSequence : selected.tSequence;
 	if (!LoadMetadata(actorPath, actorMetadata) || !ValidPose(actorMetadata, sequence)) return false;
 	const bool drawWeapon = selected.weaponBody >= 0;

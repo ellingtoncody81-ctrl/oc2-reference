@@ -41,13 +41,254 @@
 #include "pm_defs.h"
 
 #include "com_weapons.h"
+#include "viewmodel_transition.h"
+#include "wpn_shared/oc2_presentation.h"
+#include "view_ads.h"
 
 extern CGameStudioModelRenderer g_StudioRenderer;
 extern engine_studio_api_t IEngineStudio;
 typedef struct pmtrace_s pmtrace_t;
 
+static oc2_viewmodel::Transitioner g_viewTransitions;
+static bool g_viewFirstEvents;
+static model_t *g_viewEventModel;
+static int g_viewEventSequence = -1;
+static double g_viewEventStart = -1;
+struct ViewFlowDiagnostics
+{
+	model_t *model = NULL;
+	double time = 0, start = 0;
+	int sequence = 0, first = 0, changed = 0, layers = 0, snap = 0, firstEvents = 0;
+	float frame = 0, rawHand[3] = {}, blendedHand[3] = {};
+	int oldSequence[2] = {-1,-1};
+	float oldFrame[2] = {}, weight[2] = {};
+} g_viewFlow;
+
+static int ViewModelFirstFrame(model_t *model, studiohdr_t *header, int sequence)
+{
+	if (!model || !header || sequence < 0 || sequence >= header->numseq) return 0;
+	int weapon = !stricmp(model->name,"models/v_m4a1.mdl") ? 22 :
+		!stricmp(model->name,"models/v_glock18.mdl") ? 17 :
+		!stricmp(model->name,"models/v_m249.mdl") ? 20 :
+		!stricmp(model->name,"models/v_molotov.mdl") ? 31 : 0;
+	const oc2_presentation::Sequence *entry = oc2_presentation::Find(weapon,sequence);
+	const mstudioseqdesc_t &seq = ((mstudioseqdesc_t *)((byte *)header+header->seqindex))[sequence];
+	if (!entry || entry->frames != seq.numframes || fabs(entry->fps-seq.fps) > .001f) return 0;
+	return oc2_presentation::FirstFrame(weapon,sequence);
+}
+
+static void ViewModelHandPosition(studiohdr_t *header, float pos[][3], vec4_t q[], float result[3])
+{
+	const mstudiobone_t *bones = (const mstudiobone_t *)((byte *)header+header->boneindex);
+	int hand = -1;
+	for (int i=0; i<header->numbones; ++i)
+		if (!stricmp(bones[i].name,"v_weapon.Bip01_R_Hand")) { hand=i; break; }
+	if (hand < 0) { result[0]=result[1]=result[2]=0; return; }
+	int chain[MAXSTUDIOBONES],count=0;
+	for (int i=hand; i>=0 && i<header->numbones && count<MAXSTUDIOBONES; i=bones[i].parent) chain[count++]=i;
+	float accumulated[3][4] = {{1,0,0,0},{0,1,0,0},{0,0,1,0}};
+	for (int index=count-1; index>=0; --index)
+	{
+		const int bone=chain[index]; float local[3][4], next[3][4];
+		QuaternionMatrix(q[bone],local);
+		for (int axis=0; axis<3; ++axis) local[axis][3]=pos[bone][axis];
+		ConcatTransforms(accumulated,local,next); memcpy(accumulated,next,sizeof(next));
+	}
+	for (int axis=0; axis<3; ++axis) result[axis]=accumulated[axis][3];
+}
+
+static void DumpViewModelFlow()
+{
+	gEngfuncs.Con_Printf("weaponflow: model=%s t=%.6f start=%.6f seq=%d first=%d frame=%.6f change=%d layers=%d snap=%d first_events=%d old0=%d oldframe0=%.6f weight0=%.6f old1=%d oldframe1=%.6f weight1=%.6f raw_hand=%.6f,%.6f,%.6f blended_hand=%.6f,%.6f,%.6f\n",
+		g_viewFlow.model ? g_viewFlow.model->name : "none",g_viewFlow.time,g_viewFlow.start,g_viewFlow.sequence,g_viewFlow.first,g_viewFlow.frame,
+		g_viewFlow.changed,g_viewFlow.layers,g_viewFlow.snap,g_viewFlow.firstEvents,g_viewFlow.oldSequence[0],g_viewFlow.oldFrame[0],g_viewFlow.weight[0],
+		g_viewFlow.oldSequence[1],g_viewFlow.oldFrame[1],g_viewFlow.weight[1],
+		g_viewFlow.rawHand[0],g_viewFlow.rawHand[1],g_viewFlow.rawHand[2],g_viewFlow.blendedHand[0],g_viewFlow.blendedHand[1],g_viewFlow.blendedHand[2]);
+}
+
+static model_t *g_lastArmsWeapon;
+static int g_lastArmsDrawn;
+
+static bool StudioRange(const studiohdr_t *header, int offset, int count, int size)
+{
+	return header && offset >= 0 && count >= 0 && size > 0 && offset <= header->length &&
+		count <= (header->length - offset) / size;
+}
+
+static bool HasSourceHandRig(const studiohdr_t *header)
+{
+	if (!header || header->numbones <= 0 || header->numbones > MAXSTUDIOBONES ||
+		!StudioRange(header, header->boneindex, header->numbones, sizeof(mstudiobone_t))) return false;
+	const mstudiobone_t *bones = (const mstudiobone_t *)((const byte *)header + header->boneindex);
+	bool right = false, left = false;
+	for (int i = 0; i < header->numbones; ++i)
+	{
+		if (!stricmp(bones[i].name, "v_weapon.Bip01_R_Hand")) right = true;
+		if (!stricmp(bones[i].name, "v_weapon.Bip01_L_Hand")) left = true;
+	}
+	return right && left;
+}
+
+static bool MirrorViewModel(const studiohdr_t *header)
+{
+	const bool rightHand = !gHUD.cl_righthand || gHUD.cl_righthand->value > 0;
+	// Source-converted APK rigs are authored right-handed (idle R_Hand Y<0).
+	// Original GoldSrc rigs use the opposite authoring convention. The GL
+	// renderer uses the same rig predicate for winding and lighting.
+	return HasSourceHandRig(header) ? !rightHand : rightHand;
+}
+
+struct ViewModelArmsInfo
+{
+	bool sourceRig, placeholder, nativeArms;
+	bool NeedsArms() const { return sourceRig && placeholder && !nativeArms; }
+};
+
+static ViewModelArmsInfo InspectViewModelArms(const studiohdr_t *header, int body, int skin)
+{
+	ViewModelArmsInfo info = { HasSourceHandRig(header), false, false };
+	if (!info.sourceRig || !StudioRange(header, header->bodypartindex, header->numbodyparts, sizeof(mstudiobodyparts_t))) return info;
+	const byte *data = (const byte *)header;
+	const mstudiobone_t *bones = (const mstudiobone_t *)(data + header->boneindex);
+	bool armBone[MAXSTUDIOBONES] = {};
+	for (int i = 0; i < header->numbones; ++i)
+		armBone[i] = strstr(bones[i].name, "Bip01_") && (strstr(bones[i].name, "Hand") ||
+			strstr(bones[i].name, "Finger") || strstr(bones[i].name, "Forearm") || strstr(bones[i].name, "UpperArm"));
+	const mstudiobodyparts_t *parts = (const mstudiobodyparts_t *)(data + header->bodypartindex);
+	const bool texturesValid = StudioRange(header, header->textureindex, header->numtextures, sizeof(mstudiotexture_t)) &&
+		header->numtextures > 0 && header->numskinfamilies > 0 && header->numskinref > 0 &&
+		StudioRange(header, header->skinindex, header->numskinref, sizeof(short));
+	const mstudiotexture_t *textures = texturesValid ? (const mstudiotexture_t *)(data + header->textureindex) : NULL;
+	if (skin < 0 || skin >= header->numskinfamilies) skin = 0;
+	const bool skinValid = texturesValid && skin <= (header->length - header->skinindex) / (header->numskinref * int(sizeof(short))) - 1;
+	const short *skinref = skinValid ? (const short *)(data + header->skinindex) + skin * header->numskinref : NULL;
+	for (int part = 0; part < header->numbodyparts; ++part)
+	{
+		const mstudiobodyparts_t &group = parts[part];
+		if (group.base <= 0 || group.nummodels <= 0 || !StudioRange(header, group.modelindex, group.nummodels, sizeof(mstudiomodel_t)))
+			{ info.nativeArms = true; return info; }
+		const int selected = (body >= 0 ? body / group.base : 0) % group.nummodels;
+		const mstudiomodel_t &model = ((const mstudiomodel_t *)(data + group.modelindex))[selected];
+		if (!StudioRange(header, model.vertinfoindex, model.numverts, 1) ||
+			!StudioRange(header, model.meshindex, model.nummesh, sizeof(mstudiomesh_t)))
+			{ info.nativeArms = true; return info; }
+		const byte *vertexBones = data + model.vertinfoindex;
+		bool hasArmVertices = false;
+		for (int vertex = 0; vertex < model.numverts; ++vertex)
+		{
+			if (vertexBones[vertex] >= header->numbones) { info.nativeArms = true; return info; }
+			if (armBone[vertexBones[vertex]]) hasArmVertices = true;
+		}
+		if (!hasArmVertices || model.nummesh == 0) continue;
+		const bool placeholderName = !stricmp(model.name, "null") || !stricmp(model.name, "hand\\null") ||
+			!stricmp(model.name, "cs_arms_reference");
+		bool invisiblePlaceholder = placeholderName && skinref;
+		const mstudiomesh_t *meshes = (const mstudiomesh_t *)(data + model.meshindex);
+		for (int mesh = 0; invisiblePlaceholder && mesh < model.nummesh; ++mesh)
+		{
+			const int ref = meshes[mesh].skinref;
+			if (ref < 0 || ref >= header->numskinref || skinref[ref] < 0 || skinref[ref] >= header->numtextures)
+				{ invisiblePlaceholder = false; break; }
+			const mstudiotexture_t &texture = textures[skinref[ref]];
+			// Resource inspection confirmed these named additive/chrome
+			// placeholder textures have black palettes. An opaque replacement
+			// or a real hand mesh must retain its own arms, without an overlay.
+			const bool name = !stricmp(texture.name, "null.bmp") ||
+				((!stricmp(texture.name, "view_glove.bmp") || !stricmp(texture.name, "view_finger.bmp") ||
+				!stricmp(texture.name, "view_skin.bmp")) && texture.width == 8 && texture.height == 8);
+			// This older client SDK omits Xash's additive texture flag (0x20).
+			if (!name || !(texture.flags & 0x0020) || !(texture.flags & STUDIO_NF_CHROME)) invisiblePlaceholder = false;
+		}
+		if (invisiblePlaceholder) info.placeholder = true;
+		else info.nativeArms = true;
+	}
+	return info;
+}
+
+static bool ArmMeshBonesMatch(const studiohdr_t *arms, const CStudioModelRenderer &renderer)
+{
+	if (!arms || arms->numbones <= 0 || arms->numbones > MAXSTUDIOBONES || arms->numseq <= 0 ||
+		!StudioRange(arms, arms->boneindex, arms->numbones, sizeof(mstudiobone_t)) ||
+		!StudioRange(arms, arms->bodypartindex, arms->numbodyparts, sizeof(mstudiobodyparts_t))) return false;
+	const byte *data = (const byte *)arms;
+	const mstudiobone_t *bones = (const mstudiobone_t *)(data + arms->boneindex);
+	bool matched[MAXSTUDIOBONES] = {};
+	for (int i = 0; i < arms->numbones; ++i)
+		for (int j = 0; j < renderer.m_nCachedBones; ++j)
+			if (!stricmp(bones[i].name, renderer.m_nCachedBoneNames[j])) { matched[i] = true; break; }
+	const mstudiobodyparts_t *parts = (const mstudiobodyparts_t *)(data + arms->bodypartindex);
+	for (int part = 0; part < arms->numbodyparts; ++part)
+	{
+		if (!StudioRange(arms, parts[part].modelindex, parts[part].nummodels, sizeof(mstudiomodel_t))) return false;
+		const mstudiomodel_t *models = (const mstudiomodel_t *)(data + parts[part].modelindex);
+		for (int model = 0; model < parts[part].nummodels; ++model)
+		{
+			if (!StudioRange(arms, models[model].vertinfoindex, models[model].numverts, 1)) return false;
+			const byte *vertexBones = data + models[model].vertinfoindex;
+			for (int vertex = 0; vertex < models[model].numverts; ++vertex)
+				if (vertexBones[vertex] >= arms->numbones || !matched[vertexBones[vertex]]) return false;
+		}
+	}
+	return true;
+}
+
+static void DumpOC2ViewModel()
+{
+	cl_entity_t *view = gEngfuncs.GetViewModel();
+	studiohdr_t *header = view && view->model && view->model->type == mod_studio ?
+		(studiohdr_t *)IEngineStudio.Mod_Extradata(view->model) : NULL;
+	if (!header) { gEngfuncs.Con_Printf("oc2viewmodel: model=none\n"); return; }
+	const ViewModelArmsInfo arms = InspectViewModelArms(header, view->curstate.body, view->curstate.skin);
+	float animFrame = -1, animFps = 0;
+	int animFrames = 0, frameCount;
+	double renderTime, oldTime, animElapsed = 0;
+	IEngineStudio.GetTimes(&frameCount, &renderTime, &oldTime);
+	if (header->numseq > 0 && StudioRange(header, header->seqindex, header->numseq, sizeof(mstudioseqdesc_t)))
+	{
+		const int sequence = view->curstate.sequence >= 0 && view->curstate.sequence < header->numseq ? view->curstate.sequence : 0;
+		mstudioseqdesc_t *seq = (mstudioseqdesc_t *)((byte *)header + header->seqindex) + sequence;
+		animFrames = seq->numframes;
+		animFps = seq->fps * view->curstate.framerate;
+		animElapsed = renderTime >= view->curstate.animtime ? renderTime - view->curstate.animtime : 0;
+		// Estimate the real sequence sample at the studio renderer's time,
+		// using the weapon header, never the last merged glove/sleeve header.
+		// StudioEstimateFrame only reads these fields; restore all three.
+		cl_entity_t *const savedEntity = g_StudioRenderer.m_pCurrentEntity;
+		studiohdr_t *const savedHeader = g_StudioRenderer.m_pStudioHeader;
+		const double savedTime = g_StudioRenderer.m_clTime;
+		g_StudioRenderer.m_pCurrentEntity = view;
+		g_StudioRenderer.m_pStudioHeader = header;
+		g_StudioRenderer.m_clTime = renderTime;
+		animFrame = g_StudioRenderer.StudioEstimateFrame(seq);
+		g_StudioRenderer.m_pCurrentEntity = savedEntity;
+		g_StudioRenderer.m_pStudioHeader = savedHeader;
+		g_StudioRenderer.m_clTime = savedTime;
+	}
+	float screenX = 0;
+	bool handFound = false;
+	if (g_StudioRenderer.m_pCurrentEntity == view && g_StudioRenderer.m_pStudioHeader == header)
+		for (int i = 0; i < g_StudioRenderer.m_nCachedBones; ++i)
+			if (!stricmp(g_StudioRenderer.m_nCachedBoneNames[i], "v_weapon.Bip01_R_Hand"))
+			{
+				for (int axis = 0; axis < 3; ++axis)
+					screenX += (g_StudioRenderer.m_rgCachedBoneTransform[i][axis][3] - g_StudioRenderer.m_vRenderOrigin[axis]) * g_StudioRenderer.m_vRight[axis];
+				handFound = true; break;
+			}
+	gEngfuncs.Con_Printf("oc2viewmodel: model=%s body=%d skin=%d seq=%d frame=%.3f anim_frame=%.3f anim_fps=%.3f anim_frames=%d anim_elapsed=%.6f right=%.3f mirror=%d source_rig=%d placeholder=%d native_arms=%d extra_arms=%d drawn_parts=%d hand_valid=%d hand_screen_x=%.3f\n",
+		view->model->name, view->curstate.body, view->curstate.skin, view->curstate.sequence, view->curstate.frame,
+		animFrame, animFps, animFrames, animElapsed,
+		gHUD.cl_righthand ? gHUD.cl_righthand->value : 1.0f, int(MirrorViewModel(header)), int(arms.sourceRig),
+		int(arms.placeholder), int(arms.nativeArms), int(arms.NeedsArms()),
+		g_lastArmsWeapon == view->model ? g_lastArmsDrawn : 0, int(handFound), screenX);
+}
+
 void CStudioModelRenderer::Init(void)
 {
+	gEngfuncs.pfnAddCommand("oc2_viewmodel_dump", DumpOC2ViewModel);
+	gEngfuncs.pfnAddCommand("weapon_flow_dump", DumpViewModelFlow);
+	g_viewTransitions.Clear();
+	g_viewFirstEvents = false;
+	g_viewEventModel = NULL; g_viewEventSequence = -1; g_viewEventStart = -1;
 	m_pCvarHiModels = IEngineStudio.GetCvar("cl_himodels");
 	m_pCvarDeveloper = IEngineStudio.GetCvar("developer");
 	m_pCvarDrawEntities = IEngineStudio.GetCvar("r_drawentities");
@@ -573,6 +814,25 @@ float CStudioModelRenderer::StudioEstimateFrame(mstudioseqdesc_t *pseqdesc)
 	return f;
 }
 
+void CStudioModelRenderer::StudioSampleSequence(int sequence, float frame, int blend0, int blend1, float pos[][3], vec4_t q[])
+{
+	mstudioseqdesc_t *seq = (mstudioseqdesc_t *)((byte *)m_pStudioHeader+m_pStudioHeader->seqindex)+sequence;
+	mstudioanim_t *anim = StudioGetAnim(m_pRenderModel,seq);
+	StudioCalcRotations(pos,q,seq,anim,frame);
+	if (seq->numblends <= 1) return;
+	static float p2[MAXSTUDIOBONES][3],p3[MAXSTUDIOBONES][3],p4[MAXSTUDIOBONES][3];
+	static vec4_t q2[MAXSTUDIOBONES],q3[MAXSTUDIOBONES],q4[MAXSTUDIOBONES];
+	StudioCalcRotations(p2,q2,seq,anim+m_pStudioHeader->numbones,frame);
+	StudioSlerpBones(q,pos,q2,p2,blend0/255.0f);
+	if (seq->numblends == 4)
+	{
+		StudioCalcRotations(p3,q3,seq,anim+2*m_pStudioHeader->numbones,frame);
+		StudioCalcRotations(p4,q4,seq,anim+3*m_pStudioHeader->numbones,frame);
+		StudioSlerpBones(q3,p3,q4,p4,blend0/255.0f);
+		StudioSlerpBones(q,pos,q3,p3,blend1/255.0f);
+	}
+}
+
 void CStudioModelRenderer::StudioSetupBones(void)
 {
 	int i;
@@ -633,7 +893,52 @@ void CStudioModelRenderer::StudioSetupBones(void)
 		}
 	}
 
-	if (m_fDoInterp && m_pCurrentEntity->latched.sequencetime && (m_pCurrentEntity->latched.sequencetime + 0.2 > m_clTime) && (m_pCurrentEntity->latched.prevsequence < m_pStudioHeader->numseq))
+	if (gEngfuncs.GetViewModel() == m_pCurrentEntity)
+	{
+		// Source tracks sequence restarts explicitly, advances departing cycles,
+		// and clears history when the model changes. First-person viewents never
+		// pass through GoldSrc network-entity CL_UpdateLatchedVars.
+		oc2_viewmodel::Layer current;
+		current.sequence=m_pCurrentEntity->curstate.sequence; current.frame=f;
+		current.frames=pseqdesc->numframes; current.fps=pseqdesc->fps;
+		current.rate=m_pCurrentEntity->curstate.framerate; current.loop=(pseqdesc->flags & STUDIO_LOOPING) != 0;
+		current.sampleTime=m_clTime; current.startTime=m_pCurrentEntity->curstate.animtime;
+		current.blend0=m_pCurrentEntity->curstate.blending[0]; current.blend1=m_pCurrentEntity->curstate.blending[1];
+		// Source's STUDIO_SNAP clears transitions for immediate action clips.
+		// The converted v10 resources omit this metadata: map their fire/knife
+		// labels to that role so acquisition/reload smoothing never softens a shot.
+		const bool snap = strstr(pseqdesc->label,"shoot") || strstr(pseqdesc->label,"fire") ||
+			strstr(pseqdesc->label,"slash") || strstr(pseqdesc->label,"stab");
+		const oc2_viewmodel::Transitioner::Change changed = g_viewTransitions.Observe(reinterpret_cast<uintptr_t>(m_pRenderModel),current,
+			m_fDoInterp && !snap && !(m_pCurrentEntity->curstate.effects & EF_NOINTERP));
+		// Hiding/pause clears blend history but must not replay old sounds.
+		// First-frame events follow actual model/sequence/start identity only.
+		if (g_viewEventModel != m_pRenderModel || g_viewEventSequence != current.sequence || g_viewEventStart != current.startTime)
+		{
+			g_viewFirstEvents=true; g_viewEventModel=m_pRenderModel;
+			g_viewEventSequence=current.sequence; g_viewEventStart=current.startTime;
+		}
+		g_viewFlow.model=m_pRenderModel; g_viewFlow.time=m_clTime; g_viewFlow.start=current.startTime;
+		g_viewFlow.sequence=current.sequence; g_viewFlow.frame=f; g_viewFlow.changed=changed; g_viewFlow.snap=snap;
+		g_viewFlow.first=ViewModelFirstFrame(m_pRenderModel,m_pStudioHeader,current.sequence);
+		g_viewFlow.layers=g_viewTransitions.Count();
+		ViewModelHandPosition(m_pStudioHeader,pos,q,g_viewFlow.rawHand);
+		static float oldPos[MAXSTUDIOBONES][3]; static vec4_t oldQ[MAXSTUDIOBONES];
+		for (int layer=1; layer>=0; --layer)
+		{
+			g_viewFlow.oldSequence[layer]=-1; g_viewFlow.oldFrame[layer]=g_viewFlow.weight[layer]=0;
+			if (layer >= g_viewTransitions.Count()) continue;
+			const oc2_viewmodel::Layer &old=g_viewTransitions.Previous(layer);
+			const float oldFrame=g_viewTransitions.PreviousFrame(layer,m_clTime);
+			const float weight=g_viewTransitions.Weight(layer,m_clTime);
+			g_viewFlow.oldSequence[layer]=old.sequence; g_viewFlow.oldFrame[layer]=oldFrame; g_viewFlow.weight[layer]=weight;
+			if (old.sequence < 0 || old.sequence >= m_pStudioHeader->numseq) continue;
+			StudioSampleSequence(old.sequence,oldFrame,old.blend0,old.blend1,oldPos,oldQ);
+			StudioSlerpBones(q,pos,oldQ,oldPos,weight);
+		}
+		ViewModelHandPosition(m_pStudioHeader,pos,q,g_viewFlow.blendedHand);
+	}
+	else if (m_fDoInterp && m_pCurrentEntity->latched.sequencetime && (m_pCurrentEntity->latched.sequencetime + 0.2 > m_clTime) && (m_pCurrentEntity->latched.prevsequence >= 0) && (m_pCurrentEntity->latched.prevsequence < m_pStudioHeader->numseq))
 	{
 		static float pos1b[MAXSTUDIOBONES][3];
 		static vec4_t q1b[MAXSTUDIOBONES];
@@ -710,7 +1015,7 @@ void CStudioModelRenderer::StudioSetupBones(void)
 			if (IEngineStudio.IsHardware())
 			{
 				// i know this looks HORRIBLE but I'm too lazy to simplify this right now
-				if( gHUD.cl_righthand && gHUD.cl_righthand->value > 0.0f && bIsViewModel )
+				if (bIsViewModel && MirrorViewModel(m_pStudioHeader))
 				{
 					bonematrix[1][0] = -bonematrix[1][0];
 					bonematrix[1][1] = -bonematrix[1][1];
@@ -735,6 +1040,11 @@ void CStudioModelRenderer::StudioSetupBones(void)
 			ConcatTransforms((*m_plighttransform)[pbones[i].parent], bonematrix, (*m_plighttransform)[i]);
 		}
 	}
+	if (gEngfuncs.GetViewModel() == m_pCurrentEntity)
+		for (int bone=0; bone<m_pStudioHeader->numbones; ++bone)
+			if (!stricmp(pbones[bone].name,"v_weapon.aug_Parent") || !stricmp(pbones[bone].name,"v_weapon.sg556_Parent"))
+				V_ObserveADSSight(m_pCurrentEntity,pbones[bone].name,(*m_pbonetransform)[bone]);
+
 }
 
 void CStudioModelRenderer::StudioSaveBones(void)
@@ -831,11 +1141,80 @@ void CStudioModelRenderer::StudioMergeBones(model_t *pSubModel)
 	}
 }
 
+static void DrawOC2EquipmentArms(CStudioModelRenderer &renderer, alight_t &lighting, float *lightdir)
+{
+	g_lastArmsWeapon = renderer.m_pRenderModel;
+	g_lastArmsDrawn = 0;
+	const ViewModelArmsInfo info = InspectViewModelArms(renderer.m_pStudioHeader,
+		renderer.m_pCurrentEntity->curstate.body, renderer.m_pCurrentEntity->curstate.skin);
+	if (!info.NeedsArms()) return;
+
+	int team = g_iTeamNumber;
+	const int index = renderer.m_pCurrentEntity->index;
+	if (index > 0 && index <= MAX_PLAYERS &&
+		(g_PlayerExtraInfo[index].teamnumber == 1 || g_PlayerExtraInfo[index].teamnumber == 2))
+		team = g_PlayerExtraInfo[index].teamnumber;
+	const bool ct = team == 2;
+	// APK scripts_character/phoenix_vara.txt and sas_vara.txt specify these
+	// models/skin5. HideArms selects blank0 for the CT sleeve, bare forearms1
+	// for the T glove. This is resource configuration, not APK game behavior.
+	const char *const paths[] = {
+		ct ? "models/arms/glove_hardknuckle/v_glove_hardknuckle_black.mdl" :
+			"models/arms/glove_fullfinger/v_glove_fullfinger.mdl",
+		"models/arms/sas/v_sleeve_sas.mdl"
+	};
+	studiohdr_t *const weaponHeader = renderer.m_pStudioHeader;
+	model_t *const weaponModel = renderer.m_pRenderModel;
+	const cl_entity_t weaponEntity = *renderer.m_pCurrentEntity;
+	mstudiobodyparts_t *const savedBodyPart = renderer.m_pBodyPart;
+	mstudiomodel_t *const savedSubModel = renderer.m_pSubModel;
+	const int savedFaceFlags = IEngineStudio.GetForceFaceFlags();
+	for (int part = 0; part < (ct ? 2 : 1); ++part)
+	{
+		// Mod_ForName uses the engine's model cache and does not retain a raw
+		// client pointer across map changes. Missing optional assets fail closed.
+		model_t *model = IEngineStudio.Mod_ForName(paths[part], false);
+		studiohdr_t *header = model ? (studiohdr_t *)IEngineStudio.Mod_Extradata(model) : NULL;
+		if (!ArmMeshBonesMatch(header, renderer))
+			continue;
+		renderer.m_pRenderModel = model;
+		renderer.m_pStudioHeader = header;
+		renderer.m_pCurrentEntity->model = model;
+		renderer.m_pCurrentEntity->curstate.body = part == 0 && !ct ? 1 : 0;
+		renderer.m_pCurrentEntity->curstate.skin = part == 0 && header->numskinfamilies > 5 ? 5 : 0;
+		renderer.m_pCurrentEntity->curstate.sequence = 0;
+		renderer.m_pCurrentEntity->curstate.frame = 0;
+		renderer.m_pCurrentEntity->curstate.framerate = 0;
+		renderer.m_pCurrentEntity->curstate.animtime = renderer.m_clTime;
+		IEngineStudio.StudioSetHeader(header);
+		IEngineStudio.SetRenderModel(model);
+		// StudioSaveBones already cached the animated weapon. Never replace
+		// that cache between glove and sleeve; both follow that same pose.
+		renderer.StudioMergeBones(model);
+		IEngineStudio.StudioSetupLighting(&lighting);
+		IEngineStudio.StudioSetRemapColors(renderer.m_nTopColor, renderer.m_nBottomColor);
+		renderer.StudioRenderModel(lightdir);
+		++g_lastArmsDrawn;
+	}
+	*renderer.m_pCurrentEntity = weaponEntity;
+	renderer.m_pRenderModel = weaponModel;
+	renderer.m_pStudioHeader = weaponHeader;
+	renderer.m_pBodyPart = savedBodyPart;
+	renderer.m_pSubModel = savedSubModel;
+	for (int bone = 0; bone < renderer.m_nCachedBones; ++bone)
+	{
+		MatrixCopy(renderer.m_rgCachedBoneTransform[bone], (*renderer.m_pbonetransform)[bone]);
+		MatrixCopy(renderer.m_rgCachedLightTransform[bone], (*renderer.m_plighttransform)[bone]);
+	}
+	IEngineStudio.StudioSetHeader(weaponHeader);
+	IEngineStudio.SetRenderModel(weaponModel);
+	IEngineStudio.StudioSetupLighting(&lighting);
+	IEngineStudio.StudioSetRemapColors(renderer.m_nTopColor, renderer.m_nBottomColor);
+	IEngineStudio.SetForceFaceFlags(savedFaceFlags);
+}
+
 int CStudioModelRenderer::StudioDrawModel(int flags)
 {
-	bool bChangedRightHand = false;
-	int iRightHandValue;
-
 	m_pCurrentEntity = IEngineStudio.GetCurrentEntity();
 
 	IEngineStudio.GetTimes(&m_nFrameCount, &m_clTime, &m_clOldTime);
@@ -891,24 +1270,19 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 			return 1;
 	}
 
-	bool bShieldDetected = false;
 	bool bIsViewModel = gEngfuncs.GetViewModel() == m_pCurrentEntity;
-
-	if ( bIsViewModel && m_pStudioHeader )
+	if (bIsViewModel)
 	{
-		if ( strstr( m_pStudioHeader->name, "shield" ) )
+		V_ApplyADSBody(m_pCurrentEntity);
+		const int first=ViewModelFirstFrame(m_pRenderModel,m_pStudioHeader,m_pCurrentEntity->curstate.sequence);
+		const int seq=m_pCurrentEntity->curstate.sequence;
+		if (first > 0 && seq >= 0 && seq < m_pStudioHeader->numseq)
 		{
-			bShieldDetected = true;
+			const mstudioseqdesc_t &desc=((mstudioseqdesc_t *)((byte *)m_pStudioHeader+m_pStudioHeader->seqindex))[seq];
+			// The common frame base is consumed by both SDK bone rendering and
+			// engine studio events, so bolt/sleeve sounds stay on the same clock.
+			m_pCurrentEntity->curstate.frame=first*256.0f/(desc.numframes-1);
 		}
-	}
-
-	if( ( g_bHoldingKnife || bShieldDetected ) && !( gHUD.GetGameType() == GAME_CZERO ) && bIsViewModel )
-	{
-		bChangedRightHand = true;
-
-		iRightHandValue = gHUD.cl_righthand->value;
-
-		gHUD.cl_righthand->value = !gHUD.cl_righthand->value;
 	}
 
 	if (m_pCurrentEntity->curstate.movetype == MOVETYPE_FOLLOW)
@@ -921,7 +1295,14 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 	if (flags & STUDIO_EVENTS)
 	{
 		StudioCalcAttachments();
+		const float savedSequenceTime=m_pCurrentEntity->latched.sequencetime;
+		if (bIsViewModel)
+		{
+			g_viewFlow.firstEvents=g_viewFirstEvents;
+			m_pCurrentEntity->latched.sequencetime=g_viewFirstEvents ? m_pCurrentEntity->curstate.animtime : -1.0f;
+		}
 		IEngineStudio.StudioClientEvents();
+		if (bIsViewModel) { m_pCurrentEntity->latched.sequencetime=savedSequenceTime; g_viewFirstEvents=false; }
 
 		if (m_pCurrentEntity->index > 0)
 		{
@@ -947,11 +1328,7 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 		IEngineStudio.StudioSetRemapColors(m_nTopColor, m_nBottomColor);
 
 		StudioRenderModel(dir);
-	}
-
-	if( bChangedRightHand )
-	{
-		gHUD.cl_righthand->value = iRightHandValue;
+		if (bIsViewModel) DrawOC2EquipmentArms(*this, lighting, dir);
 	}
 
 	return 1;

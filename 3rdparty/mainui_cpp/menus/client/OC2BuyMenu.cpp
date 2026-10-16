@@ -1,6 +1,8 @@
 #include "BaseMenu.h"
 #include "ClientWindow.h"
 #include "BuyModelPreview.h"
+#include "BuyScroll.h"
+#include "Scissor.h"
 #include "cl_dll/IOc2BuyMenu.h"
 #include <algorithm>
 #include <cstdio>
@@ -18,6 +20,7 @@ struct Rect
 {
 	int x,y,w,h;
 	bool Contains(int px,int py) const { return px>=x && py>=y && px<x+w && py<y+h; }
+	bool Intersects(const Rect &other) const { return x<other.x+other.w && x+w>other.x && y<other.y+other.h && y+h>other.y; }
 };
 
 Rect Area(float x,float y,float w,float h)
@@ -44,7 +47,8 @@ public:
 	{
 		if (IsVisible()) return;
 		selection=-1; hover=-1; pressed=-1; enterHeld=false;
-		for (int &p:page) p=0;
+		for (auto &column:scroll) column=oc2_buy_scroll::State();
+		lastScrollTime=uiStatic.realTime;
 		Refresh();
 		for (int col=0; col<5 && selection<0; ++col)
 			if (!columns[col].empty()) selection=columns[col][0];
@@ -65,6 +69,7 @@ public:
 	void Draw() override
 	{
 		if (!Refresh() || !state.canBuy) { Hide(); return; }
+		AdvanceScroll();
 		// APK touch/buy_[t|ct].cfg gives the normalized five-column layout.
 		// CS:GO RefreshItems supplies the model: actual price, eligibility and
 		// owned state; the server alone applies a successful purchase.
@@ -85,22 +90,29 @@ public:
 
 		for (int col=0;col<5;++col)
 		{
-			char heading[64];
-			int pages=PageCount(col);
-			std::snprintf(heading,sizeof(heading),pages>1?"%s  %d/%d":"%s",columnName[col],page[col]+1,pages);
-			Text(heading,Area(columnX[col],.115f,columnW[col],.035f),18,PackRGBA(230,230,230,255));
-			for (int row=0;row<5;++row)
+			Text(columnName[col],Area(columnX[col],.115f,columnW[col],.035f),18,PackRGBA(230,230,230,255));
+			const Rect viewport=Viewport(col);
+			UI::Scissor::PushScissor(viewport.x,viewport.y,viewport.w,viewport.h);
+			for (int row=0;row<int(columns[col].size());++row)
 			{
-				int offset=page[col]*5+row;
-				if (offset>=int(columns[col].size())) break;
-				int index=columns[col][offset];
+				const Rect card=Card(col,row);
+				if (!card.Intersects(viewport)) continue;
+				int index=columns[col][row];
 				oc2_buy::Item item;
 				if (!g_pOc2BuyMenu->GetItem(index,item)) continue;
-				DrawCard(index,item,Card(col,row));
+				DrawCard(item,card,viewport);
 			}
-			if (pages>1)
-				Text("<   SCROLL / CLICK   >",Area(columnX[col],.845f,columnW[col],.028f),15,
-					PackRGBA(215,215,215,255),QM_CENTER);
+			// Draw outlines after every card, inside their own rectangles. The old
+			// external outline was overwritten by the next card's background.
+			for (int row=0;row<int(columns[col].size());++row)
+			{
+				const int index=columns[col][row];
+				const Rect card=Card(col,row);
+				if ((selection==index || hover==index) && card.Intersects(viewport))
+					Outline(card,selection==index?PackRGBA(237,199,97,255):PackRGBA(210,210,210,210),viewport);
+			}
+			UI::Scissor::PopScissor();
+			DrawScrollHint(col);
 		}
 
 		Fill(Area(.43f,.866667f,.23f,.111111f),PackRGBA(0,0,0,110));
@@ -129,13 +141,17 @@ public:
 		{
 			for (int col=0;col<5;++col)
 				if (Area(columnX[col],.11f,columnW[col],.77f).Contains(uiStatic.cursorX,uiStatic.cursorY))
-					ChangePage(col,key==K_MWHEELUP?-1:1);
+					ScrollColumn(col,key==K_MWHEELUP?-1.0f:1.0f);
 			return true;
 		}
 		if (key>= '1' && key<='5')
 		{
 			int col=key-'1';
-			if (!columns[col].empty()) selection=columns[col][page[col]*5];
+			if (!columns[col].empty())
+			{
+				const int row=std::min(int(columns[col].size())-1,int(std::ceil(scroll[col].position)));
+				Select(columns[col][row]); scroll[col].Reveal(row,int(columns[col].size()));
+			}
 			return true;
 		}
 		if (key==K_UPARROW || key==K_DOWNARROW || key==K_LEFTARROW || key==K_RIGHTARROW)
@@ -156,7 +172,6 @@ public:
 				if (hit>=0) Select(hit);
 				else if (hit==-2) Hide();
 				else if (hit==-3) Confirm();
-				else if (hit<=-10 && hit>=-14) ChangePage(-10-hit,1);
 			}
 			pressed=-1;
 		}
@@ -170,7 +185,7 @@ public:
 			{
 				oc2_buy::Item item;
 				if (g_pOc2BuyMenu->GetItem(columns[col][row],item) && item.id==id)
-				{ page[col]=row/5; Select(columns[col][row]); return; }
+				{ scroll[col].Reveal(row,int(columns[col].size())); Select(columns[col][row]); return; }
 			}
 	}
 	void Confirm()
@@ -182,6 +197,28 @@ public:
 		Con_Printf("buymenu_ui: confirm id=%d requested=%d money=%d\n",item.id,int(sent),state.money);
 	}
 	void DebugKey(int key,bool down) { if (IsVisible()) { if(down) KeyDown(key); else KeyUp(key); } }
+	void DebugScroll(int col,float notches) { if(IsVisible() && Refresh()) ScrollColumn(col,notches); }
+	void DebugDump() const
+	{
+		if (!IsVisible()) return;
+		Con_Printf("buymenu_scroll: time=%d selection=%d hover=%d cursor=%d,%d hit=%d\n",uiStatic.realTime,selection,hover,uiStatic.cursorX,uiStatic.cursorY,Hit(uiStatic.cursorX,uiStatic.cursorY));
+		for (int col=0;col<5;++col)
+		{
+			const Rect viewport=Viewport(col);
+			Con_Printf("buymenu_scroll: col=%d count=%d offset=%.5f target=%.5f max=%.5f viewport=%d,%d,%d,%d\n",
+				col,int(columns[col].size()),scroll[col].position,scroll[col].target,
+				oc2_buy_scroll::State::Maximum(int(columns[col].size())),viewport.x,viewport.y,viewport.w,viewport.h);
+			for(int row=0;row<int(columns[col].size());++row)
+			{
+				const Rect card=Card(col,row);
+				if (!card.Intersects(viewport)) continue;
+				const int top=std::max(card.y,viewport.y),bottom=std::min(card.y+card.h,viewport.y+viewport.h);
+				Con_Printf("buymenu_scroll_card: col=%d row=%d index=%d rect=%d,%d,%d,%d visible=%d,%d centerhit=%d selected=%d\n",
+					col,row,columns[col][row],card.x,card.y,card.w,card.h,top,bottom,
+					Hit(card.x+card.w/2,(top+bottom)/2),int(selection==columns[col][row]));
+			}
+		}
+	}
 	void RestoreViewModel()
 	{
 		if (viewModelHidden) EngFuncs::CvarSetValue("r_drawviewmodel",savedViewModel);
@@ -191,7 +228,9 @@ public:
 private:
 	oc2_buy::State state;
 	std::vector<int> columns[5];
-	int page[5]={},selection=-1,hover=-1,pressed=-1;
+	oc2_buy_scroll::State scroll[5];
+	int lastScrollTime=0;
+	int selection=-1,hover=-1,pressed=-1;
 	bool enterHeld=false;
 	bool viewModelHidden=false;
 	float savedViewModel=1;
@@ -209,12 +248,66 @@ private:
 			if (g_pOc2BuyMenu->GetItem(i,item) && item.visible && item.column>=0 && item.column<5)
 				columns[item.column].push_back(i);
 		}
-		for (int col=0;col<5;++col) page[col]=std::min(page[col],PageCount(col)-1);
+		for (int col=0;col<5;++col) scroll[col].Clamp(int(columns[col].size()));
+		oc2_buy::Item selected;
+		if (selection>=0 && (!g_pOc2BuyMenu->GetItem(selection,selected) || !selected.visible))
+		{
+			selection=-1;
+			for (int col=0;col<5 && selection<0;++col)
+				if (!columns[col].empty()) selection=columns[col][0];
+		}
 		return true;
 	}
-	int PageCount(int col) const { return std::max(1,int(columns[col].size()+4)/5); }
-	Rect Card(int col,int row) const { return Area(columnX[col],.155556f+row*.133333f,columnW[col],.133333f); }
-	void Fill(Rect rect,unsigned int color) { UI_FillRect(rect.x,rect.y,rect.w,rect.h,color); }
+	Rect Viewport(int col) const { return Area(columnX[col],.155556f,columnW[col],.666667f); }
+	Rect Card(int col,int row) const
+	{
+		const Rect viewport=Viewport(col);
+		const float step=viewport.h/oc2_buy_scroll::visibleRows;
+		const int top=int(std::floor((row-scroll[col].position)*step));
+		const int bottom=int(std::floor((row+1-scroll[col].position)*step));
+		const int gap=std::max(1,int(ScreenHeight/540.0f));
+		return {viewport.x,viewport.y+top,viewport.w,std::max(1,bottom-top-gap)};
+	}
+	void AdvanceScroll()
+	{
+		const float seconds=uiStatic.realTime>lastScrollTime?(uiStatic.realTime-lastScrollTime)*.001f:0.0f;
+		lastScrollTime=uiStatic.realTime;
+		for (int col=0;col<5;++col) scroll[col].Advance(seconds,int(columns[col].size()));
+		// Recompute even with a stationary mouse: cards can move underneath it.
+		hover=Hit(uiStatic.cursorX,uiStatic.cursorY);
+	}
+	void Fill(Rect rect,unsigned int color,const Rect *clip=nullptr)
+	{
+		// The menu PIC scissor clips pictures/font glyphs, but engine FillRGBA
+		// bypasses it. Clip solid card backgrounds and outlines explicitly.
+		if (clip)
+		{
+			const int right=std::min(rect.x+rect.w,clip->x+clip->w);
+			const int bottom=std::min(rect.y+rect.h,clip->y+clip->h);
+			rect.x=std::max(rect.x,clip->x); rect.y=std::max(rect.y,clip->y);
+			rect.w=right-rect.x; rect.h=bottom-rect.y;
+		}
+		if (rect.w>0 && rect.h>0) UI_FillRect(rect.x,rect.y,rect.w,rect.h,color);
+	}
+	void Outline(Rect r,unsigned int color,const Rect &clip)
+	{
+		const int width=std::max(1,int(ScreenHeight/540.0f));
+		Fill({r.x,r.y,r.w,width},color,&clip);
+		Fill({r.x,r.y+r.h-width,r.w,width},color,&clip);
+		Fill({r.x,r.y,width,r.h},color,&clip);
+		Fill({r.x+r.w-width,r.y,width,r.h},color,&clip);
+	}
+	void DrawScrollHint(int col)
+	{
+		const int count=int(columns[col].size());
+		if (count<=int(oc2_buy_scroll::visibleRows)) return;
+		const Rect track=Area(columnX[col],.837f,columnW[col],.002f);
+		Fill(track,PackRGBA(170,170,170,80));
+		const int width=std::max(2,int(track.w*oc2_buy_scroll::visibleRows/count));
+		const int x=track.x+int((track.w-width)*scroll[col].position/oc2_buy_scroll::State::Maximum(count));
+		Fill({x,track.y,width,std::max(2,track.h)},PackRGBA(224,198,130,220));
+		Text("SCROLL",Area(columnX[col],.845f,columnW[col],.023f),14,PackRGBA(215,215,215,220),QM_CENTER);
+	}
 	void Text(const char *text,Rect rect,int height,unsigned int color,uint align=QM_LEFT)
 	{
 		const int pixels=std::max(10,int(height*ScreenHeight/1080.0f));
@@ -229,9 +322,9 @@ private:
 		if (it!=pictures.end()) return it->second;
 		return pictures[name]=EngFuncs::PIC_Load(name);
 	}
-	void DrawCard(int index,const oc2_buy::Item &item,Rect r)
+	void DrawCard(const oc2_buy::Item &item,Rect r,const Rect &clip)
 	{
-		Fill(r,PackRGBA(5,5,5,245));
+		Fill(r,PackRGBA(5,5,5,245),&clip);
 		HIMAGE pic=Picture(item.image);
 		int tint=item.enabled?255:125;
 		if (pic)
@@ -268,8 +361,6 @@ private:
 			else std::snprintf(owned,sizeof(owned),"OWNED");
 			Text(owned,{r.x+pad,r.y+int(r.h*.81f),int(r.w*.65f),int(r.h*.18f)},14,PackRGBA(225,198,126,255));
 		}
-		if (selection==index || hover==index)
-			UI_DrawRectangleExt(r.x,r.y,r.w,r.h,selection==index?PackRGBA(237,199,97,255):PackRGBA(210,210,210,210),std::max(1,int(ScreenHeight/540.0f)));
 	}
 	void DrawButton(int id,const char *name,Rect r,bool enabled)
 	{
@@ -285,9 +376,9 @@ private:
 		if (Area(.55f,.888889f,.10f,.066667f).Contains(x,y)) return -3;
 		for (int col=0;col<5;++col)
 		{
-			if (PageCount(col)>1 && Area(columnX[col],.845f,columnW[col],.028f).Contains(x,y)) return -10-col;
-			for (int row=0;row<5;++row)
-				if (page[col]*5+row<int(columns[col].size()) && Card(col,row).Contains(x,y)) return columns[col][page[col]*5+row];
+			if (!Viewport(col).Contains(x,y)) continue;
+			for (int row=0;row<int(columns[col].size());++row)
+				if (Card(col,row).Contains(x,y)) return columns[col][row];
 		}
 		return -1;
 	}
@@ -297,10 +388,11 @@ private:
 		oc2_buy::Item item;
 		if (g_pOc2BuyMenu->GetItem(index,item)) Con_Printf("buymenu_ui: select id=%d enabled=%d price=%d\n",item.id,int(item.enabled),item.price);
 	}
-	void ChangePage(int col,int delta)
+	void ScrollColumn(int col,float notches)
 	{
-		page[col]=(page[col]+delta+PageCount(col))%PageCount(col);
-		hover=Hit(uiStatic.cursorX,uiStatic.cursorY);
+		if (col<0 || col>=5) return;
+		scroll[col].Scroll(notches,int(columns[col].size()));
+		pressed=-1; // scrolling during a press must not activate a displaced card
 	}
 	void Navigate(int key)
 	{
@@ -316,7 +408,7 @@ private:
 					if (!columns[nextCol].empty())
 					{
 						nextRow=std::max(0,std::min(nextRow,int(columns[nextCol].size())-1));
-						page[nextCol]=nextRow/5; Select(columns[nextCol][nextRow]);
+						scroll[nextCol].Reveal(nextRow,int(columns[nextCol].size())); Select(columns[nextCol][nextRow]);
 					}
 					return;
 				}
@@ -349,4 +441,6 @@ void UI_OC2BuyMenu_Init()
 	EngFuncs::Cmd_AddCommand("buy_menu_confirm",[](){ menu.Confirm(); });
 	EngFuncs::Cmd_AddCommand("buy_menu_close",[](){ if(menu.IsVisible()) menu.Hide(); });
 	EngFuncs::Cmd_AddCommand("buy_menu_key",[](){ if(EngFuncs::CmdArgc()==3) menu.DebugKey(std::atoi(EngFuncs::CmdArgv(1)),std::atoi(EngFuncs::CmdArgv(2))!=0); });
+	EngFuncs::Cmd_AddCommand("buy_menu_scroll",[](){ if(EngFuncs::CmdArgc()==3) menu.DebugScroll(std::atoi(EngFuncs::CmdArgv(1)),float(std::atof(EngFuncs::CmdArgv(2)))); });
+	EngFuncs::Cmd_AddCommand("buy_menu_scroll_dump",[](){ menu.DebugDump(); });
 }

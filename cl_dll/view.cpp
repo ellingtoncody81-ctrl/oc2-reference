@@ -18,6 +18,7 @@
 #include "view_bob.h"
 #include "view_effects.h"
 #include "view_stairs.h"
+#include "view_ads.h"
 #include "weapon_spread.h"
 
 #include "entity_state.h"
@@ -38,6 +39,7 @@
 #include "kbutton.h"
 #include "input.h"
 #include "com_weapons.h"
+#include "triangleapi.h"
 
 #ifndef M_PI
 #define M_PI		3.14159265358979323846	// matches value in gcc v2 math.h
@@ -188,6 +190,124 @@ static int s_nDbgFrames = 0, s_nDbgStall = 0, s_nDbgFlips = 0;
 // code this client already predicts.
 extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload, float *max_speed, float *accuracy, int *weapon_state, int *clip );
 extern int g_iPlayerFlags;
+
+static view_ads::State s_ADS;
+static float s_ADSWorldFov=90.0f,s_ADSObservedTime=-1.0f;
+static float s_ADSScreenX=0,s_ADSScreenY=0,s_ADSScreenRadius=0;
+static bool s_ADSObserved=false,s_ADSDotVisible=false,s_ADSPaused=false;
+static float s_ADSRelative[3]={0,0,0};
+
+float V_ADSWorldFOV(float rawFov,float time)
+{
+	int id=0,shots=0,reload=0,state=0,clip=0;
+	float speed=0,accuracy=0;
+	HUD_GetBobWeaponState(&id,&shots,&reload,&speed,&accuracy,&state,&clip);
+	const bool active=gHUD.m_Health.m_iHealth>0 && !g_iUser1 && !gEngfuncs.IsSpectateOnly() && !CL_IsThirdPerson();
+	// UpdateClientData receives cl.time (cl_main.c:739), which stops advancing
+	// during a pause. Retain the explicit refdef pause state as well: the engine
+	// clock correction path can adjust cl.time even while rendering is paused.
+	s_ADS.Update(id,active,reload!=0,rawFov,time,s_ADSPaused);
+	if (!view_ads::Supported(id) || !active)
+	{
+		s_ADSObserved=false;
+		return s_ADSWorldFov=rawFov;
+	}
+	static cvar_t *defaultFov=nullptr;
+	if (!defaultFov) defaultFov=gEngfuncs.pfnGetCvarPointer("default_fov");
+	const float hip=defaultFov?defaultFov->value:90.0f;
+	return s_ADSWorldFov=s_ADS.Fov(view_ads::Clamp(hip,90,120));
+}
+
+void V_ApplyADSBody(cl_entity_s *entity)
+{
+	const view_ads::Profile *profile=view_ads::Get(s_ADS.weapon);
+	if (!profile || !entity || entity!=gEngfuncs.GetViewModel() || !entity->model ||
+		stricmp(entity->model->name,profile->model)) return;
+	// Both converted assets have scope bodypart base=1, models={lens,blank}.
+	// The opaque baked lens must open before showing the real world through it.
+	// Preserve every other bodygroup; firing events commonly reset body to 2.
+	entity->curstate.body=(entity->curstate.body&~1)|(s_ADS.amount>.5f?1:0);
+}
+
+void V_ObserveADSSight(cl_entity_s *entity,const char *bone,const float matrix[3][4])
+{
+	const view_ads::Profile *profile=view_ads::Get(s_ADS.weapon);
+	if (!profile || !entity || entity!=gEngfuncs.GetViewModel() || !entity->model ||
+		stricmp(entity->model->name,profile->model) || stricmp(bone,profile->bone)) return;
+	float center[3],edge[3],screen[3],screenEdge[3];
+	for(int axis=0;axis<3;++axis)
+	{
+		center[axis]=matrix[axis][3];
+		for(int c=0;c<3;++c) center[axis]+=matrix[axis][c]*profile->localCenter[c];
+		edge[axis]=center[axis]+matrix[axis][0]*profile->radius;
+	}
+	s_ADSObserved=!gEngfuncs.pTriAPI->WorldToScreen(center,screen) && !gEngfuncs.pTriAPI->WorldToScreen(edge,screenEdge);
+	if (!s_ADSObserved) return;
+	s_ADSScreenX=screen[0]*ScreenWidth*.5f;s_ADSScreenY=screen[1]*ScreenHeight*.5f;
+	const float dx=(screenEdge[0]-screen[0])*ScreenWidth*.5f,dy=(screenEdge[1]-screen[1])*ScreenHeight*.5f;
+	s_ADSScreenRadius=sqrtf(dx*dx+dy*dy);
+	s_ADSObservedTime=gEngfuncs.GetClientTime();
+}
+
+bool V_DrawADSCrosshair()
+{
+	s_ADSDotVisible=false;
+	if (!view_ads::Supported(s_ADS.weapon) || s_ADS.amount<=.5f || g_iUser1 ||
+		gHUD.m_Health.m_iHealth<=0 || CL_IsThirdPerson()) return false;
+	if (gHUD.m_iHideHUDDisplay&(HIDEHUD_CROSSHAIR|HIDEHUD_ALL)) return true;
+	// A Source-style collimated dot stays on the aiming ray, but is visible only
+	// inside the actually rendered aperture (including recoil and left hand).
+	const float age=gEngfuncs.GetClientTime()-s_ADSObservedTime;
+	const float radius=s_ADSScreenRadius*.85f;
+	if (!s_ADSObserved || age<0 || age>.1f || radius<=0 ||
+		s_ADSScreenX*s_ADSScreenX+s_ADSScreenY*s_ADSScreenY>radius*radius) return true;
+	const int alpha=int(view_ads::Clamp((s_ADS.amount-.5f)*2,0,1)*230);
+	const int dot=max(1,int(ScreenHeight/540.0f));
+	const int x=ScreenWidth/2,y=ScreenHeight/2;
+	const int red=s_ADS.weapon==8?60:255,green=s_ADS.weapon==8?255:55;
+	FillRGBA(x-dot,y-dot,dot*2+1,dot*2+1,red,green,50,alpha/4);
+	FillRGBA(x-dot/2,y-dot/2,max(1,dot),max(1,dot),red,green,50,alpha);
+	s_ADSDotVisible=true;
+	return true;
+}
+
+static void V_DumpADS()
+{
+	cl_entity_t *view=gEngfuncs.GetViewModel();
+	gEngfuncs.Con_Printf("ads: time=%.5f id=%d amount=%.5f gain=%.5f sighted=%d raw=%.3f world=%.3f lens_valid=%d lens_px=%.3f/%.3f radius=%.3f age=%.4f body=%d relative=%.4f/%.4f/%.4f dot=%d paused=%d\n",
+		s_ADS.lastTime,s_ADS.weapon,s_ADS.amount,view_ads::Gain(s_ADS.amount),int(s_ADS.sighted),g_lastFOV,s_ADSWorldFov,
+		int(s_ADSObserved),s_ADSScreenX,s_ADSScreenY,s_ADSScreenRadius,gEngfuncs.GetClientTime()-s_ADSObservedTime,
+		view?view->curstate.body:0,s_ADSRelative[0],s_ADSRelative[1],s_ADSRelative[2],int(s_ADSDotVisible),int(s_ADSPaused));
+}
+
+static void V_PositionADS(ref_params_s *params,cl_entity_s *view)
+{
+	const view_ads::Profile *profile=view_ads::Get(s_ADS.weapon);
+	if (!profile || s_ADS.amount<=0 || !view->model || stricmp(view->model->name,profile->model)) return;
+	const float weight=view_ads::Gain(s_ADS.amount);
+	Vector forward,right,up;
+	AngleVectors(params->viewangles,forward,right,up);
+	const float hand=gHUD.cl_righthand && gHUD.cl_righthand->value==0?-1.0f:1.0f;
+	// Re-anchor to the finished eye, so viewsize, hip offsets and stair smoothing
+	// cannot move an aimed scope away from the shooting ray. Model-space Y is
+	// left; the GoldSrc right vector has the opposite sign. X remains forward.
+	const float front=gHUD.viewmodel_offset_y?view_ads::Clamp(gHUD.viewmodel_offset_y->value,-8,8):0;
+	for(int axis=0;axis<3;++axis)
+	{
+		const float target=params->vieworg[axis]+forward[axis]*front+
+			right[axis]*profile->center[1]*hand-up[axis]*profile->center[2];
+		view->origin[axis]+=(target-view->origin[axis])*weight;
+		float wanted=params->viewangles[axis]*(axis==PITCH?-1.0f:1.0f);
+		float delta=wanted-view->angles[axis];
+		while(delta>180)delta-=360;
+		while(delta<-180)delta+=360;
+		view->angles[axis]+=delta*weight;
+	}
+	VectorCopy(view->angles,view->curstate.angles);
+	Vector relative=view->origin-params->vieworg;
+	s_ADSRelative[0]=DotProduct(relative,forward);s_ADSRelative[1]=DotProduct(relative,right);s_ADSRelative[2]=DotProduct(relative,up);
+	V_ApplyADSBody(view);
+}
 
 /*
 ========================
@@ -679,6 +799,8 @@ void V_CalcQuakeGuns()
 
 void V_ResetViewModelEffects()
 {
+	s_ADS.Reset();
+	s_ADSObserved=false;
 	s_BobState = view_bob::BobState();
 	view_effects::ResetEffects( s_ViewEffects );
 	s_ViewStairs = view_stairs::State();
@@ -737,6 +859,7 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 	}
 	s_flBobContextTime = pparams->time;
 	s_iBobContextEntity = pparams->viewentity;
+	s_ADS.Update(iWeaponId,bVmActive,iInReload!=0,g_lastFOV,pparams->time,pparams->paused!=0);
 	oc2_weapon_spread::SpreadInput spreadInput = { iWeaponId, flWeaponAccuracy, iWeaponState,
 		sqrtf( pparams->simvel[0] * pparams->simvel[0] + pparams->simvel[1] * pparams->simvel[1] ),
 		pparams->onground != 0, ( g_iPlayerFlags & FL_DUCKING ) != 0, g_lastFOV > 0.0f ? g_lastFOV : 90.0f };
@@ -1395,6 +1518,7 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		}
 	}
 
+	V_PositionADS(pparams,view);
 	if ( gHUD.cl_viewbob && gHUD.cl_viewbob->value )
 	{
 		VectorCopy( view->origin, view->curstate.origin );
@@ -2207,6 +2331,7 @@ void V_CalcThirdPersonRefdef( ref_params_t *pparams )
 
 void DLLEXPORT V_CalcRefdef( struct ref_params_s *pparams )
 {
+	s_ADSPaused=pparams->paused!=0;
 	// These branches bypass the local first-person effect update entirely.
 	if( pparams->intermission || g_iUser1 || CL_IsThirdPerson() || pparams->health <= 0 )
 		V_ResetViewModelEffects();
@@ -2236,6 +2361,7 @@ V_Init
 */
 void V_Init (void)
 {
+	gEngfuncs.pfnAddCommand("ads_dump",V_DumpADS);
 	//gEngfuncs.pfnAddCommand ("centerview", V_StartPitchDrift );
 
 	scr_ofsx			= gEngfuncs.pfnRegisterVariable( "scr_ofsx","0", 0 );

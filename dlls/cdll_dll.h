@@ -111,5 +111,5 @@
 #define PLAYER_VIP (1<<2)
 #define PLAYER_HAS_DEFUSER (1<<3)
 
-#define WEAPON_SUIT 31
+#define WEAPON_SUIT 0
 #endif

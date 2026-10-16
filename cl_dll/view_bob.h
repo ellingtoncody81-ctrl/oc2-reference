@@ -125,7 +125,7 @@ namespace view_bob
 		float last_bob_time;   // m_flLastBobTime
 		float last_speed;      // m_flLastSpeed
 		float gun_acc_pos;     // current weapon's m_flGunAccuracyPosition
-		float weapon_acc_pos[31]; // GoldSrc weapon IDs 0..30, retained across switches
+		float weapon_acc_pos[32]; // OC2 weapon IDs 0..31, retained across switches
 		int active_weapon_id;
 		float vertical_bob, lateral_bob; // Valve keeps these when paused/unarmed
 		float air_mix;         // smoothed airborne multiplier, 1 = grounded

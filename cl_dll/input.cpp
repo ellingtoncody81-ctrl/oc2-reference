@@ -500,6 +500,12 @@ void IN_Cancel(void)
 	in_cancel = 1;
 }
 
+// A press starts the model's complete inspect. Release does not truncate it;
+// these converted resources have no Source AE_BEGIN_TAUNT_LOOP event.
+void IN_LookAtWeapon(void) { in_impulse = 180; }
+void IN_EndLookAtWeapon(void) {}
+extern void HUD_WeaponPresentationDump();
+
 void IN_Impulse (void)
 {
 	in_impulse = atoi( gEngfuncs.Cmd_Argv(1) );
@@ -947,6 +953,10 @@ void InitInput (void)
 	gEngfuncs.pfnAddCommand ("+jump", IN_JumpDown);
 	gEngfuncs.pfnAddCommand ("-jump", IN_JumpUp);
 	gEngfuncs.pfnAddCommand ("impulse", IN_Impulse);
+	gEngfuncs.pfnAddCommand ("lookatweapon", IN_LookAtWeapon);
+	gEngfuncs.pfnAddCommand ("+lookatweapon", IN_LookAtWeapon);
+	gEngfuncs.pfnAddCommand ("-lookatweapon", IN_EndLookAtWeapon);
+	gEngfuncs.pfnAddCommand ("weapon_presentation_dump", HUD_WeaponPresentationDump);
 	gEngfuncs.pfnAddCommand ("+klook", IN_KLookDown);
 	gEngfuncs.pfnAddCommand ("-klook", IN_KLookUp);
 	gEngfuncs.pfnAddCommand ("+mlook", IN_MLookDown);

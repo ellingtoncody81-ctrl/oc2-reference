@@ -216,10 +216,7 @@ void CXM1014::WeaponIdle()
 			else
 			{
 				// reload debounce has timed out
-				SendWeaponAnim(XM1014_PUMP, UseDecrement() != FALSE);
-
-				m_fInSpecialReload = 0;
-				m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 1.5f;
+				FinishShotgunReload(XM1014_PUMP,1.5f);
 			}
 		}
 		else

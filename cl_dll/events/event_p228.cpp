@@ -27,6 +27,7 @@
 */
 #include "events.h"
 #include "wpn_shared.h"
+#include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
 
 static const char *SOUNDS_NAME = "weapons/p228-1.wav";
@@ -52,18 +53,7 @@ void EV_FireP228(event_args_s *args)
 	{
 		++g_iShotsFired;
 		EV_MuzzleFlash();
-		int seq;
-		if( !args->bparam1 )
-		{
-			if( g_bHoldingShield )
-				seq = Com_RandomLong(P228_SHIELD_SHOOT1, P228_SHIELD_SHOOT2);
-			else
-				seq = Com_RandomLong(P228_SHOOT1, P228_SHOOT3);
-		}
-		else
-		{
-			seq = g_bHoldingShield ? (int)P228_SHIELD_SHOOT_EMPTY : (int)P228_SHOOT_EMPTY;
-		}
+		const int seq = args->bparam1 ? int(P228_SHOOT_EMPTY) : Com_RandomLong(P228_SHOOT1, P228_SHOOT3);
 		gEngfuncs.pEventAPI->EV_WeaponAnimation(seq, 2);
 		if( !gHUD.cl_righthand->value )
 		{
@@ -87,11 +77,14 @@ void EV_FireP228(event_args_s *args)
 	VectorCopy( forward, vecAiming );
 	Vector vSpread;
 	
-	vSpread.x = args->fparam1;
-	vSpread.y = args->fparam2;
+	vSpread.x = args->fparam1 / 1024;
+	vSpread.y = args->fparam2 / 1024;
+	// Reconstruct the already sampled Source offset; never randomize it twice.
+	vecAiming = (forward + vSpread.x * right + vSpread.y * up).Normalize();
+	vSpread = Vector(0, 0, 0);
 	EV_HLDM_FireBullets( idx,
 		forward, right,	up,
 		1, vecSrc, vecAiming,
-		vSpread, 8192.0, BULLET_PLAYER_357SIG,
-		2 );
+		vSpread, 4096.0, BULLET_PLAYER_357SIG,
+		1 );
 }

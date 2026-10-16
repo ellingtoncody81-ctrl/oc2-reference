@@ -37,6 +37,7 @@ public:
 	virtual mstudioanim_t *StudioGetAnim(model_t *pSubModel, mstudioseqdesc_t *pseqdesc);
 	virtual void StudioSetUpTransform(int trivial_accept);
 	virtual void StudioSetupBones(void);
+	void StudioSampleSequence(int sequence, float frame, int blend0, int blend1, float pos[][3], vec4_t q[]);
 	virtual void StudioCalcAttachments(void);
 	virtual void StudioSaveBones(void);
 	virtual void StudioMergeBones(model_t *pSubModel);

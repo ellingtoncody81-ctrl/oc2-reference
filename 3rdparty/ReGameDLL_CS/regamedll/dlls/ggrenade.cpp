@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_inferno.h"
 
 TYPEDESCRIPTION CGrenade::m_SaveData[] =
 {
@@ -614,6 +615,7 @@ void CGrenade::__API_HOOK(SG_Detonate)()
 
 	m_bDetonated = true;
 	m_vSmokeDetonate = pev->origin;
+	OC2_InfernoSmokeDetonate(m_vSmokeDetonate);
 
 	int flags = 0;
 #ifdef REGAMEDLL_FIXES
@@ -685,6 +687,7 @@ void CGrenade::DangerSoundThink()
 
 void CGrenade::BounceTouch(CBaseEntity *pOther)
 {
+	if (OC2_InfernoSmokeTouch(this)) { SG_Detonate(); return; }
 	// don't hit the guy that launched this grenade
 	if (pOther->edict() == pev->owner)
 		return;

@@ -27,42 +27,38 @@
 */
 #include "events.h"
 #include "wpn_shared.h"
+#include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
-static const char *SOUNDS_NAME = "weapons/m3-1.wav";
+static const char *SOUNDS_NAME = "weapons/Zshiryu777/nova/nova-1.wav";
 
-void EV_FireM3( event_args_t *args )
+void EV_FireM3(event_args_t *args)
 {
-	Vector vecSrc, vecAiming;
-	int    idx = args->entindex;
-	Vector origin( args->origin );
-	Vector angles(
-		args->iparam1 / 100.0f + args->angles[0],
-		args->iparam2 / 100.0f + args->angles[1],
-		args->angles[2]
-		);
-	Vector velocity( args->velocity );
+	const int idx = args->entindex;
+	Vector origin(args->origin);
+	// Nova sends complete shot angles; iparam1/2 carry seed/pattern index.
+	Vector angles(args->angles);
 	Vector forward, right, up;
-
-	AngleVectors( angles, forward, right, up );
-
-	if ( EV_IsLocal( idx ) )
+	AngleVectors(angles, forward, right, up);
+	if (EV_IsLocal(idx))
 	{
 		++g_iShotsFired;
 		EV_MuzzleFlash();
 		gEngfuncs.pEventAPI->EV_WeaponAnimation(Com_RandomLong(M3_FIRE1, M3_FIRE2), 2);
 	}
-
-	PLAY_EVENT_SOUND( SOUNDS_NAME );
-
-	EV_GetGunPosition( args, vecSrc, origin );
-	VectorCopy( forward, vecAiming );
-	Vector vSpread;
-	
-	vSpread.x = 0.0725;
-	vSpread.y = 0.0725;
-	EV_HLDM_FireBullets( idx,
-		forward, right,	up,
-		9, vecSrc, vecAiming,
-		vSpread, 8192.0, BULLET_PLAYER_BUCKSHOT,
-		1 );
+	PLAY_EVENT_SOUND(SOUNDS_NAME);
+	Vector source;
+	EV_GetGunPosition(args, source, origin);
+	const oc2_weapon::Params &params = oc2_weapon::Get(oc2_weapon::Nova);
+	oc2_weapon::Offset offsets[9];
+	oc2_weapon::SpreadOffsets(params, 0, unsigned(args->iparam1) & 255u,
+		args->fparam1 / 1024, float(args->iparam2), offsets);
+	for (int i = 0; i < params.pellets; ++i)
+	{
+		Vector aim = (forward + offsets[i].x * right + offsets[i].y * up).Normalize();
+		Vector zeroSpread(0, 0, 0);
+		// Buckshot effects with zero additional Gaussian spread. Each visual
+		// ray now follows the same seeded Nova pattern as the server pellet.
+		EV_HLDM_FireBullets(idx, forward, right, up, 1, source, aim,
+			zeroSpread, params.range, BULLET_PLAYER_BUCKSHOT, 1);
+	}
 }

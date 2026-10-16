@@ -17,217 +17,179 @@
 #include "cbase.h"
 #include "player.h"
 #include "weapons.h"
+#include "oc2_weapon_params.h"
+
+namespace
+{
+oc2_weapon::Motion OC2Motion(const CBasePlayer *player)
+{
+	oc2_weapon::Motion result = {player->pev->velocity.Length2D(), player->pev->velocity.z,
+		(player->pev->flags & FL_ONGROUND) != 0, (player->pev->flags & FL_DUCKING) != 0,
+		player->pev->movetype == MOVETYPE_FLY, false};
+	// GoldSrc +speed scales usercmd velocity; it does not transmit Source's
+	// independent m_bIsWalking flag. Do not guess that flag from low speed.
+	return result;
+}
+}
 
 LINK_ENTITY_TO_CLASS(weapon_p228, CP228)
 
-void CP228::Spawn(void)
+void CP228::Spawn()
 {
 	pev->classname = MAKE_STRING("weapon_p228");
-
 	Precache();
-
 	m_iId = WEAPON_P228;
-	SET_MODEL(ENT(pev), "models/w_p228.mdl");
-
-	m_iWeaponState &= ~WPNSTATE_SHIELD_DRAWN;
+	SET_MODEL(edict(), "models/w_p228.mdl");
 	m_iDefaultAmmo = P228_DEFAULT_GIVE;
-	m_flAccuracy = 0.9f;
-
+	oc2_weapon::ResetState(oc2_weapon::Get(oc2_weapon::P250), m_flStartThrow, m_flReleaseThrow, m_flLastFire, m_flAccuracy, m_iShotsFired);
+	m_bDelayFire = false;
 	FallInit();
 }
 
 void CP228::Precache()
 {
 	PRECACHE_MODEL("models/v_p228.mdl");
+	PRECACHE_MODEL("models/p_p228.mdl");
 	PRECACHE_MODEL("models/w_p228.mdl");
-	PRECACHE_MODEL("models/shield/v_shield_p228.mdl");
-
 	PRECACHE_SOUND("weapons/p228-1.wav");
-	PRECACHE_SOUND("weapons/p228_clipout.wav");
-	PRECACHE_SOUND("weapons/p228_clipin.wav");
-	PRECACHE_SOUND("weapons/p228_sliderelease.wav");
-	PRECACHE_SOUND("weapons/p228_slidepull.wav");
-
+	PRECACHE_SOUND("weapons/Zshiryu777/p250/p250_clipout.wav");
+	PRECACHE_SOUND("weapons/Zshiryu777/p250/p250_clipin.wav");
+	PRECACHE_SOUND("weapons/Zshiryu777/p250/p250_slideback.wav");
+	PRECACHE_SOUND("weapons/Zshiryu777/p250/p250_sliderelease.wav");
+	PRECACHE_SOUND("weapons/Zshiryu777/p250/p250_draw.wav");
 	m_iShell = PRECACHE_MODEL("models/pshell.mdl");
 	m_usFireP228 = PRECACHE_EVENT(1, "events/p228.sc");
 }
 
 int CP228::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params = oc2_weapon::Get(oc2_weapon::P250);
 	p->pszName = STRING(pev->classname);
 	p->pszAmmo1 = "357SIG";
-	p->iMaxAmmo1 = MAX_AMMO_357SIG;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = NULL;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = P228_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 1;
 	p->iPosition = 3;
 	p->iId = m_iId = WEAPON_P228;
 	p->iFlags = 0;
 	p->iWeight = P228_WEIGHT;
-
 	return 1;
 }
 
 BOOL CP228::Deploy()
 {
-	m_flAccuracy = 0.9f;
-	m_fMaxSpeed = P228_MAX_SPEED;
+	oc2_weapon::ResetState(oc2_weapon::Get(oc2_weapon::P250), m_flStartThrow, m_flReleaseThrow, m_flLastFire, m_flAccuracy, m_iShotsFired);
+	m_bDelayFire = false;
 	m_iWeaponState &= ~WPNSTATE_SHIELD_DRAWN;
 	m_pPlayer->m_bShieldDrawn = false;
-
-	if (m_pPlayer->HasShield())
-		return DefaultDeploy("models/shield/v_shield_p228.mdl", "models/shield/p_shield_p228.mdl", P228_SHIELD_DRAW, "shieldgun", UseDecrement() != FALSE);
-	else
-		return DefaultDeploy("models/v_p228.mdl", "models/p_p228.mdl", P228_DRAW, "onehanded", UseDecrement() != FALSE);
-}
-
-void CP228::PrimaryAttack()
-{
-	if (!(m_pPlayer->pev->flags & FL_ONGROUND))
-	{
-		P228Fire(1.5 * (1 - m_flAccuracy), 0.2, FALSE);
-	}
-	else if (m_pPlayer->pev->velocity.Length2D() > 0)
-	{
-		P228Fire(0.255 * (1 - m_flAccuracy), 0.2, FALSE);
-	}
-	else if (m_pPlayer->pev->flags & FL_DUCKING)
-	{
-		P228Fire(0.075 * (1 - m_flAccuracy), 0.2, FALSE);
-	}
-	else
-	{
-		P228Fire(0.15 * (1 - m_flAccuracy), 0.2, FALSE);
-	}
+	m_fMaxSpeed = P228_MAX_SPEED;
+	return DefaultDeploy("models/v_p228.mdl", "models/p_p228.mdl", P228_DRAW, "onehanded", UseDecrement() != FALSE);
 }
 
 void CP228::SecondaryAttack()
 {
-	ShieldSecondaryFire(SHIELDGUN_UP, SHIELDGUN_DOWN);
+	// P250 has no shield/secondary firing mode. Keep the legacy method ABI.
+	m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + .3f;
 }
 
-void CP228::P228Fire(float flSpread, float flCycleTime, BOOL fUseSemi)
+void CP228::PrimaryAttack()
 {
-	Vector vecAiming, vecSrc, vecDir;
-	int flag;
+	// Source generic gun takes its primary cycle from the item schema.
+	P228Fire(0, oc2_weapon::Get(oc2_weapon::P250).cycle, FALSE);
+}
 
-	flCycleTime -= 0.05f;
-
-	if (++m_iShotsFired > 1)
-	{
-		return;
-	}
-
-	if (m_flLastFire != 0.0f)
-	{
-		m_flAccuracy -= (0.325f - (gpGlobals->time - m_flLastFire)) * 0.3f;
-
-		if (m_flAccuracy > 0.9f)
-		{
-			m_flAccuracy = 0.9f;
-		}
-		else if (m_flAccuracy < 0.6f)
-		{
-			m_flAccuracy = 0.6f;
-		}
-	}
-
-	m_flLastFire = gpGlobals->time;
-
+void CP228::P228Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
+{
+	if (m_iShotsFired > 0) return; // Source semi-auto trigger latch, released in ItemPostFrame.
 	if (m_iClip <= 0)
 	{
 		if (m_fFireOnEmpty)
 		{
 			PlayEmptySound();
-			m_flNextPrimaryAttack = GetNextAttackDelay(0.2);
+			m_flNextPrimaryAttack = GetNextAttackDelay(.2f);
 		}
-
 #ifndef CLIENT_DLL
-		if (TheBots != NULL)
-		{
-			TheBots->OnEvent(EVENT_WEAPON_FIRED_ON_EMPTY, m_pPlayer);
-		}
+		if (TheBots) TheBots->OnEvent(EVENT_WEAPON_FIRED_ON_EMPTY, m_pPlayer);
 #endif
-
 		return;
 	}
-
+	const oc2_weapon::Params &params = oc2_weapon::Get(oc2_weapon::P250);
+	const int mode = 0;
+	const oc2_weapon::Sample shot = oc2_weapon::SampleShot(params, OC2Motion(m_pPlayer), mode,
+		gpGlobals->time, m_flStartThrow / 1024, m_flReleaseThrow / 64, m_flLastFire);
+	oc2_weapon::Offset offset;
+	oc2_weapon::SpreadOffsets(params, mode, m_pPlayer->random_seed, shot.inaccuracy, shot.recoilIndex, &offset);
+	m_bDelayFire = params.fullAuto;
+	++m_iShotsFired;
 	--m_iClip;
 	m_pPlayer->pev->effects |= EF_MUZZLEFLASH;
-	SetPlayerShieldAnim();
-
 #ifndef CLIENT_DLL
 	m_pPlayer->SetAnimation(PLAYER_ATTACK1);
 #endif
 	UTIL_MakeVectors(m_pPlayer->pev->v_angle + m_pPlayer->pev->punchangle);
-
-	m_pPlayer->m_iWeaponVolume = BIG_EXPLOSION_VOLUME;
-	m_pPlayer->m_iWeaponFlash = DIM_GUN_FLASH;
-
-	vecSrc = m_pPlayer->GetGunPosition();
-	vecAiming = gpGlobals->v_forward;
-
-	vecDir = m_pPlayer->FireBullets3(vecSrc, vecAiming, flSpread, 4096, 1, BULLET_PLAYER_357SIG, P228_DAMAGE, P228_RANGE_MODIFER, m_pPlayer->pev, true, m_pPlayer->random_seed);
-
-#ifdef CLIENT_WEAPONS
-	flag = FEV_NOTHOST;
+	Vector vecSrc = m_pPlayer->GetGunPosition();
+	Vector vecAiming = (gpGlobals->v_forward + offset.x * gpGlobals->v_right + offset.y * gpGlobals->v_up).Normalize();
+#ifdef REGAMEDLL_API
+	const float damage = CSPlayerWeapon()->m_flBaseDamage;
 #else
-	flag = 0;
+	const float damage = params.damage;
 #endif
-
-	PLAYBACK_EVENT_FULL(flag, m_pPlayer->edict(), m_usFireP228, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y,
-		int(m_pPlayer->pev->punchangle.x * 100), int(m_pPlayer->pev->punchangle.y * 100), m_iClip == 0, FALSE);
-
-	m_flNextPrimaryAttack = m_flNextSecondaryAttack = GetNextAttackDelay(flCycleTime);
-
+	// The deterministic Source two-circle offset is already applied. The
+	// GoldSrc trace/penetration adapter must not add its old Gaussian spread.
+	m_pPlayer->FireBullets3(vecSrc, vecAiming, 0, params.range, params.penetration,
+		BULLET_PLAYER_357SIG, damage, params.rangeModifier, m_pPlayer->pev, true, m_pPlayer->random_seed);
+#ifdef CLIENT_WEAPONS
+	const int flag = FEV_NOTHOST;
+#else
+	const int flag = 0;
+#endif
+	// event_t fparams are quantized at 1/100; scale small offsets for transport.
+	PLAYBACK_EVENT_FULL(flag, m_pPlayer->edict(), m_usFireP228, 0, (float *)&g_vecZero, (float *)&g_vecZero,
+		offset.x * 1024, offset.y * 1024, int(m_pPlayer->pev->punchangle.x * 100),
+		int(m_pPlayer->pev->punchangle.y * 100), m_iClip == 0, FALSE);
+	m_pPlayer->m_iWeaponVolume = NORMAL_GUN_VOLUME;
+	m_pPlayer->m_iWeaponFlash = BRIGHT_GUN_FLASH;
+	m_flNextPrimaryAttack = m_flNextSecondaryAttack = GetNextAttackDelay(params.cycle);
+	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 2.0f;
 #ifndef CLIENT_DLL
 	if (!m_iClip && m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
-	{
-		m_pPlayer->SetSuitUpdate("!HEV_AMO0", FALSE, FALSE);
-	}
+		m_pPlayer->SetSuitUpdate("!HEV_AMO0", FALSE, 0);
 #endif
-	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 2.0f;
-	m_pPlayer->pev->punchangle.x -= 2;
-	ResetPlayerShieldAnim();
+	oc2_weapon::RecordShot(params, shot, mode, gpGlobals->time, m_flStartThrow,
+		m_flReleaseThrow, m_flLastFire, m_flAccuracy);
+	float pitch, yaw;
+	oc2_weapon::Recoil(params, mode, int(shot.recoilIndex), m_pPlayer->random_seed, pitch, yaw);
+	m_pPlayer->pev->punchangle.x += pitch;
+	m_pPlayer->pev->punchangle.y += yaw;
 }
 
 void CP228::Reload()
 {
-	if (m_pPlayer->ammo_357sig <= 0)
-		return;
-
-	if (DefaultReload(iMaxClip(), m_pPlayer->HasShield() ? (int)P228_SHIELD_RELOAD : (int)P228_RELOAD, P228_RELOAD_TIME))
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0) return;
+	// Source generic reload follows SequenceDuration. This duration is read
+	// from the deployed converted model's reload sequence, not an APK rule.
+	if (DefaultReload(iMaxClip(), P228_RELOAD, 2.266666667f))
 	{
 #ifndef CLIENT_DLL
 		m_pPlayer->SetAnimation(PLAYER_RELOAD);
 #endif
-		m_flAccuracy = 0.9f;
+		m_iShotsFired = 0;
+		m_bDelayFire = false;
 	}
 }
 
 void CP228::WeaponIdle()
 {
+	const oc2_weapon::Params &params = oc2_weapon::Get(oc2_weapon::P250);
+	const int mode = 0;
+	const oc2_weapon::Sample shot = oc2_weapon::SampleShot(params, OC2Motion(m_pPlayer), mode,
+		gpGlobals->time, m_flStartThrow / 1024, m_flReleaseThrow / 64, m_flLastFire);
+	m_flAccuracy = oc2_weapon::Clamp(shot.inaccuracy + params.spread[mode], 0, 1);
 	ResetEmptySound();
 	m_pPlayer->GetAutoaimVector(AUTOAIM_10DEGREES);
-
-	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
-	{
-		return;
-	}
-
-	if (m_pPlayer->HasShield())
-	{
-		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
-
-		if (m_iWeaponState & WPNSTATE_SHIELD_DRAWN)
-		{
-			SendWeaponAnim(P228_SHIELD_IDLE_UP, UseDecrement() != FALSE);
-		}
-	}
-	else if (m_iClip)
-	{
-		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 3.0625f;
-		SendWeaponAnim(P228_IDLE, UseDecrement() != FALSE);
-	}
+	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase()) return;
+	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
+	SendWeaponAnim(P228_IDLE, UseDecrement() != FALSE);
 }

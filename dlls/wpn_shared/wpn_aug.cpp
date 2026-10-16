@@ -81,7 +81,7 @@ BOOL CAUG::Deploy(void)
 void CAUG::SecondaryAttack(void)
 {
 	if (m_pPlayer->m_iFOV == DEFAULT_FOV)
-		m_pPlayer->pev->fov = m_pPlayer->m_iFOV = 55;
+		m_pPlayer->pev->fov = m_pPlayer->m_iFOV = 45;
 	else
 		m_pPlayer->pev->fov = m_pPlayer->m_iFOV = 90;
 

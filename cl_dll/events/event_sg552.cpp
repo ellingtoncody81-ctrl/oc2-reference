@@ -27,6 +27,7 @@
 */
 #include "events.h"
 #include "wpn_shared.h"
+#include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
 
 static const char *SOUNDS_NAME[] =
@@ -55,7 +56,7 @@ void EV_FireSG552( event_args_t *args )
 	{
 		++g_iShotsFired;
 		EV_MuzzleFlash();
-		gEngfuncs.pEventAPI->EV_WeaponAnimation(Com_RandomLong(SG552_SHOOT1, SG552_SHOOT3), 2);
+		gEngfuncs.pEventAPI->EV_WeaponAnimation(args->bparam2 ? 8 : Com_RandomLong(SG552_SHOOT1, SG552_SHOOT3), 2); // deployed SG553 shoot_aim
 		if( !gHUD.cl_righthand->value )
 		{
 			EV_GetDefaultShellInfo( args, origin, velocity, ShellVelocity, ShellOrigin, forward, right, up, 20.0, -8.0, -10.0, 0);
@@ -77,8 +78,11 @@ void EV_FireSG552( event_args_t *args )
 	VectorCopy( forward, vecAiming );
 	Vector vSpread;
 	
-	vSpread.x = args->fparam1;
-	vSpread.y = args->fparam2;
+	vSpread.x = args->fparam1 / 1024;
+	vSpread.y = args->fparam2 / 1024;
+	// Reconstruct the already sampled Source offset; never randomize it twice.
+	vecAiming = (forward + vSpread.x * right + vSpread.y * up).Normalize();
+	vSpread = Vector(0, 0, 0);
 	EV_HLDM_FireBullets( idx,
 		forward, right,	up,
 		1, vecSrc, vecAiming,

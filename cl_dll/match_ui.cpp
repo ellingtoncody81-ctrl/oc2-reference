@@ -17,6 +17,7 @@ namespace
 {
 cvar_t *s_enabled = nullptr;
 std::map<std::string, int> s_textures;
+std::map<std::string, hud_icon::Bounds> s_silhouettes;
 
 int Byte(int value) { return value < 0 ? 0 : value > 255 ? 255 : value; }
 float Positive(float value) { return std::isfinite(value) && value > 0 ? value : 0; }
@@ -154,6 +155,7 @@ void Shutdown()
 	for (const auto &texture : s_textures)
 		if (texture.second && gRenderAPI.GL_FreeTexture) gRenderAPI.GL_FreeTexture(texture.second);
 	s_textures.clear();
+	s_silhouettes.clear();
 }
 
 void VidInit() { Shutdown(); }
@@ -196,6 +198,50 @@ void Picture(int texture, float x, float y, float width, float height, Color col
 	if (gRenderAPI.GL_SelectTexture) gRenderAPI.GL_SelectTexture(0);
 	gRenderAPI.GL_Bind(0, texture);
 	Quad(x, y, width, height, flipX ? 1-u : u, v, flipX ? u : 1-u, 1-v, color);
+}
+
+hud_icon::Bounds SilhouetteBounds(const char *path)
+{
+	const int texture = Texture(path); // validates the resource path first
+	if (!texture) return {};
+	const auto found = s_silhouettes.find(path);
+	if (found != s_silhouettes.end()) return found->second;
+	hud_icon::Bounds bounds;
+	int bytes = 0;
+	if (gEngfuncs.COM_LoadFile && gEngfuncs.COM_FreeFile)
+	{
+		auto *data = gEngfuncs.COM_LoadFile(const_cast<char *>(path), 5, &bytes);
+		if (data)
+		{
+			if (bytes > 0 && bytes <= 16*1024*1024) bounds = hud_icon::ScanTga(data, bytes);
+			gEngfuncs.COM_FreeFile(data);
+		}
+	}
+	if (!bounds.valid && gRenderAPI.RenderGetParm)
+	{
+		bounds.width = bounds.right = gRenderAPI.RenderGetParm(PARM_TEX_SRC_WIDTH,texture);
+		bounds.height = bounds.bottom = gRenderAPI.RenderGetParm(PARM_TEX_SRC_HEIGHT,texture);
+		bounds.valid = bounds.width > 0 && bounds.height > 0;
+	}
+	s_silhouettes[path] = bounds;
+	return bounds;
+}
+
+bool Silhouette(const char *path, float x, float y, float width, float height, Color color, bool flipX)
+{
+	if (!Positive(width) || !Positive(height) || !gRenderAPI.GL_Bind) return false;
+	const int texture = Texture(path);
+	const auto bounds = SilhouetteBounds(path);
+	if (!texture || !bounds.valid) return false;
+	const float visibleW = float(bounds.right-bounds.left), visibleH = float(bounds.bottom-bounds.top);
+	const float fit = min(width/visibleW,height/visibleH);
+	x += (width-visibleW*fit)*0.5f; y += (height-visibleH*fit)*0.5f;
+	if (gRenderAPI.GL_SelectTexture) gRenderAPI.GL_SelectTexture(0);
+	gRenderAPI.GL_Bind(0,texture);
+	const float u0 = float(bounds.left)/bounds.width, u1 = float(bounds.right)/bounds.width;
+	Quad(x,y,visibleW*fit,visibleH*fit,flipX ? u1 : u0,float(bounds.top)/bounds.height,
+		flipX ? u0 : u1,float(bounds.bottom)/bounds.height,color);
+	return true;
 }
 
 void Circle(int texture, float x, float y, float diameter, Color color)

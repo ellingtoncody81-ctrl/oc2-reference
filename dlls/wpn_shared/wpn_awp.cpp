@@ -73,8 +73,7 @@ BOOL CAWP::Deploy(void)
 {
 	if (DefaultDeploy("models/v_awp.mdl", "models/p_awp.mdl", AWP_DRAW, "rifle", UseDecrement() != FALSE))
 	{
-		m_pPlayer->m_flNextAttack = GetNextAttackDelay(1.45);
-		m_flNextPrimaryAttack = m_pPlayer->m_flNextAttack;
+		// DefaultDeploy applies the resource sequence duration.
 		m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 1.0f;
 
 		return TRUE;
