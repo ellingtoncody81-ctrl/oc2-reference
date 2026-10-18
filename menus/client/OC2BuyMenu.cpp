@@ -53,9 +53,6 @@ public:
 		for (int col=0; col<5 && selection<0; ++col)
 			if (!columns[col].empty()) selection=columns[col][0];
 		CClientWindow::Show(); DisableTransition();
-		savedViewModel=EngFuncs::GetCvarFloat("r_drawviewmodel");
-		viewModelHidden=true;
-		EngFuncs::CvarSetValue("r_drawviewmodel",0);
 		g_pOc2BuyMenu->SetOpen(true);
 		Con_Printf("buymenu_ui: open team=%d selection=%d\n",state.team,selection);
 	}
@@ -77,6 +74,8 @@ public:
 		oc2_buy::Item selected;
 		bool hasSelection=selection>=0 && g_pOc2BuyMenu->GetItem(selection,selected) && selected.visible;
 		if (!OC2_DrawBuyPreview(state.team,hasSelection?selected.id:0,
+			// Full-height actor framing from the reference. The main world pass
+			// still renders its viewmodel; this scene adds only the preview actor.
 			int(ScreenWidth*.67f),int(ScreenHeight*.12f),int(ScreenWidth*.33f),int(ScreenHeight*.88f)))
 			Text("COUNTER-STRIKE",Area(.70f,.45f,.27f,.07f),28,PackRGBA(220,220,220,255),QM_CENTER);
 
@@ -219,12 +218,6 @@ public:
 			}
 		}
 	}
-	void RestoreViewModel()
-	{
-		if (viewModelHidden) EngFuncs::CvarSetValue("r_drawviewmodel",savedViewModel);
-		viewModelHidden=false;
-	}
-
 private:
 	oc2_buy::State state;
 	std::vector<int> columns[5];
@@ -232,8 +225,6 @@ private:
 	int lastScrollTime=0;
 	int selection=-1,hover=-1,pressed=-1;
 	bool enterHeld=false;
-	bool viewModelHidden=false;
-	float savedViewModel=1;
 	std::map<std::string,HIMAGE> pictures;
 	std::map<int,HFont> fonts;
 	int fontScreenHeight=0;
@@ -429,7 +420,6 @@ bool UI_OC2BuyMenu_Show()
 
 void UI_OC2BuyMenu_ClearState()
 {
-	menu.RestoreViewModel();
 	if (g_pOc2BuyMenu) g_pOc2BuyMenu->SetOpen(false);
 }
 
