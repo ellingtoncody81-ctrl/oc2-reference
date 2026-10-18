@@ -30,6 +30,10 @@
 #include "vgui_parser.h"
 #include "eventscripts.h"
 #include "match_ui.h"
+#include "scoreboard_layout.h"
+#include <algorithm>
+#include <vector>
+#include <string>
 
 hud_player_info_t   g_PlayerInfoList[MAX_PLAYERS+1]; // player info from the engine
 extra_player_info_t	g_PlayerExtraInfo[MAX_PLAYERS+1]; // additional player info sent directly to the client dll
@@ -46,6 +50,138 @@ int s_scoreRowGap = 15;
 int s_scoreAvatarSize = 0;
 float s_scoreFontHeight = 16;
 bool s_scoreStyled = false;
+
+struct ModernScoreRow
+{
+	int slot=0,team=0,frags=0,deaths=0,ping=0,health=-1,money=-1;
+	bool dead=false,local=false,bot=false;
+	float x=0,y=0,width=0,height=0;
+};
+scoreboard_layout::Layout s_modernScoreLayout;
+std::vector<ModernScoreRow> s_modernScoreRows;
+int s_modernSpectators=0;
+
+void ModernScoreDump()
+{
+	const auto &v=s_modernScoreLayout;
+	gEngfuncs.Con_Printf("scoreboardlayout: visible=%d modern=%d screen=%d,%d scale=%.3f rect=%.3f,%.3f,%.3f,%.3f row=%.3f avatar=%.3f font=%.3f side_by_side=%d rows=%d spectators=%d scores=%d,%d known=%d,%d\n",
+		int(gHUD.m_Scoreboard.ShouldDrawScoreboard()),int(match_ui::Enabled()&&!gHUD.m_Scoreboard.m_bForceDraw&&gHUD.m_Teamplay),ScreenWidth,ScreenHeight,gHUD.m_flScale,v.x,v.y,v.width,v.height,v.row,v.avatar,v.font,int(v.sideBySide),
+		int(s_modernScoreRows.size()),s_modernSpectators,gHUD.m_Scoreboard.RoundScore(TEAM_CT),gHUD.m_Scoreboard.RoundScore(TEAM_TERRORIST),
+		int(gHUD.m_Scoreboard.RoundScoreKnown(TEAM_CT)),int(gHUD.m_Scoreboard.RoundScoreKnown(TEAM_TERRORIST)));
+	for (const auto &p:s_modernScoreRows)
+		gEngfuncs.Con_Printf("scoreboardrow: slot=%d team=%d frags=%d deaths=%d ping=%d dead=%d local=%d bot=%d hp=%d money=%d rect=%.3f,%.3f,%.3f,%.3f\n",
+			p.slot,p.team,p.frags,p.deaths,p.ping,int(p.dead),int(p.local),int(p.bot),p.health,p.money,p.x,p.y,p.width,p.height);
+}
+
+void ModernScoreFill(float x,float y,float width,float height,match_ui::Color color)
+{
+	FillRGBABlend(int(x),int(y),max(1,int(width)),max(1,int(height)),color.r,color.g,color.b,color.a);
+}
+
+void ModernScoreValue(const char *value,float right,float y,float width,float height,match_ui::Color color)
+{
+	match_ui::Text(value,right,y,height,color,true,width);
+}
+
+int DrawModernScoreboard()
+{
+	// CS:GO csgo_scoreboard.cpp:148-198 refreshes on real round/player events;
+	// uicomponent_gamestate.cpp:680/746/757/767/787 supplies team/alive/ping/K/D.
+	// These fields map to existing TeamInfo/TeamScore/ScoreInfo/ScoreAttrib.
+	// ScoreInfo.frags includes suicide/team-kill penalties, unlike Source's
+	// independent kills field, so label that GoldSrc column SCORE rather than K.
+	// GoldSrc has no comparable assists/ADR/MVP payload: do not synthesize it.
+	std::vector<int> teams[2],spectators;
+	for (int slot=1;slot<=MAX_PLAYERS;++slot)
+	{
+		const auto &info=g_PlayerInfoList[slot];
+		if (!info.name || !info.name[0]) continue;
+		const int team=g_PlayerExtraInfo[slot].teamnumber;
+		if (team==TEAM_CT) teams[0].push_back(slot);
+		else if (team==TEAM_TERRORIST) teams[1].push_back(slot);
+		else spectators.push_back(slot);
+	}
+	for (auto &team:teams) std::sort(team.begin(),team.end(),[](int a,int b)
+	{
+		const auto &pa=g_PlayerExtraInfo[a],&pb=g_PlayerExtraInfo[b];
+		return scoreboard_layout::Before(pa.frags,pa.deaths,a,pb.frags,pb.deaths,b);
+	});
+	const auto layout=scoreboard_layout::Make(ScreenWidth,ScreenHeight,match_ui::Scale(),int(teams[0].size()),int(teams[1].size()));
+	s_modernScoreLayout=layout;s_modernScoreRows.clear();s_modernSpectators=int(spectators.size());
+	const float s=layout.scale;
+	ModernScoreFill(layout.x-2*s,layout.y-2*s,layout.width+4*s,layout.height+4*s,{8,10,13,225});
+	const char *server=gHUD.m_szServerName[0]?gHUD.m_szServerName:"COUNTER-STRIKE";
+	match_ui::Text(server,layout.x+20*s,layout.y+12*s,28*s,{240,243,246},false,layout.width*.68f);
+	std::string map=gEngfuncs.pfnGetLevelName()?gEngfuncs.pfnGetLevelName():"";
+	const auto separator=map.find_last_of("/\\");if(separator!=std::string::npos)map.erase(0,separator+1);
+	if(map.size()>4 && map.compare(map.size()-4,4,".bsp")==0)map.resize(map.size()-4);
+	match_ui::Text(map.c_str(),layout.x+layout.width-20*s,layout.y+18*s,20*s,{170,180,192},true,layout.width*.26f);
+	const bool showHealth=gHUD.m_pShowHealth && gHUD.m_pShowHealth->value!=0;
+	const bool showMoney=gHUD.m_pShowMoney && gHUD.m_pShowMoney->value!=0;
+	for(int index=0;index<2;++index)
+	{
+		const int team=index==0?TEAM_CT:TEAM_TERRORIST;
+		const match_ui::Color theme=index==0?match_ui::Color(115,175,225):match_ui::Color(237,199,97);
+		const float x=layout.TeamX(index),y=layout.TeamY(index),width=layout.teamWidth;
+		ModernScoreFill(x,y,width,layout.TeamHeight(index),{13,17,22,205});
+		ModernScoreFill(x,y,width,layout.teamHeading,{theme.r/3,theme.g/3,theme.b/3,210});
+		ModernScoreFill(x,y,4*s,layout.TeamHeight(index),theme);
+		match_ui::Silhouette(index==0?"gfx/vgui/icon_ct.tga":"gfx/vgui/icon_t.tga",x+16*s,y+10*s,36*s,36*s,theme);
+		match_ui::Text(index==0?"COUNTER-TERRORISTS":"TERRORISTS",x+64*s,y+7*s,(layout.sideBySide?22:26)*s,theme,false,width-205*s);
+		int alive=0;for(int slot:teams[index])if(!g_PlayerExtraInfo[slot].dead)++alive;
+		char text[64];snprintf(text,sizeof(text),"%d ALIVE / %d PLAYERS",alive,int(teams[index].size()));
+		match_ui::Text(text,x+64*s,y+34*s,16*s,{182,190,198},false,width-205*s);
+		if(gHUD.m_Scoreboard.RoundScoreKnown(team))snprintf(text,sizeof(text),"%d",gHUD.m_Scoreboard.RoundScore(team));else snprintf(text,sizeof(text),"--");
+		ModernScoreValue(text,x+width-20*s,y+8*s,110*s,38*s,theme);
+		const float columnY=y+layout.teamHeading;
+		ModernScoreFill(x,columnY,width,layout.columns,{8,11,15,205});
+		const float innerRight=x+width-20*s;
+		const float pingRight=innerRight,pingWidth=72*s;
+		const float deathsRight=pingRight-pingWidth-12*s,deathsWidth=50*s;
+		const float killsRight=deathsRight-deathsWidth-12*s,killsWidth=72*s;
+		const float hpRight=killsRight-killsWidth-12*s,hpWidth=showHealth?62*s:0;
+		const float moneyRight=hpRight-(showHealth?hpWidth+12*s:0),moneyWidth=showMoney?110*s:0;
+		const float statusRight=moneyRight-(showMoney?moneyWidth+12*s:0),statusWidth=82*s;
+		const float nameRight=statusRight-statusWidth-12*s;
+		const float nameX=x+20*s+layout.avatar+12*s;
+		const float labelHeight=16*s,labelY=columnY+5*s;
+		match_ui::Text("PLAYER",nameX,labelY,labelHeight,{175,184,194},false,max(1.0f,nameRight-nameX));
+		ModernScoreValue("PING",pingRight,labelY,pingWidth,labelHeight,{175,184,194});
+		ModernScoreValue("D",deathsRight,labelY,deathsWidth,labelHeight,{175,184,194});
+		ModernScoreValue("SCORE",killsRight,labelY,killsWidth,labelHeight,{175,184,194});
+		if(showHealth)ModernScoreValue("HP",hpRight,labelY,hpWidth,labelHeight,{175,184,194});
+		if(showMoney)ModernScoreValue("MONEY",moneyRight,labelY,moneyWidth,labelHeight,{175,184,194});
+		for(int ordinal=0;ordinal<int(teams[index].size());++ordinal)
+		{
+			const int slot=teams[index][ordinal];const auto &info=g_PlayerInfoList[slot];const auto &extra=g_PlayerExtraInfo[slot];
+			const float rowY=layout.RowY(index,ordinal),textY=rowY+(layout.row-layout.font)*.5f;
+			const match_ui::Color rowColor=info.thisplayer?match_ui::Color(theme.r/3,theme.g/3,theme.b/3,175):match_ui::Color(30,36,43,ordinal%2?110:65);
+			ModernScoreFill(x+4*s,rowY,width-4*s,layout.row-1*s,rowColor);
+			if(info.thisplayer)ModernScoreFill(x+4*s,rowY,3*s,layout.row,theme);
+			if(gHUD.m_Avatars.Enabled())gHUD.m_Avatars.DrawPlayerAvatar(slot,int(x+20*s),int(rowY+(layout.row-layout.avatar)*.5f),int(layout.avatar));
+			const match_ui::Color foreground=extra.dead?match_ui::Color(145,151,158):match_ui::Color(235,238,241);
+			match_ui::Text(info.name,nameX,textY,layout.font,foreground,false,max(1.0f,nameRight-nameX));
+			const char *status=extra.dead?"DEAD":extra.has_c4?"C4":extra.vip?"VIP":extra.has_defuse_kit?"KIT":"";
+			ModernScoreValue(status,statusRight,textY,statusWidth,layout.font,extra.dead?foreground:theme);
+			if(showMoney){if(extra.sb_account>=0)snprintf(text,sizeof(text),"$%d",extra.sb_account);else snprintf(text,sizeof(text),"--");ModernScoreValue(text,moneyRight,textY,moneyWidth,layout.font,foreground);}
+			if(showHealth){if(extra.sb_health>=0&&!extra.dead)snprintf(text,sizeof(text),"%d",extra.sb_health);else snprintf(text,sizeof(text),"--");ModernScoreValue(text,hpRight,textY,hpWidth,layout.font,foreground);}
+			snprintf(text,sizeof(text),"%d",extra.frags);ModernScoreValue(text,killsRight,textY,killsWidth,layout.font,foreground);
+			snprintf(text,sizeof(text),"%d",extra.deaths);ModernScoreValue(text,deathsRight,textY,deathsWidth,layout.font,foreground);
+			const char *bot=gEngfuncs.PlayerInfo_ValueForKey(slot,"*bot");
+			if(bot && atoi(bot)>0)snprintf(text,sizeof(text),"BOT");else if(info.ping>=0)snprintf(text,sizeof(text),"%d",info.ping);else snprintf(text,sizeof(text),"--");
+			ModernScoreValue(text,pingRight,textY,pingWidth,layout.font,foreground);
+			ModernScoreRow row;row.slot=slot;row.team=team;row.frags=extra.frags;row.deaths=extra.deaths;row.ping=info.ping;row.dead=extra.dead;row.local=info.thisplayer;
+			row.bot=bot&&atoi(bot)>0;row.health=showHealth&&!extra.dead?extra.sb_health:-1;row.money=showMoney?extra.sb_account:-1;row.x=x;row.y=rowY;row.width=width;row.height=layout.row;s_modernScoreRows.push_back(row);
+		}
+	}
+	const float footerY=layout.y+layout.height-layout.footer;
+	ModernScoreFill(layout.x,footerY,layout.width,layout.footer,{8,11,15,200});
+	char label[64];snprintf(label,sizeof(label),"SPECTATORS / JOINING  %d",int(spectators.size()));
+	match_ui::Text(label,layout.x+20*s,footerY+12*s,18*s,{160,170,182},false,270*s);
+	std::string names;for(int slot:spectators){if(!names.empty())names+="   ";names+=g_PlayerInfoList[slot].name;}
+	match_ui::Text(names.c_str(),layout.x+300*s,footerY+12*s,18*s,{195,201,207},false,max(1.0f,layout.width-320*s));
+	return 1;
+}
 
 int ScoreTextWidth(const char *text)
 {
@@ -152,6 +288,7 @@ int CHudScoreboard :: Init( void )
 	HOOK_MESSAGE( gHUD.m_Scoreboard, ScoreInfo );
 	HOOK_MESSAGE( gHUD.m_Scoreboard, TeamScore );
 	HOOK_MESSAGE( gHUD.m_Scoreboard, TeamInfo );
+	gEngfuncs.pfnAddCommand("scoreboard_dump",ModernScoreDump);
 
 	InitHUDData();
 
@@ -177,6 +314,7 @@ int CHudScoreboard :: VidInit( void )
 
 void CHudScoreboard :: InitHUDData( void )
 {
+	s_modernScoreRows.clear();s_modernScoreLayout=scoreboard_layout::Layout();s_modernSpectators=0;
 	memset( g_PlayerExtraInfo, 0, sizeof g_PlayerExtraInfo );
 	m_iLastKilledBy = 0;
 	m_fLastKillTime = 0;
@@ -243,6 +381,7 @@ int CHudScoreboard :: Draw( float flTime )
 int CHudScoreboard :: DrawScoreboard( float fTime )
 {
 	GetAllPlayersInfo();
+	if(match_ui::Enabled() && !m_bForceDraw && gHUD.m_Teamplay) return DrawModernScoreboard();
 	char ServerName[90];
 	int connected = 0;
 	for (int i = 1; i <= MAX_PLAYERS; ++i)

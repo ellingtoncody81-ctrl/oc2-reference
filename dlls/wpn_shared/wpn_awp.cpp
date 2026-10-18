@@ -17,6 +17,7 @@
 #include "cbase.h"
 #include "player.h"
 #include "weapons.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_awp, CAWP)
 
@@ -54,12 +55,13 @@ void CAWP::Precache(void)
 
 int CAWP::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::AWP);
 	p->pszName = STRING(pev->classname);
 	p->pszAmmo1 = "338Magnum";
-	p->iMaxAmmo1 = MAX_AMMO_338MAGNUM;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = NULL;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = AWP_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 0;
 	p->iPosition = 2;
 	p->iId = m_iId = WEAPON_AWP;
@@ -130,6 +132,7 @@ void CAWP::PrimaryAttack(void)
 
 void CAWP::AWPFire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -206,7 +209,7 @@ void CAWP::AWPFire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 
 void CAWP::Reload(void)
 {
-	if (m_pPlayer->ammo_338mag <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 
 	if (DefaultReload(iMaxClip(), AWP_RELOAD, AWP_RELOAD_TIME))
@@ -238,9 +241,5 @@ void CAWP::WeaponIdle(void)
 
 float CAWP::GetMaxSpeed(void)
 {
-	if (m_pPlayer->m_iFOV == DEFAULT_FOV)
-		return AWP_MAX_SPEED;
-
-	// Slower speed when zoomed in.
-	return AWP_MAX_SPEED_ZOOM;
+	return oc2_weapon::Get(oc2_weapon::AWP).speed[oc2_weapon::Mode(18,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

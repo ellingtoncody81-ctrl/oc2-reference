@@ -1,0 +1,25 @@
+{
+  "description": "External GoldSrc texture dependencies for the supplied BSP maps; install beside the matching game, preserving existing assets.",
+  "copy": [
+    "valve/halflife.wad",
+    "cstrike/ajawad.wad",
+    "cstrike/chateau.wad",
+    "cstrike/cs_747.wad",
+    "cstrike/cs_assault.wad",
+    "cstrike/cs_bdog.wad",
+    "cstrike/cs_cbble.wad",
+    "cstrike/cs_havana.wad",
+    "cstrike/de_piranesi.wad",
+    "cstrike/de_storm.wad",
+    "cstrike/de_vertigo.wad",
+    "cstrike/itsitaly.wad",
+    "cstrike/prodigy.wad",
+    "cstrike/torntextures.wad"
+  ],
+  "aliases": [
+    {"source": "cstrike/chateau.wad", "destination": "cstrike/czde_chateau.wad"}
+  ],
+  "extract": [
+    {"source": "cstrike/cs_bdog.wad", "texture": "hint", "destination": "cstrike/czritual_standard.wad"}
+  ]
+}

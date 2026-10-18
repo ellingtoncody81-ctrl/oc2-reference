@@ -53,6 +53,7 @@
 #include "pm_shared.h"
 #include "GameStudioModelRenderer.h"
 #include "ammohistory.h"
+#include "../../dlls/wpn_shared/oc2_gunshot.h"
 #ifndef min
 #define min(a,b)  (((a) < (b)) ? (a) : (b))
 #endif
@@ -92,26 +93,20 @@ static int s_iBobPredictedWeapon = 0;
 
 static bool OC2_GunKind(int id, oc2_weapon::Kind &kind)
 {
-    switch(id) {
-    case WEAPON_M3: kind=oc2_weapon::Nova; return true;
-    case WEAPON_MP5N: kind=oc2_weapon::MP7; return true;
-    case WEAPON_P228: kind=oc2_weapon::P250; return true;
-    case WEAPON_SG552: kind=oc2_weapon::SG553; return true;
-    case WEAPON_TMP: kind=oc2_weapon::MP9; return true;
-    default: return false;
-    }
+    return oc2_weapon::KindForId(id,kind);
 }
 static bool OC2_CurrentCommandWeapon(int id)
 {
     oc2_weapon::Kind kind;
-    return OC2_GunKind(id,kind) || id==WEAPON_MOLOTOV || id==WEAPON_TASER;
+    return OC2_GunKind(id,kind) || id==WEAPON_MOLOTOV || id==WEAPON_TASER ||
+        id==WEAPON_HEGRENADE || id==WEAPON_FLASHBANG || id==WEAPON_SMOKEGRENADE;
 }
 static float OC2_DisplaySpread(CBasePlayerWeapon *weapon)
 {
     oc2_weapon::Kind kind;
     if (!OC2_GunKind(weapon->m_iId,kind)) return weapon->m_flAccuracy;
     const auto &params=oc2_weapon::Get(kind);
-    const int mode=weapon->m_iId==WEAPON_SG552 && player.pev->fov>0 && player.pev->fov<90 ? 1 : 0;
+    const int mode=oc2_weapon::Mode(weapon->m_iId,weapon->m_iWeaponState,player.pev->fov);
     const oc2_weapon::Motion motion={player.pev->velocity.Length2D(),player.pev->velocity.z,
         (player.pev->flags&FL_ONGROUND)!=0,(player.pev->flags&FL_DUCKING)!=0,
         player.pev->movetype==MOVETYPE_FLY,(player.pev->button&IN_RUN)!=0};
@@ -344,7 +339,7 @@ BOOL CBasePlayerWeapon :: DefaultReload( int iClipSize, int iAnim, float fDelay,
 
 	m_fInReload = TRUE;
 
-	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay + 0.5f;
+	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay;
 	return TRUE;
 }
 
@@ -362,6 +357,31 @@ void HUD_WeaponPresentationDump()
 		weapon->m_iId,player.pev->weaponanim,oc2_presentation::IsInspect(weapon->m_iId,player.pev->weaponanim),
 		weapon->AnimationDuration(player.pev->weaponanim,0),player.m_flNextAttack,weapon->m_flNextPrimaryAttack,
 		weapon->m_flNextSecondaryAttack,weapon->m_flTimeWeaponIdle,weapon->m_iClip,weapon->m_fInReload,weapon->m_iWeaponState);
+
+    gEngfuncs.Con_Printf("sourceweapon: id=%d clip=%d reserve=%d fov=%.3f speed=%.3f burst=%d bursttime=%.6f penalty=%.8f index=%.6f last=%.6f\n",
+        weapon->m_iId,weapon->m_iClip,weapon->m_iPrimaryAmmoType>=0?player.m_rgAmmo[weapon->m_iPrimaryAmmoType]:-1,
+        player.pev->fov,weapon->GetMaxSpeed(),weapon->m_iId==17?weapon->m_iGlock18ShotsFired:weapon->m_iFamasShotsFired,
+        weapon->m_iId==17?weapon->m_flGlock18Shoot:weapon->m_flFamasShoot,
+        weapon->m_flStartThrow/1024,weapon->m_flReleaseThrow/64,weapon->m_flLastFire);
+}
+
+
+void CBasePlayerWeapon::ToggleAim()
+{
+    if (!m_pPlayer || !oc2_weapon::SupportsAim(m_iId) || m_pPlayer->pev->health<=0 ||
+        m_fInReload || m_fInSpecialReload || m_pPlayer->m_flNextAttack>UTIL_WeaponTimeBase()) return;
+    if (m_flNextPrimaryAttack-UTIL_WeaponTimeBase()>.6f) return; // attach/detach transition
+    if (oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim))
+    {
+        SendWeaponAnim(oc2_presentation::IdleSequence(m_iId,m_iWeaponState,m_iClip),UseDecrement());
+        m_flTimeWeaponIdle=UTIL_WeaponTimeBase()+20;
+    }
+    const bool enable=m_pPlayer->pev->fov>=90 || m_pPlayer->pev->fov<=0;
+    m_pPlayer->pev->fov=m_pPlayer->m_iFOV=enable?45:90;
+    m_pPlayer->m_iLastZoom=90;m_pPlayer->m_bResumeZoom=false;
+#ifndef CLIENT_DLL
+    m_pPlayer->ResetMaxSpeed();
+#endif
 }
 
 void CBasePlayerWeapon::StartInspect()
@@ -399,6 +419,12 @@ bool CBasePlayerWeapon::AdvanceInspect()
 
 void CBasePlayerWeapon::AdvanceReload()
 {
+    if (m_pPlayer && (m_fInReload || m_fInSpecialReload) && oc2_weapon::SupportsAim(m_iId))
+    {
+        m_pPlayer->pev->fov=m_pPlayer->m_iFOV=90;
+        m_pPlayer->m_iLastZoom=90;m_pPlayer->m_bResumeZoom=false;
+    }
+
 	if (!m_pPlayer || m_pPlayer->m_pActiveItem != this || !m_pPlayer->IsAlive() ||
 		m_iPrimaryAmmoType < 0 || m_iPrimaryAmmoType >= MAX_AMMO_SLOTS) return;
 	const bool shell = oc2_reload::Shotgun(m_iId) && m_fInSpecialReload == 2;
@@ -437,8 +463,8 @@ bool CBasePlayerWeapon::DefaultShotgunReload(int iAnim, int iStartAnim, float fD
 		SendWeaponAnim(iAnim,UseDecrement());
 		m_fInSpecialReload = 2;
 		m_flNextReload = oc2_reload::PendingTail(m_iId,iAnim,false,fDelay);
-		m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
-			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay;
+		// Source permits firing a loaded shell while the next shell is moving.
+		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay;
 	}
 	return true;
 }
@@ -451,7 +477,8 @@ void CBasePlayerWeapon::FinishShotgunReload(int animation, float fallback)
 	m_fInSpecialReload = 0;
 	m_flNextReload = -1;
 	m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
-		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + duration;
+		UTIL_WeaponTimeBase();
+	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + duration;
 }
 
 /*
@@ -513,6 +540,8 @@ bool CBasePlayerWeapon::HasSecondaryAttack()
 
 void CBasePlayerWeapon::FireRemaining(int &shotsFired, float &shootTime, BOOL isGlock18)
 {
+	if (shootTime<=0 || gpGlobals->time<shootTime) return;
+	OC2GunShot sourceShot(this,true);
 	m_iClip--;
 
 	if (m_iClip < 0)
@@ -531,20 +560,18 @@ void CBasePlayerWeapon::FireRemaining(int &shotsFired, float &shootTime, BOOL is
 	if (isGlock18)
 	{
 		vecDir = m_pPlayer->FireBullets3(vecSrc, gpGlobals->v_forward, 0.05, 8192, 1, BULLET_PLAYER_9MM, 18, 0.9, m_pPlayer->pev, TRUE, m_pPlayer->random_seed);
-		PLAYBACK_EVENT_FULL(FEV_NOTHOST, ENT(m_pPlayer->pev), m_usFireGlock18, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y, (int)(m_pPlayer->pev->punchangle.x * 10000), (int)(m_pPlayer->pev->punchangle.y * 10000), m_iClip == 0, FALSE);
-		m_pPlayer->ammo_9mm--;
+		PLAYBACK_EVENT_FULL(FEV_NOTHOST, ENT(m_pPlayer->pev), m_usFireGlock18, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y, (int)(m_pPlayer->pev->punchangle.x * 100), (int)(m_pPlayer->pev->punchangle.y * 100), m_iClip == 0, FALSE);
 	}
 	else
 	{
 		vecDir = m_pPlayer->FireBullets3(vecSrc, gpGlobals->v_forward, m_fBurstSpread, 8192, 2, BULLET_PLAYER_556MM, 30, 0.96, m_pPlayer->pev, TRUE, m_pPlayer->random_seed);
-		PLAYBACK_EVENT_FULL(FEV_NOTHOST, ENT(m_pPlayer->pev), m_usFireFamas, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y, (int)(m_pPlayer->pev->punchangle.x * 10000000), (int)(m_pPlayer->pev->punchangle.y * 10000000), FALSE, FALSE);
-		m_pPlayer->ammo_556nato--;
+		PLAYBACK_EVENT_FULL(FEV_NOTHOST, ENT(m_pPlayer->pev), m_usFireFamas, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y, (int)(m_pPlayer->pev->punchangle.x * 100), (int)(m_pPlayer->pev->punchangle.y * 100), FALSE, FALSE);
 	}
 
 	m_pPlayer->pev->effects |= EF_MUZZLEFLASH;
 
 	if (++shotsFired != 3)
-		shootTime = gpGlobals->time + 0.1;
+		shootTime = gpGlobals->time + oc2_weapon::FromId(m_iId)->burstSpacing;
 	else
 		shootTime = 0;
 }
@@ -617,6 +644,12 @@ CBasePlayerWeapon :: DefaultDeploy
 */
 BOOL CBasePlayerWeapon :: DefaultDeploy( const char *szViewModel, const char *szWeaponModel, int iAnim, const char *szAnimExt, int skiplocal )
 {
+	m_pPlayer->pev->fov=m_pPlayer->m_iFOV=90;
+	m_pPlayer->m_iLastZoom=90;m_pPlayer->m_bResumeZoom=false;
+    if (const auto *schema=oc2_weapon::FromId(m_iId))
+        if (!oc2_weapon::DirectShotAdapter(m_iId))
+            oc2_weapon::ResetState(*schema,m_flStartThrow,m_flReleaseThrow,m_flLastFire,m_flAccuracy,m_iShotsFired);
+
 	if ( !CanDeploy() )
 		return FALSE;
 
@@ -714,6 +747,13 @@ void CBasePlayerWeapon::RetireWeapon()
 
 Vector CBaseEntity::FireBullets3 ( Vector vecSrc, Vector vecDirShooting, float flSpread, float flDistance, int iPenetration, int iBulletType, int iDamage, float flRangeModifier, entvars_t *pevAttacker, bool bPistol, int shared_rand )
 {
+    OC2GunShot *sourceShot=OC2GunShot::Active();
+    if (sourceShot && sourceShot->Handles(this))
+    {
+        const auto offset=sourceShot->Aim(vecDirShooting,flSpread,flDistance,iPenetration,iDamage,flRangeModifier);
+        return Vector(offset.x*1024,offset.y*1024,0.0f);
+    }
+
 	float x, y, z;
 
 	if ( pevAttacker )
@@ -743,6 +783,9 @@ Handles weapon firing, reloading, etc.
 */
 void CBasePlayerWeapon::ItemPostFrame( void )
 {
+	// Release the semi-auto/burst latch even while a secondary action is held.
+	const bool releaseTrigger=oc2_weapon::RequiresTriggerRelease(m_iId,m_iWeaponState);
+	if (releaseTrigger && !(m_pPlayer->pev->button & IN_ATTACK)) m_iShotsFired=0;
 	AdvanceReload();
 	if (AdvanceInspect()) return;
 	int button = m_pPlayer->pev->button;
@@ -750,24 +793,8 @@ void CBasePlayerWeapon::ItemPostFrame( void )
 	if (!HasSecondaryAttack())
 		button &= ~IN_ATTACK2;
 
-	if (m_flGlock18Shoot != 0)
-	{
-		m_iClip--;
-		if( m_iClip < 0 )
-		{
-			m_iClip = m_iGlock18ShotsFired = 0;
-		}
-		FireRemaining(m_iGlock18ShotsFired, m_flGlock18Shoot, TRUE);
-	}
-	else if (gpGlobals->time > m_flFamasShoot && m_flFamasShoot != 0)
-	{
-		m_iClip--;
-		if( m_iClip < 0 )
-		{
-			m_iClip = m_iFamasShotsFired = 0;
-		}
-		FireRemaining(m_iFamasShotsFired, m_flFamasShoot, FALSE);
-	}
+    if (m_flGlock18Shoot!=0) FireRemaining(m_iGlock18ShotsFired,m_flGlock18Shoot,TRUE);
+    else if (m_flFamasShoot!=0) FireRemaining(m_iFamasShotsFired,m_flFamasShoot,FALSE);
 
 	if (m_flNextPrimaryAttack <= UTIL_WeaponTimeBase() )
 	{
@@ -815,7 +842,7 @@ void CBasePlayerWeapon::ItemPostFrame( void )
 			m_fFireOnEmpty = TRUE;
 
 		if (m_pPlayer->m_bCanShoot == true)
-			PrimaryAttack();
+			if (!releaseTrigger || m_iShotsFired==0) PrimaryAttack();
 	}
 	else if (m_pPlayer->pev->button & IN_RELOAD && iMaxClip() != WEAPON_NOCLIP && !m_fInReload)
 	{
@@ -1397,6 +1424,14 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 		pCurrent->m_iWeaponState		= pfrom->m_iWeaponState;
 		pCurrent->m_flLastFire			= pfrom->m_fAimedDamage;
 		pCurrent->m_iShotsFired			= pfrom->m_fInZoom;
+        if (pCurrent->m_iId==17 || pCurrent->m_iId==15)
+        {
+            const int count=pfrom->iuser1;
+            const float timer=count>0 && count<3 ? gpGlobals->time+pfrom->fuser1:0;
+            if (pCurrent->m_iId==17) {pCurrent->m_iGlock18ShotsFired=count;pCurrent->m_flGlock18Shoot=timer;}
+            else {pCurrent->m_iFamasShotsFired=count;pCurrent->m_flFamasShoot=timer;}
+        }
+
 	}
 
 	if( from->client.vuser4.x < 0 || from->client.vuser4.x >= MAX_AMMO_TYPES )
@@ -1438,6 +1473,7 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 	player.pev->maxspeed   = from->client.maxspeed;
 	player.pev->punchangle = from->client.punchangle;
 	player.pev->fov        = from->client.fov;
+	player.m_iFOV = int(from->client.fov);
 	player.pev->weaponanim = from->client.weaponanim;
 	player.pev->viewmodel  = from->client.viewmodel;
 	player.m_flNextAttack  = from->client.m_flNextAttack;
@@ -1524,6 +1560,7 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 		if( player.m_flNextAttack <= 0 )
 		{
 			if (cmd->impulse == oc2_presentation::InspectImpulse) pWeapon->StartInspect();
+			if (cmd->impulse == 181) pWeapon->ToggleAim();
 			pWeapon->ItemPostFrame();
 		}
 	}
@@ -1587,7 +1624,11 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 
 	// Make sure that weapon animation matches what the game .dll is telling us
 	//  over the wire ( fixes some animation glitches )
-	if ( g_runfuncs && ( HUD_GetWeaponAnim() != to->client.weaponanim ) )
+	// A server-selected weapon (grenade retirement/pickup) does not run the
+	// local Deploy path. Sequence numbers belong to each model: grenade THROW
+	// and many gun DRAW clips are both 2, but still need a new animation clock.
+	if ( g_runfuncs && ( HUD_GetWeaponAnim() != to->client.weaponanim ||
+		HUD_GetWeapon() != to->client.m_iId ) )
 		// Force a fixed anim down to viewmodel
 		HUD_SendWeaponAnim( to->client.weaponanim, to->client.m_iId, 2, 1 );
 
@@ -1629,6 +1670,14 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 		pto->m_iWeaponState				= pCurrent->m_iWeaponState;
 		pto->m_fInZoom					= pCurrent->m_iShotsFired;
 		pto->m_fAimedDamage				= pCurrent->m_flLastFire;
+        if (pCurrent->m_iId==17 || pCurrent->m_iId==15)
+        {
+            const bool glock=pCurrent->m_iId==17;
+            const float timer=glock?pCurrent->m_flGlock18Shoot:pCurrent->m_flFamasShoot;
+            pto->iuser1=glock?pCurrent->m_iGlock18ShotsFired:pCurrent->m_iFamasShotsFired;
+            pto->fuser1=timer>0 ? timer-gpGlobals->time-cmd->msec*.001f:0;
+        }
+
 
 		// Decrement weapon counters, server does this at same time ( during post think, after doing everything else )
 		// m_flNextReload is an insertion-tail threshold, not a countdown.

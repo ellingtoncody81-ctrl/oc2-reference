@@ -7,11 +7,14 @@
 #include "triangleapi.h"
 #include "render_api.h"
 #include "match_ui.h"
+#include "hud_readability.h"
 #include <stdio.h>
 #include <stdlib.h>
 
 namespace
 {
+float s_avatarDrawScale=0,s_avatarDrawY=0;
+int s_avatarDrawTSize=0,s_avatarDrawCTSize=0;
 int TeamOf(const hud_player_info_t& info, int slot)
 {
 	if (info.spectator) return TEAM_SPECTATOR;
@@ -178,7 +181,7 @@ int CHudAvatars::Draw(float time)
 	const auto& ct = m_state.counter_terrorists;
 	const auto& t = m_state.terrorists;
 	if (!ct.count && !t.count) return 1;
-	const float scale = match_ui::Scale();
+	const float scale = hud_readability::Scale(match_ui::Scale());
 	const float center = ScreenWidth * 0.5f;
 	const float anchor = 65.0f*scale;
 	const float sideWidth = max(1.0f, center - anchor - 12.0f*scale);
@@ -193,7 +196,8 @@ int CHudAvatars::Draw(float time)
 	const bool showCounts = m_showCount->value != 0
 		|| (t.count && tSize*gHUD.m_flScale < 16) || (ct.count && ctSize*gHUD.m_flScale < 16);
 	const float height = 120.0f*scale;
-	const float y = m_position->value != 0 ? ScreenHeight-height-5.0f*scale : 5.0f*scale;
+	const float y = m_position->value != 0 ? ScreenHeight-height-220.0f*match_ui::Scale() : 5.0f*scale;
+	s_avatarDrawScale=scale;s_avatarDrawY=y;s_avatarDrawTSize=tSize;s_avatarDrawCTSize=ctSize;
 	const int background = match_ui::Texture("resource/hud/csgo/black.tga");
 	if (background) match_ui::Picture(background, center-60.0f*scale, y,
 		120.0f*scale, 225.0f*scale, {255, 255, 255, 200});
@@ -236,6 +240,7 @@ int CHudAvatars::Draw(float time)
 
 void CHudAvatars::UserCmd_AvatarDump()
 {
+	gEngfuncs.Con_Printf("avatarlayout: scale=%.4f y=%.3f t_size=%d ct_size=%d timer_height=%.3f\n",s_avatarDrawScale,s_avatarDrawY,s_avatarDrawTSize,s_avatarDrawCTSize,20*s_avatarDrawScale);
 	m_refreshTime = -1.0f;
 	Refresh(gHUD.m_flTime);
 	gEngfuncs.Con_Printf("avatars: time=%.3f ct=%d/%d t=%d/%d messages=%u,%u,%u textures=%d,%d,%d\n",

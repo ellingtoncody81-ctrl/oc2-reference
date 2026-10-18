@@ -37,6 +37,8 @@ version.
 #include <string.h>
 #include "draw_util.h"
 #include "pm_shared.h"
+#include "match_ui.h"
+#include "hud_readability.h"
 
 int CHudTimer::Init()
 {
@@ -88,6 +90,18 @@ int CHudTimer::Draw( float fTime )
 	}
 
 	DrawUtils::ScaleColors( r, g, b, MIN_ALPHA );
+	if(match_ui::Enabled())
+	{
+		// The no-avatar fallback keeps the same enlarged top-center timer;
+		// placing it at the bottom would overlap the team badge/card.
+		const float s=hud_readability::Scale(match_ui::Scale());
+		char text[32];snprintf(text,sizeof(text),"%d:%02d",minutes,seconds);
+		const float height=26*s,width=match_ui::TextWidth(text,height);
+		FillRGBABlend(int(ScreenWidth*.5f-width*.5f-12*s),int(8*s),int(width+24*s),int(height+12*s),8,12,18,195);
+		match_ui::Text(text,ScreenWidth*.5f-width*.5f,14*s,height,{r,g,b});
+		m_right=int(ScreenWidth*.5f+width*.5f);
+		return 1;
+	}
 
 	int iWatchWidth = gHUD.GetSpriteRect(m_HUD_timer).Width();
 	int iDigitWidth = gHUD.GetSpriteRect(gHUD.m_HUD_number_0).Width();
