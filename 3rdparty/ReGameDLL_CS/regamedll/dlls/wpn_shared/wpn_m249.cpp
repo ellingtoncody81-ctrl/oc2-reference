@@ -199,5 +199,5 @@ void CM249::WeaponIdle()
 
 float CM249::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::M249).speed[oc2_weapon::Mode(20,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(20,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }

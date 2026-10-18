@@ -289,13 +289,14 @@ static void OC2_EquipmentDump()
 		CBasePlayerItem *molotov = player->GetItemById(WEAPON_MOLOTOV);
 		const int ammoIndex = molotov ? molotov->PrimaryAmmoIndex() : -1;
 		const int ammo31 = ammoIndex >= 0 && ammoIndex < MAX_AMMO_SLOTS ? player->m_rgAmmo[ammoIndex] : 0;
-		ALERT(at_console, "oc2player: index=%d userid=%d team=%d alive=%d health=%.3f armor=%.3f money=%d weaponbits=%08x active=%d classname=%s clip=%d ammo31=%d ammo31_index=%d zeus_buys=%d origin=%.3f/%.3f/%.3f\n",
+		ALERT(at_console, "oc2player: index=%d userid=%d team=%d alive=%d health=%.3f armor=%.3f money=%d weaponbits=%08x active=%d classname=%s clip=%d ammo31=%d ammo31_index=%d zeus_buys=%d origin=%.3f/%.3f/%.3f t=%.6f velocity=%.6f/%.6f/%.6f\n",
 			index, GETPLAYERUSERID(player->edict()), player->m_iTeam, int(player->IsAlive()),
 			player->pev->health, player->pev->armorvalue, player->m_iAccount,
 			static_cast<unsigned int>(player->pev->weapons), active ? active->m_iId : 0,
 			active ? STRING(active->pev->classname) : "none", activeWeapon ? activeWeapon->m_iClip : -1,
 			ammo31, ammoIndex, player->m_iOc2ZeusPurchases,
-			player->pev->origin.x, player->pev->origin.y, player->pev->origin.z);
+			player->pev->origin.x, player->pev->origin.y, player->pev->origin.z,
+			gpGlobals->time, player->pev->velocity.x, player->pev->velocity.y, player->pev->velocity.z);
 		for (int kind = 0; kind < ARRAYSIZE(ids); ++kind)
 		{
 			CBasePlayerItem *item = player->GetItemById(ids[kind]);

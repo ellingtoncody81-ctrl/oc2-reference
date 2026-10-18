@@ -207,5 +207,5 @@ void CMAC10::WeaponIdle()
 
 float CMAC10::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::MAC10).speed[oc2_weapon::Mode(7,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(7,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }

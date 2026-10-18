@@ -640,6 +640,7 @@ public:
 	edict_t *EntSelectSpawnPoint();
 	void SetScoreAttrib(CBasePlayer *dest);
 	void ReloadWeapons(CBasePlayerItem *pWeapon = nullptr, bool bForceReload = false, bool bForceRefill = false);
+	void StockRoundAmmo();
 	void TeamChangeUpdate();
 	bool HasRestrictItem(ItemID item, ItemRestType type);
 	void DropSecondary();

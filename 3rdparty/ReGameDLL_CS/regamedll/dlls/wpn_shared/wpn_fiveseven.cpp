@@ -229,5 +229,5 @@ void CFiveSeven::WeaponIdle()
 
 float CFiveSeven::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::FiveSeven).speed[oc2_weapon::Mode(11,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(11,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }

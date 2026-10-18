@@ -269,5 +269,5 @@ void CM4A1::WeaponIdle()
 
 float CM4A1::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::M4A1S).speed[oc2_weapon::Mode(22,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(22,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }
