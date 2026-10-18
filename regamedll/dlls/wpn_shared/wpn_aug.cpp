@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_aug, CAUG, CCSAUG)
 
@@ -42,12 +43,13 @@ void CAUG::Precache()
 
 int CAUG::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::AUG);
 	p->pszName = STRING(pev->classname);
 	p->pszAmmo1 = "556Nato";
-	p->iMaxAmmo1 = MAX_AMMO_556NATO;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = nullptr;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = AUG_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 0;
 	p->iPosition = 14;
 	p->iId = m_iId = WEAPON_AUG;
@@ -105,6 +107,7 @@ void CAUG::PrimaryAttack()
 
 void CAUG::AUGFire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -191,7 +194,7 @@ void CAUG::AUGFire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 void CAUG::Reload()
 {
 #ifndef REGAMEDLL_FIXES
-	if (m_pPlayer->ammo_556nato <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 #endif
 
@@ -222,4 +225,9 @@ void CAUG::WeaponIdle()
 
 	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
 	SendWeaponAnim(AUG_IDLE1, UseDecrement() != FALSE);
+}
+
+float CAUG::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::AUG).speed[oc2_weapon::Mode(8,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

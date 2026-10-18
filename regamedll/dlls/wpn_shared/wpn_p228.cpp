@@ -1,5 +1,6 @@
 #include "precompiled.h"
 #include "oc2_weapon_params.h"
+#include "oc2_gunshot.h"
 
 namespace
 {
@@ -178,4 +179,9 @@ void CP228::WeaponIdle()
 	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase()) return;
 	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
 	SendWeaponAnim(P228_IDLE, UseDecrement() != FALSE);
+}
+
+float CP228::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::P250).speed[oc2_weapon::Mode(1,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }
