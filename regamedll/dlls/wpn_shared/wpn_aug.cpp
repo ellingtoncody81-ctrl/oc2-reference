@@ -204,7 +204,9 @@ void CAUG::Reload()
 
 		if (m_pPlayer->m_iFOV != DEFAULT_FOV)
 		{
-			SecondaryAttack();
+			// Leave zoom without replacing DefaultReload's Source attack lock.
+			m_pPlayer->pev->fov = m_pPlayer->m_iFOV = DEFAULT_FOV;
+			m_pPlayer->ResetMaxSpeed();
 		}
 
 		m_flAccuracy = 0;

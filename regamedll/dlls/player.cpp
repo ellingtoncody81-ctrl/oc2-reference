@@ -4131,6 +4131,8 @@ void EXT_FUNC CBasePlayer::__API_HOOK(RoundRespawn)()
 		pev->nextthink = -1;
 	}
 
+	StockRoundAmmo();
+
 	if (m_pActiveItem && m_pActiveItem->iItemSlot() == GRENADE_SLOT)
 		SwitchWeapon(m_pActiveItem);
 
@@ -7455,7 +7457,12 @@ void CBasePlayer::ItemPostFrame()
 	// CS:GO's reload-complete animation event stocks ammo before the full
 	// reload ends. Advance that stage even while m_flNextAttack blocks firing.
 	if (m_pActiveItem && m_pActiveItem->IsWeapon())
+	{
+		const float previousAimFov=pev->fov;
 		static_cast<CBasePlayerWeapon *>(m_pActiveItem)->AdvanceReload();
+		if (previousAimFov!=pev->fov && oc2_weapon::SupportsManualAim(m_pActiveItem->m_iId))
+			ResetMaxSpeed();
+	}
 
 	if (m_pActiveItem)
 	{
@@ -7473,10 +7480,15 @@ void CBasePlayer::ItemPostFrame()
 #endif
 		return;
 
+	const float previousAimFov=pev->fov;
 	ImpulseCommands();
 
 	if (m_pActiveItem)
 		m_pActiveItem->ItemPostFrame();
+	// Mode switches such as a silencer animation can leave ADS independently
+	// of Mouse3. Recompute through the existing freeze/VIP-aware speed policy.
+	if (m_pActiveItem && previousAimFov!=pev->fov && oc2_weapon::SupportsManualAim(m_pActiveItem->m_iId))
+		ResetMaxSpeed();
 }
 
 int CBasePlayer::AmmoInventory(int iAmmoIndex)
@@ -10565,6 +10577,30 @@ void CBasePlayer::UpdateLocation(bool forceUpdate)
 			MESSAGE_END();
 		}
 	}
+}
+
+void CBasePlayer::StockRoundAmmo()
+{
+	// CS:GO CCSPlayer::Spawn/StockPlayerAmmo restocks the two firearm slots.
+	// RoundRespawn is the round boundary; ResetHUD/fullupdate is not one.
+	if (!IsAlive() || (m_iTeam != CT && m_iTeam != TERRORIST)) return;
+	for (int slot = PRIMARY_WEAPON_SLOT; slot <= PISTOL_SLOT; ++slot)
+		for (CBasePlayerItem *item = m_rgpPlayerItems[slot]; item; item = item->m_pNext)
+		{
+			oc2_weapon::Kind kind;
+			if (!oc2_weapon::KindForId(item->m_iId, kind)) continue;
+			CBasePlayerWeapon *weapon = static_cast<CBasePlayerWeapon *>(item);
+			const int ammo = weapon->PrimaryAmmoIndex();
+			if (ammo < 0 || ammo >= MAX_AMMO_SLOTS) continue;
+			m_rgAmmo[ammo] = oc2_weapon::Get(kind).reserve;
+			weapon->m_iClip = weapon->iMaxClip();
+			weapon->m_fInReload = FALSE;
+			weapon->m_fInSpecialReload = 0;
+			weapon->m_flNextReload = -1;
+			weapon->m_flFamasShoot = weapon->m_flGlock18Shoot = 0;
+			weapon->m_iFamasShotsFired = weapon->m_iGlock18ShotsFired = 0;
+		}
+	TabulateAmmo();
 }
 
 void CBasePlayer::ReloadWeapons(CBasePlayerItem *pWeapon, bool bForceReload, bool bForceRefill)

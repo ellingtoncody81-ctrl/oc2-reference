@@ -233,5 +233,5 @@ void CXM1014::WeaponIdle()
 
 float CXM1014::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::XM1014).speed[oc2_weapon::Mode(5,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(5,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }

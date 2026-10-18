@@ -183,5 +183,5 @@ void CP228::WeaponIdle()
 
 float CP228::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::P250).speed[oc2_weapon::Mode(1,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(1,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }

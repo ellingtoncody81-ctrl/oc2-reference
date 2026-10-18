@@ -308,5 +308,5 @@ void CUSP::WeaponIdle()
 
 float CUSP::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::USPS).speed[oc2_weapon::Mode(16,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(16,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }

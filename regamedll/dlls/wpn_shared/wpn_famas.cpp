@@ -182,6 +182,9 @@ void CFamas::FamasFire(float flSpread, float flCycleTime, BOOL fUseAutoAim, BOOL
 
 	PLAYBACK_EVENT_FULL(flag, m_pPlayer->edict(), m_usFireFamas, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y,
 		int(m_pPlayer->pev->punchangle.x * 100), int(m_pPlayer->pev->punchangle.y * 100), FALSE, FALSE);
+	// Source commits a firing activity for every round, including the burst tail.
+	// A clip-derived variant is identical on prediction and the server.
+	SendWeaponAnim(FAMAS_SHOOT1 + (m_iClip % 3), UseDecrement() != FALSE);
 
 	m_flNextPrimaryAttack = m_flNextSecondaryAttack = GetNextAttackDelay(flCycleTime);
 
@@ -230,7 +233,9 @@ void CFamas::Reload()
 
 		if (m_pPlayer->m_iFOV != DEFAULT_FOV)
 		{
-			SecondaryAttack();
+			// Reload leaves ironsights without changing the selected fire mode.
+			m_pPlayer->pev->fov = m_pPlayer->m_iFOV = DEFAULT_FOV;
+			m_pPlayer->ResetMaxSpeed();
 		}
 
 		m_flAccuracy = 0;
@@ -253,5 +258,5 @@ void CFamas::WeaponIdle()
 
 float CFamas::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::FAMAS).speed[oc2_weapon::Mode(15,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(15,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }
