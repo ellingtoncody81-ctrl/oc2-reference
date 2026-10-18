@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_ak47, CAK47, CCSAK47)
 
@@ -41,12 +42,13 @@ void CAK47::Precache()
 
 int CAK47::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::AK47);
 	p->pszName = STRING(pev->classname);
 	p->pszAmmo1 = "762Nato";
-	p->iMaxAmmo1 = MAX_AMMO_762NATO;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = nullptr;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = AK47_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 0;
 	p->iPosition = 1;
 	p->iId = m_iId = WEAPON_AK47;
@@ -88,6 +90,7 @@ void CAK47::PrimaryAttack()
 
 void CAK47::AK47Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -193,4 +196,9 @@ void CAK47::WeaponIdle()
 		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
 		SendWeaponAnim(AK47_IDLE1, UseDecrement() != FALSE);
 	}
+}
+
+float CAK47::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::AK47).speed[oc2_weapon::Mode(28,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

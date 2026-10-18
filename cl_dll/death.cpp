@@ -26,6 +26,7 @@
 #include "kill_feedback.h"
 #include "match_ui.h"
 #include "weapon_hud_layout.h"
+#include "hud_readability.h"
 #include <cmath>
 
 float color[3];
@@ -103,14 +104,15 @@ void NoticeBackground(float x, float y, float width, float height, const DeathNo
 	FillRGBABlend((int)x,(int)y,(int)width,(int)height,0,0,0,opacity*alpha/255);
 }
 
-bool NoticeGunFlips(const char *path)
+bool NoticeIconFlips(const char *path)
 {
-	// Only firearm silhouettes have a muzzle direction. Grenades, knives,
-	// bomb/world symbols and headshots keep their original orientation.
-	static const char *guns[] = {"ak47","aug","awp","deagle","elite","famas","fiveseven",
+	// APK guns and knives point left; the notice points toward the victim.
+	// Grenades, bomb/world symbols and headshots keep their orientation.
+	static const char *directional[] = {"ak47","aug","awp","deagle","elite","famas","fiveseven",
 		"g3sg1","galil","glock18","m249","m3","m4a1","mac10","mp5navy","mp7",
-		"p228","p90","scout","sg550","sg552","tmp","ump45","usp","xm1014","zeus"};
-	for (const char *name : guns)
+		"p228","p90","scout","sg550","sg552","tmp","ump45","usp","xm1014","zeus",
+		"knife","knife_t"};
+	for (const char *name : directional)
 	{
 		char candidate[64]; snprintf(candidate,sizeof(candidate),"gfx/vgui/death/d_%s.tga",name);
 		if (!strcmp(path,candidate)) return true;
@@ -135,14 +137,14 @@ void DeathIconDump()
 {
 	static const char *names[] = {"ak47","aug","awp","deagle","elite","famas","fiveseven",
 		"g3sg1","galil","glock18","m249","m3","m4a1","mac10","mp7","p228","p90",
-		"scout","sg550","sg552","tmp","ump45","usp","xm1014","zeus","knife",
+		"scout","sg550","sg552","tmp","ump45","usp","xm1014","zeus","knife","knife_t",
 		"hegrenade","flashbang","smokegrenade","molotov","incendiary","c4","worldspawn"};
 	for (const char *name : names)
 	{
 		char path[64]; snprintf(path,sizeof(path),"gfx/vgui/death/d_%s.tga",name);
 		const auto b = match_ui::SilhouetteBounds(path);
 		gEngfuncs.Con_Printf("deathicon: name=%s valid=%d source=%dx%d contour=%d,%d,%d,%d width=%.2f height=33 flip=%d\n",
-			name,int(b.valid),b.width,b.height,b.left,b.top,b.right,b.bottom,NoticeIconWidth(path,-1,1),int(NoticeGunFlips(path)));
+			name,int(b.valid),b.width,b.height,b.left,b.top,b.right,b.bottom,NoticeIconWidth(path,-1,1),int(NoticeIconFlips(path)));
 	}
 }
 
@@ -150,7 +152,7 @@ void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int heads
 {
 	// Fit the visible contour, not the common 89x32 canvas. In particular,
 	// the bottle/canister artwork occupies only its rightmost 11-20 pixels.
-	const float scale = match_ui::Scale();
+	const float scale = hud_readability::Scale(match_ui::Scale());
 	const int id = item.iId >= 0 ? item.iId : skull;
 	const float weaponW = NoticeIconWidth(item.weaponResource,id,scale), weaponH = 33.0f*scale;
 	const float iconW = 33.0f*scale, padding = 6.0f*scale;
@@ -179,7 +181,7 @@ void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int heads
 		match_ui::Text(item.szKiller,cursor,y+(weaponH-textH)*0.5f+4.0f*scale,textH,killerColor,false,maxName);
 		cursor += killerW+padding;
 	}
-	if (!match_ui::Silhouette(item.weaponResource,cursor,y+4.0f*scale,weaponW,weaponH,iconColor,NoticeGunFlips(item.weaponResource)))
+	if (!match_ui::Silhouette(item.weaponResource,cursor,y+4.0f*scale,weaponW,weaponH,iconColor,NoticeIconFlips(item.weaponResource)))
 	{
 		// Native GoldSrc sprites already face right. Contain the fallback too.
 		if (id >= 0 && id < gHUD.SpriteCount())

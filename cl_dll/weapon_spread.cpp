@@ -24,17 +24,7 @@ enum WeaponState
 
 const oc2_weapon::Params *SchemaWeapon(int id)
 {
-	// The five converted slots publish a total radius in m_flAccuracy.
-	// Other slots retain their original CS1.6 accuracy-factor interpretation.
-	switch (id)
-	{
-	case M3: return &oc2_weapon::Get(oc2_weapon::Nova);
-	case MP5N: return &oc2_weapon::Get(oc2_weapon::MP7);
-	case P228: return &oc2_weapon::Get(oc2_weapon::P250);
-	case SG552: return &oc2_weapon::Get(oc2_weapon::SG553);
-	case TMP: return &oc2_weapon::Get(oc2_weapon::MP9);
-	default: return nullptr;
-	}
+	return oc2_weapon::FromId(id);
 }
 
 float DefaultAccuracy(int id)
@@ -148,7 +138,7 @@ SpreadOutput Calculate(const SpreadInput &input)
 	if (!std::isfinite(in.fov) || in.fov <= 0.0f) in.fov = 90.0f;
 	if (const oc2_weapon::Params *schema = SchemaWeapon(in.weapon_id))
 	{
-		const int mode = in.weapon_id == SG552 && in.fov != 90.0f ? 1 : 0;
+		const int mode = oc2_weapon::Mode(in.weapon_id,in.weapon_state,in.fov);
 		SpreadOutput output;
 		output.stand = schema->stand[mode] + schema->spread[mode];
 		output.crouch = schema->crouch[mode] + schema->spread[mode];

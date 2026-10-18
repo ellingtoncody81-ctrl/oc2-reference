@@ -391,6 +391,7 @@ public:
 	// Paired prediction/server presentation, using existing animation + idle state.
 	float AnimationDuration(int animation, float fallback) const;
 	void StartInspect();
+	void ToggleAim();
 	bool AdvanceInspect();
 	void AdvanceReload(); // Ammo insertion event; the sequence-end attack lock remains active.
 	void FinishShotgunReload(int animation, float fallback);
@@ -516,8 +517,8 @@ public:
 
 
 const float USP_MAX_SPEED       = 250.0f;
-const float USP_DAMAGE          = 34.0f;
-const float USP_DAMAGE_SIL      = 30.0f;
+const float USP_DAMAGE          = 35.0f;
+const float USP_DAMAGE_SIL      = 35.0f;
 const float USP_RANGE_MODIFER   = 0.79f;
 const float USP_RELOAD_TIME     = 2.7f;
 
@@ -567,7 +568,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return m_fMaxSpeed; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PISTOL_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();
@@ -625,7 +626,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return MP5N_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void Reload();
@@ -731,7 +732,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return AK47_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();
@@ -758,7 +759,7 @@ private:
 
 
 const float AUG_MAX_SPEED     = 240.0f;
-const float AUG_DAMAGE        = 32.0f;
+const float AUG_DAMAGE        = 28.0f;
 const float AUG_RANGE_MODIFER = 0.96f;
 const float AUG_RELOAD_TIME   = 3.3f;
 #ifdef REGAMEDLL_FIXES
@@ -784,7 +785,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return AUG_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();
@@ -907,7 +908,7 @@ private:
 
 
 const float DEAGLE_MAX_SPEED     = 250.0f;
-const float DEAGLE_DAMAGE        = 54.0f;
+const float DEAGLE_DAMAGE        = 63.0f;
 const float DEAGLE_RANGE_MODIFER = 0.81f;
 const float DEAGLE_RELOAD_TIME   = 2.2f;
 
@@ -941,7 +942,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return m_fMaxSpeed; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PISTOL_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();
@@ -990,6 +991,7 @@ public:
 	virtual void Holster(int skiplocal);
 	virtual float GetMaxSpeed() { return m_fMaxSpeed; }
 	virtual int iItemSlot() { return GRENADE_SLOT; }
+	virtual void ItemPostFrame();
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();
 	virtual void WeaponIdle();
@@ -1064,7 +1066,7 @@ private:
 
 
 const float GLOCK18_MAX_SPEED     = 250.0f;
-const float GLOCK18_DAMAGE        = 25.0f;
+const float GLOCK18_DAMAGE        = 30.0f;
 const float GLOCK18_RANGE_MODIFER = 0.75f;
 const float GLOCK18_RELOAD_TIME   = 2.2f;
 
@@ -1105,7 +1107,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return m_fMaxSpeed; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PISTOL_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();
@@ -1153,6 +1155,7 @@ public:
 	virtual void Holster(int skiplocal);
 	virtual float GetMaxSpeed() { return m_fMaxSpeed; }
 	virtual int iItemSlot() { return GRENADE_SLOT; }
+	virtual void ItemPostFrame();
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();
 	virtual void WeaponIdle();
@@ -1311,7 +1314,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return M249_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void Reload();
@@ -1359,7 +1362,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return M3_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
 	virtual BOOL PlayEmptySound();
 	virtual void PrimaryAttack();
@@ -1384,7 +1387,7 @@ private:
 
 
 const float M4A1_MAX_SPEED         = 230.0f;
-const float M4A1_DAMAGE            = 32.0f;
+const float M4A1_DAMAGE            = 33.0f;
 const float M4A1_DAMAGE_SIL        = 33.0f;
 const float M4A1_RANGE_MODIFER     = 0.97f;
 const float M4A1_RANGE_MODIFER_SIL = 0.95f;
@@ -1477,7 +1480,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return MAC10_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void Reload();
@@ -1538,7 +1541,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return m_fMaxSpeed; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PISTOL_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();
@@ -1568,7 +1571,7 @@ private:
 
 
 const float P90_MAX_SPEED     = 245.0f;
-const float P90_DAMAGE        = 21.0f;
+const float P90_DAMAGE        = 26.0f;
 const float P90_RANGE_MODIFER = 0.885f;
 const float P90_RELOAD_TIME   = 3.4f;
 #ifdef REGAMEDLL_FIXES
@@ -1621,7 +1624,7 @@ private:
 
 const float SCOUT_MAX_SPEED      = 260.0f;
 const float SCOUT_MAX_SPEED_ZOOM = 220.0f;
-const float SCOUT_DAMAGE         = 75.0f;
+const float SCOUT_DAMAGE         = 88.0f;
 const float SCOUT_RANGE_MODIFER  = 0.98f;
 const float SCOUT_RELOAD_TIME    = 2.0f;
 
@@ -1688,6 +1691,7 @@ public:
 	virtual void Holster(int skiplocal);
 	virtual float GetMaxSpeed() { return m_fMaxSpeed; }
 	virtual int iItemSlot() { return GRENADE_SLOT; }
+	virtual void ItemPostFrame();
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();
 	virtual void WeaponIdle();
@@ -1741,7 +1745,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return TMP_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void Reload();
@@ -1788,7 +1792,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return XM1014_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
 	virtual BOOL PlayEmptySound();
 	virtual void PrimaryAttack();
@@ -1814,7 +1818,7 @@ private:
 
 const float ELITE_MAX_SPEED     = 250.0f;
 const float ELITE_RELOAD_TIME   = 4.5f;
-const float ELITE_DAMAGE        = 36.0f;
+const float ELITE_DAMAGE        = 38.0f;
 const float ELITE_RANGE_MODIFER = 0.75f;
 
 enum elite_e
@@ -1844,7 +1848,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return ELITE_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PISTOL_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void Reload();
@@ -1871,7 +1875,7 @@ private:
 
 
 const float FIVESEVEN_MAX_SPEED     = 250.0f;
-const float FIVESEVEN_DAMAGE        = 20.0f;
+const float FIVESEVEN_DAMAGE        = 32.0f;
 const float FIVESEVEN_RANGE_MODIFER = 0.885f;
 const float FIVESEVEN_RELOAD_TIME   = 2.7f;
 
@@ -1905,7 +1909,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return m_fMaxSpeed; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PISTOL_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();
@@ -1935,7 +1939,7 @@ private:
 
 
 const float UMP45_MAX_SPEED     = 250.0f;
-const float UMP45_DAMAGE        = 30.0f;
+const float UMP45_DAMAGE        = 35.0f;
 const float UMP45_RANGE_MODIFER = 0.82f;
 const float UMP45_RELOAD_TIME   = 3.5f;
 #ifdef REGAMEDLL_FIXES
@@ -1961,7 +1965,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return UMP45_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void Reload();
@@ -1988,7 +1992,7 @@ private:
 
 const float SG550_MAX_SPEED      = 210.0f;
 const float SG550_MAX_SPEED_ZOOM = 150.0f;
-const float SG550_DAMAGE         = 70.0f;
+const float SG550_DAMAGE         = 80.0f;
 const float SG550_RANGE_MODIFER  = 0.98f;
 const float SG550_RELOAD_TIME    = 3.35f;
 
@@ -2059,7 +2063,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return GALIL_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();
@@ -2089,7 +2093,7 @@ private:
 const float FAMAS_MAX_SPEED     = 240.0f;
 const float FAMAS_RELOAD_TIME   = 3.3f;
 const float FAMAS_DAMAGE        = 30.0f;
-const float FAMAS_DAMAGE_BURST  = 34.0f;
+const float FAMAS_DAMAGE_BURST  = 30.0f;
 const float FAMAS_RANGE_MODIFER = 0.96f;
 #ifdef REGAMEDLL_FIXES
 const float FAMAS_ACCURACY_DIVISOR = 215.0f;
@@ -2114,7 +2118,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL Deploy();
-	virtual float GetMaxSpeed() { return FAMAS_MAX_SPEED; }
+	virtual float GetMaxSpeed();
 	virtual int iItemSlot() { return PRIMARY_WEAPON_SLOT; }
 	virtual void PrimaryAttack();
 	virtual void SecondaryAttack();

@@ -17,6 +17,7 @@
 #include "cbase.h"
 #include "player.h"
 #include "weapons.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_m249, CM249)
 
@@ -55,12 +56,13 @@ void CM249::Precache()
 
 int CM249::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::M249);
 	p->pszName = STRING(pev->classname);
 	p->pszAmmo1 = "556NatoBox";
-	p->iMaxAmmo1 = MAX_AMMO_556NATOBOX;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = NULL;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = M249_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 0;
 	p->iPosition = 4;
 	p->iId = m_iId = WEAPON_M249;
@@ -97,6 +99,7 @@ void CM249::PrimaryAttack()
 
 void CM249::M249Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -185,7 +188,7 @@ void CM249::Reload()
 {
 #ifdef REGAMEDLL_FIXES
 	// to prevent reload if not enough ammo
-	if (m_pPlayer->ammo_556natobox <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 #endif
 
@@ -212,4 +215,9 @@ void CM249::WeaponIdle()
 
 	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
 	SendWeaponAnim(M249_IDLE1, UseDecrement() != FALSE);
+}
+
+float CM249::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::M249).speed[oc2_weapon::Mode(20,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

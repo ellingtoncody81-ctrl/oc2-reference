@@ -17,6 +17,7 @@
 #include "cbase.h"
 #include "player.h"
 #include "weapons.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_elite, CELITE)
 
@@ -56,12 +57,13 @@ void CELITE::Precache(void)
 
 int CELITE::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::DualBerettas);
 	p->pszName = STRING(pev->classname);
-	p->pszAmmo1 = "9mm";
-	p->iMaxAmmo1 = MAX_AMMO_9MM;
+	p->pszAmmo1 = "9mmelite";
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = NULL;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = ELITE_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 1;
 	p->iPosition = 5;
 	p->iId = m_iId = WEAPON_ELITE;
@@ -105,6 +107,7 @@ void CELITE::PrimaryAttack(void)
 
 void CELITE::ELITEFire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 {
+	OC2GunShot sourceShot(this);
 	float flTimeDiff;
 	int flag;
 	Vector vecAiming;
@@ -217,7 +220,7 @@ void CELITE::ELITEFire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 
 void CELITE::Reload(void)
 {
-	if (m_pPlayer->ammo_9mm <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 
 	if (DefaultReload(iMaxClip(), ELITE_RELOAD, ELITE_RELOAD_TIME))
@@ -243,4 +246,9 @@ void CELITE::WeaponIdle(void)
 			SendWeaponAnim(iAnim, UseDecrement() != FALSE);
 		}
 	}
+}
+
+float CELITE::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::DualBerettas).speed[oc2_weapon::Mode(10,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

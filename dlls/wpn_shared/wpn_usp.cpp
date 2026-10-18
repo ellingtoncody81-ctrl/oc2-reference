@@ -17,6 +17,7 @@
 #include "cbase.h"
 #include "player.h"
 #include "weapons.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_usp, CUSP)
 
@@ -30,6 +31,8 @@ void CUSP::Spawn(void)
 	SET_MODEL(ENT(pev), "models/w_usp.mdl");
 
 	m_iWeaponState &= ~WPNSTATE_SHIELD_DRAWN;
+	// CS:GO suppressed variants spawn with the detachable silencer fitted.
+	m_iWeaponState |= WPNSTATE_USP_SILENCED;
 	m_iDefaultAmmo = USP_DEFAULT_GIVE;
 	m_flAccuracy = 0.92f;
 
@@ -58,16 +61,17 @@ void CUSP::Precache()
 
 int CUSP::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::USPS);
 	p->pszName = STRING(pev->classname);
 #ifdef REGAMEDLL_FIXES
-	p->pszAmmo1 = "45acp";
+	p->pszAmmo1 = "45acpusp";
 #else
-	p->pszAmmo1 = "45ACP";
+	p->pszAmmo1 = "45acpusp";
 #endif // REGAMEDLL_FIXES
-	p->iMaxAmmo1 = MAX_AMMO_45ACP;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = NULL;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = USP_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 1;
 	p->iPosition = 4;
 	p->iFlags = 0;
@@ -99,6 +103,10 @@ BOOL CUSP::Deploy()
 
 void CUSP::SecondaryAttack()
 {
+    // The attach/detach sequence leaves the sight line before moving the gun.
+    m_pPlayer->pev->fov=m_pPlayer->m_iFOV=90;
+    m_pPlayer->m_iLastZoom=90;m_pPlayer->m_bResumeZoom=false;
+
 	if (ShieldSecondaryFire(USP_SHIELD_UP, USP_SHIELD_DOWN))
 	{
 		return;
@@ -167,6 +175,7 @@ void CUSP::PrimaryAttack()
 
 void CUSP::USPFire(float flSpread, float flCycleTime, BOOL fUseSemi)
 {
+	OC2GunShot sourceShot(this);
 	int flag;
 	int iDamage;
 	Vector vecAiming, vecSrc, vecDir;
@@ -259,7 +268,7 @@ void CUSP::USPFire(float flSpread, float flCycleTime, BOOL fUseSemi)
 
 void CUSP::Reload()
 {
-	if (m_pPlayer->ammo_45acp <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 
 	int iAnim;
@@ -305,4 +314,9 @@ void CUSP::WeaponIdle()
 		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 60.0f;
 		SendWeaponAnim(iAnim, UseDecrement());
 	}
+}
+
+float CUSP::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::USPS).speed[oc2_weapon::Mode(16,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

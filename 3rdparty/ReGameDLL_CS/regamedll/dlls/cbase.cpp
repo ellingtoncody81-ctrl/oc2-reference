@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "wpn_shared/oc2_gunshot.h"
 
 DLL_FUNCTIONS gFunctionTable =
 {
@@ -1269,6 +1270,11 @@ VectorRef CBaseEntity::__API_HOOK(FireBullets3)(VectorRef vecSrc, VectorRef vecD
 {
 	static Vector vecRet;
 
+    OC2GunShot *sourceShot=OC2GunShot::Active();
+    const bool schemaShot=sourceShot && sourceShot->Handles(this);
+    oc2_weapon::Offset sourceOffset{};
+    if (schemaShot) sourceOffset=sourceShot->Aim(vecDirShooting,vecSpread,flDistance,iPenetration,iDamage,flRangeModifier);
+
 	int iOriginalPenetration = iPenetration;
 	int iPenetrationPower;
 	float flPenetrationDistance;
@@ -1474,8 +1480,8 @@ VectorRef CBaseEntity::__API_HOOK(FireBullets3)(VectorRef vecSrc, VectorRef vecD
 		ApplyMultiDamage(pev, pevAttacker);
 	}
 
-	vecRet.x = x * vecSpread;
-	vecRet.y = y * vecSpread;
+	vecRet.x = schemaShot ? sourceOffset.x*1024 : x*vecSpread;
+	vecRet.y = schemaShot ? sourceOffset.y*1024 : y*vecSpread;
 	vecRet.z = 0;
 
 	return vecRet;

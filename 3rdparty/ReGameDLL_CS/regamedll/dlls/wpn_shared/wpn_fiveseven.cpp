@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_fiveseven, CFiveSeven, CCSFiveSeven)
 
@@ -42,12 +43,13 @@ void CFiveSeven::Precache()
 
 int CFiveSeven::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::FiveSeven);
 	p->pszName = STRING(pev->classname);
-	p->pszAmmo1 = "57mm";
-	p->iMaxAmmo1 = MAX_AMMO_57MM;
+	p->pszAmmo1 = "57mmpistol";
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = nullptr;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = FIVESEVEN_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 1;
 	p->iPosition = 6;
 	p->iId = m_iId = WEAPON_FIVESEVEN;
@@ -97,6 +99,7 @@ void CFiveSeven::SecondaryAttack()
 
 void CFiveSeven::FiveSevenFire(float flSpread, float flCycleTime, BOOL fUseSemi)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -187,7 +190,7 @@ void CFiveSeven::FiveSevenFire(float flSpread, float flCycleTime, BOOL fUseSemi)
 void CFiveSeven::Reload()
 {
 #ifndef REGAMEDLL_FIXES
-	if (m_pPlayer->ammo_57mm <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 #endif
 
@@ -222,4 +225,9 @@ void CFiveSeven::WeaponIdle()
 		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 3.0625f;
 		SendWeaponAnim(FIVESEVEN_IDLE, UseDecrement() != FALSE);
 	}
+}
+
+float CFiveSeven::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::FiveSeven).speed[oc2_weapon::Mode(11,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

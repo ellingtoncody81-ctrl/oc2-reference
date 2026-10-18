@@ -157,7 +157,7 @@ cvar_t falldamage              = { "mp_falldamage", "1", FCVAR_SERVER, 1.0f, nul
 
 cvar_t ct_default_grenades               = { "mp_ct_default_grenades", "", 0, 0.0f, nullptr };
 cvar_t ct_give_player_knife              = { "mp_ct_give_player_knife", "1", 0, 1.0f, nullptr };
-cvar_t ct_default_weapons_secondary      = { "mp_ct_default_weapons_secondary", "usp", 0, 0.0f, nullptr };
+cvar_t ct_default_weapons_secondary      = { "mp_ct_default_weapons_secondary", "glock18", 0, 0.0f, nullptr };
 cvar_t ct_default_weapons_primary        = { "mp_ct_default_weapons_primary", "", 0, 0.0f, nullptr };
 cvar_t t_default_grenades                = { "mp_t_default_grenades", "", 0, 0.0f, nullptr };
 cvar_t t_give_player_knife               = { "mp_t_give_player_knife", "1", 0, 1.0f, nullptr };
@@ -263,14 +263,14 @@ SpewRetval_t GameDLL_SpewHandler(SpewType_t spewType, int level, const char *pMs
 // commands never change money, health, inventory, or weapon state.
 static void OC2_EquipmentDump()
 {
-	static const WeaponIdType ids[] = { WEAPON_NOVA, WEAPON_MP7, WEAPON_P250, WEAPON_SG553, WEAPON_MP9 };
-	static const char *const names[] = { "nova", "mp7", "p250", "sg553", "mp9" };
+	static const WeaponIdType ids[] = { WeaponIdType(21), WeaponIdType(19), WeaponIdType(1), WeaponIdType(27), WeaponIdType(23), WeaponIdType(28), WeaponIdType(8), WeaponIdType(18), WeaponIdType(26), WeaponIdType(10), WeaponIdType(15), WeaponIdType(11), WeaponIdType(24), WeaponIdType(14), WeaponIdType(17), WeaponIdType(20), WeaponIdType(22), WeaponIdType(7), WeaponIdType(30), WeaponIdType(3), WeaponIdType(13), WeaponIdType(12), WeaponIdType(16), WeaponIdType(5) };
+	static const char *const names[] = { "nova", "mp7", "p250", "sg553", "mp9", "ak47", "aug", "awp", "deagle", "dualberettas", "famas", "fiveseven", "g3sg1", "galilar", "glock18", "m249", "m4a1s", "mac10", "p90", "ssg08", "scar20", "ump45", "usps", "xm1014" };
 	ALERT(at_console, "oc2equipment: t=%.3f clients=%d\n", gpGlobals->time, gpGlobals->maxClients);
 	for (int kind = 0; kind < ARRAYSIZE(ids); ++kind)
 	{
 		const oc2_weapon::Params &p = oc2_weapon::Get(static_cast<oc2_weapon::Kind>(kind));
 		const WeaponInfoStruct *info = GetWeaponInfo(ids[kind]);
-		ALERT(at_console, "oc2params: name=%s id=%d damage=%d clip=%d reserve=%d pellets=%d price=%d registry_price=%d cycle=%.5f range=%.1f range_modifier=%.5f penetration=%d speed=%.3f/%.3f spread=%.6f/%.6f\n",
+		ALERT(at_console, "oc2params: name=%s id=%d damage=%d clip=%d reserve=%d pellets=%d price=%d registry_price=%d cycle=%.5f range=%.1f range_modifier=%.5f penetration=%.3f speed=%.3f/%.3f spread=%.6f/%.6f\n",
 			names[kind], ids[kind], p.damage, p.clip, p.reserve, p.pellets, p.price,
 			info ? info->cost : -1, p.cycle, p.range, p.rangeModifier, p.penetration,
 			p.speed[0], p.speed[1], p.spread[0], p.spread[1]);
@@ -352,6 +352,13 @@ static void OC2_WeaponDump()
 		int(weapon->m_fInReload), weapon->m_fInSpecialReload, weapon->m_flNextReload,
 		player->m_flNextAttack, weapon->m_flNextPrimaryAttack, weapon->m_iWeaponState,
 		STRING(player->pev->viewmodel), STRING(weapon->pev->model));
+
+    const auto *schema=oc2_weapon::FromId(weapon->m_iId);
+    ALERT(at_console,"oc2aimstate: t=%.6f id=%d fov=%.3f speed=%.3f maxreserve=%d ammoindex=%d burst=%d bursttime=%.6f penalty=%.8f index=%.6f last=%.6f\n",
+        gpGlobals->time,weapon->m_iId,player->pev->fov,player->pev->maxspeed,weapon->iMaxAmmo1(),ammo,
+        weapon->m_iId==17?weapon->m_iGlock18ShotsFired:weapon->m_iFamasShotsFired,
+        weapon->m_iId==17?weapon->m_flGlock18Shoot:weapon->m_flFamasShoot,
+        weapon->m_flStartThrow/1024,weapon->m_flReleaseThrow/64,weapon->m_flLastFire);
 }
 
 void EXT_FUNC GameDLLInit()

@@ -27,6 +27,7 @@
 */
 #include "events.h"
 #include "wpn_shared.h"
+#include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
 bool g_bGlockBurstMode = false;
 
@@ -102,8 +103,8 @@ void EV_Fireglock18( event_args_t *args )
 	VectorCopy( forward, vecAiming );
 	Vector vSpread;
 	
-	vSpread.x = args->fparam1;
-	vSpread.y = args->fparam2;
+	vSpread.x = args->fparam1 / 1024;
+	vSpread.y = args->fparam2 / 1024;
 	EV_HLDM_FireBullets( idx,
 		forward, right,	up,
 		1, vecSrc, vecAiming,

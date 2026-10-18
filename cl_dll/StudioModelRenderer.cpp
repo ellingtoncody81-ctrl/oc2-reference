@@ -43,6 +43,7 @@
 #include "com_weapons.h"
 #include "viewmodel_transition.h"
 #include "wpn_shared/oc2_presentation.h"
+#include "wpn_shared/oc2_reload.h"
 #include "view_ads.h"
 
 extern CGameStudioModelRenderer g_StudioRenderer;
@@ -63,6 +64,76 @@ struct ViewFlowDiagnostics
 	int oldSequence[2] = {-1,-1};
 	float oldFrame[2] = {}, weight[2] = {};
 } g_viewFlow;
+
+static int ViewModelReloadWeapon(model_t *model, bool &shield)
+{
+	shield=false;
+	if (!model) return 0;
+	struct Entry { const char *name; int id; };
+	static const Entry entries[] = {
+		{"v_p228.mdl",1},{"v_scout.mdl",3},{"v_xm1014.mdl",5},{"v_mac10.mdl",7},
+		{"v_aug.mdl",8},{"v_elite.mdl",10},{"v_fiveseven.mdl",11},{"v_ump45.mdl",12},
+		{"v_sg550.mdl",13},{"v_galil.mdl",14},{"v_famas.mdl",15},{"v_usp.mdl",16},
+		{"v_glock18.mdl",17},{"v_awp.mdl",18},{"v_mp7.mdl",19},{"v_m249.mdl",20},
+		{"v_m3.mdl",21},{"v_m4a1.mdl",22},{"v_tmp.mdl",23},{"v_g3sg1.mdl",24},
+		{"v_deagle.mdl",26},{"v_sg552.mdl",27},{"v_ak47.mdl",28},{"v_p90.mdl",30}
+	};
+	if (!strnicmp(model->name,"models/",7))
+		for (unsigned i=0; i<sizeof(entries)/sizeof(entries[0]); ++i)
+			if (!stricmp(model->name+7,entries[i].name)) return entries[i].id;
+	static const Entry shields[] = {{"models/shield/v_shield_deagle.mdl",26},
+		{"models/shield/v_shield_fiveseven.mdl",11},{"models/shield/v_shield_glock18.mdl",17},
+		{"models/shield/v_shield_usp.mdl",16}};
+	for (unsigned i=0; i<sizeof(shields)/sizeof(shields[0]); ++i)
+		if (!stricmp(model->name,shields[i].name)) { shield=true; return shields[i].id; }
+	return 0;
+}
+
+static float ViewModelReloadFrame(model_t *model, studiohdr_t *header, int sequence, double elapsed)
+{
+	if (!header || sequence<0 || sequence>=header->numseq) return -1;
+	bool shield;
+	const int weapon=ViewModelReloadWeapon(model,shield);
+	const mstudioseqdesc_t &seq=((mstudioseqdesc_t *)((byte *)header+header->seqindex))[sequence];
+	return oc2_reload::ModelFrame(weapon,sequence,shield,static_cast<float>(elapsed),seq.numframes,seq.fps);
+}
+
+struct ReloadEventClock
+{
+	model_t *model=NULL;
+	int sequence=-1, fired=0;
+	double start=0, time=0;
+	float frame=0;
+} g_reloadEvents;
+
+// Engine events use native fps and a single linear time span. Reload uses the
+// same mapped frame interval as the bones, including insertion/tail boundary.
+static bool ViewModelReloadEvents(cl_entity_t *entity, studiohdr_t *header, double time)
+{
+	const float end=ViewModelReloadFrame(entity->model,header,entity->curstate.sequence,time-entity->curstate.animtime);
+	if (end<0) { g_reloadEvents=ReloadEventClock(); return false; }
+	const bool first=g_reloadEvents.model!=entity->model || g_reloadEvents.sequence!=entity->curstate.sequence ||
+		g_reloadEvents.start!=entity->curstate.animtime;
+	if (!first && time<=g_reloadEvents.time)
+	{
+		g_reloadEvents.time=time; // rebase a backward clock without replaying reached events.
+		return true;
+	}
+	const float begin=first ? -.01f : g_reloadEvents.frame;
+	if (first) g_reloadEvents.fired=0;
+	const mstudioseqdesc_t &seq=((mstudioseqdesc_t *)((byte *)header+header->seqindex))[entity->curstate.sequence];
+	const mstudioevent_t *events=(mstudioevent_t *)((byte *)header+seq.eventindex);
+	for (int i=0; i<seq.numevents; ++i)
+		if (events[i].event>=5000 && events[i].frame>begin && events[i].frame<=end)
+		{
+			HUD_StudioEvent(&events[i],entity);
+			++g_reloadEvents.fired;
+		}
+	g_reloadEvents.model=entity->model; g_reloadEvents.sequence=entity->curstate.sequence;
+	g_reloadEvents.start=entity->curstate.animtime; g_reloadEvents.time=time;
+	g_reloadEvents.frame=first || end>g_reloadEvents.frame ? end : g_reloadEvents.frame;
+	return true;
+}
 
 static int ViewModelFirstFrame(model_t *model, studiohdr_t *header, int sequence)
 {
@@ -280,6 +351,17 @@ static void DumpOC2ViewModel()
 		gHUD.cl_righthand ? gHUD.cl_righthand->value : 1.0f, int(MirrorViewModel(header)), int(arms.sourceRig),
 		int(arms.placeholder), int(arms.nativeArms), int(arms.NeedsArms()),
 		g_lastArmsWeapon == view->model ? g_lastArmsDrawn : 0, int(handFound), screenX);
+	bool reloadShield;
+	const int reloadWeapon=ViewModelReloadWeapon(view->model,reloadShield);
+	const oc2_reload::Sequence *reload=oc2_reload::Find(reloadWeapon,view->curstate.sequence,reloadShield);
+	if (reload)
+	{
+		const float duration=oc2_reload::Duration(reloadWeapon,view->curstate.sequence,reloadShield,0);
+		gEngfuncs.Con_Printf("oc2reloadclock: weapon=%d seq=%d duration=%.3f complete=%.3f elapsed=%.6f frame=%.6f events=%d\n",
+			reloadWeapon,view->curstate.sequence,duration,
+			duration-oc2_reload::Milliseconds(oc2_reload::PendingTail(reloadWeapon,view->curstate.sequence,reloadShield,duration))/1000.f,
+			animElapsed,animFrame,g_reloadEvents.fired);
+	}
 }
 
 void CStudioModelRenderer::Init(void)
@@ -287,6 +369,7 @@ void CStudioModelRenderer::Init(void)
 	gEngfuncs.pfnAddCommand("oc2_viewmodel_dump", DumpOC2ViewModel);
 	gEngfuncs.pfnAddCommand("weapon_flow_dump", DumpViewModelFlow);
 	g_viewTransitions.Clear();
+	g_reloadEvents=ReloadEventClock();
 	g_viewFirstEvents = false;
 	g_viewEventModel = NULL; g_viewEventSequence = -1; g_viewEventStart = -1;
 	m_pCvarHiModels = IEngineStudio.GetCvar("cl_himodels");
@@ -793,6 +876,12 @@ float CStudioModelRenderer::StudioEstimateFrame(mstudioseqdesc_t *pseqdesc)
 		f = (m_pCurrentEntity->curstate.frame * (pseqdesc->numframes - 1)) / 256.0;
 
 	f += dfdt;
+	if (m_pCurrentEntity==gEngfuncs.GetViewModel())
+	{
+		const float mapped=ViewModelReloadFrame(m_pCurrentEntity->model,m_pStudioHeader,m_pCurrentEntity->curstate.sequence,
+			m_clTime-m_pCurrentEntity->curstate.animtime);
+		if (mapped>=0) f=mapped;
+	}
 
 	if (pseqdesc->flags & STUDIO_LOOPING)
 	{
@@ -929,7 +1018,8 @@ void CStudioModelRenderer::StudioSetupBones(void)
 			g_viewFlow.oldSequence[layer]=-1; g_viewFlow.oldFrame[layer]=g_viewFlow.weight[layer]=0;
 			if (layer >= g_viewTransitions.Count()) continue;
 			const oc2_viewmodel::Layer &old=g_viewTransitions.Previous(layer);
-			const float oldFrame=g_viewTransitions.PreviousFrame(layer,m_clTime);
+			float oldFrame=ViewModelReloadFrame(m_pRenderModel,m_pStudioHeader,old.sequence,m_clTime-old.startTime);
+			if (oldFrame<0) oldFrame=g_viewTransitions.PreviousFrame(layer,m_clTime);
 			const float weight=g_viewTransitions.Weight(layer,m_clTime);
 			g_viewFlow.oldSequence[layer]=old.sequence; g_viewFlow.oldFrame[layer]=oldFrame; g_viewFlow.weight[layer]=weight;
 			if (old.sequence < 0 || old.sequence >= m_pStudioHeader->numseq) continue;
@@ -1042,8 +1132,7 @@ void CStudioModelRenderer::StudioSetupBones(void)
 	}
 	if (gEngfuncs.GetViewModel() == m_pCurrentEntity)
 		for (int bone=0; bone<m_pStudioHeader->numbones; ++bone)
-			if (!stricmp(pbones[bone].name,"v_weapon.aug_Parent") || !stricmp(pbones[bone].name,"v_weapon.sg556_Parent"))
-				V_ObserveADSSight(m_pCurrentEntity,pbones[bone].name,(*m_pbonetransform)[bone]);
+			V_ObserveADSSight(m_pCurrentEntity,pbones[bone].name,(*m_pbonetransform)[bone]);
 
 }
 
@@ -1301,7 +1390,8 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 			g_viewFlow.firstEvents=g_viewFirstEvents;
 			m_pCurrentEntity->latched.sequencetime=g_viewFirstEvents ? m_pCurrentEntity->curstate.animtime : -1.0f;
 		}
-		IEngineStudio.StudioClientEvents();
+		if (!bIsViewModel || !ViewModelReloadEvents(m_pCurrentEntity,m_pStudioHeader,m_clTime))
+			IEngineStudio.StudioClientEvents();
 		if (bIsViewModel) { m_pCurrentEntity->latched.sequencetime=savedSequenceTime; g_viewFirstEvents=false; }
 
 		if (m_pCurrentEntity->index > 0)

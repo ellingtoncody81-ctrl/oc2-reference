@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_glock18, CGLOCK18, CCSGLOCK18)
 
@@ -50,12 +51,13 @@ void CGLOCK18::Precache()
 
 int CGLOCK18::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::Glock18);
 	p->pszName = STRING(pev->classname);
-	p->pszAmmo1 = "9mm";
-	p->iMaxAmmo1 = MAX_AMMO_9MM;
+	p->pszAmmo1 = "9mmglock";
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = nullptr;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = GLOCK18_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 1;
 	p->iPosition = 2;
 	p->iId = m_iId = WEAPON_GLOCK18;
@@ -155,6 +157,7 @@ void CGLOCK18::PrimaryAttack()
 
 void CGLOCK18::GLOCK18Fire(float flSpread, float flCycleTime, BOOL bFireBurst)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -263,7 +266,7 @@ void CGLOCK18::Reload()
 {
 	int iResult;
 #ifndef REGAMEDLL_FIXES
-	if (m_pPlayer->ammo_9mm <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 #endif
 
@@ -326,4 +329,9 @@ void CGLOCK18::WeaponIdle()
 
 		SendWeaponAnim(iAnim, UseDecrement() != FALSE);
 	}
+}
+
+float CGLOCK18::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::Glock18).speed[oc2_weapon::Mode(17,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

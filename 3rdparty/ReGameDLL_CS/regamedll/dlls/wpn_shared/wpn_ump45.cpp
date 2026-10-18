@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_ump45, CUMP45, CCSUMP45)
 
@@ -40,16 +41,17 @@ void CUMP45::Precache()
 
 int CUMP45::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::UMP45);
 	p->pszName = STRING(pev->classname);
 #ifdef REGAMEDLL_FIXES
 	p->pszAmmo1 = "45acp";
 #else
 	p->pszAmmo1 = "45ACP";
 #endif
-	p->iMaxAmmo1 = MAX_AMMO_45ACP;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = nullptr;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = UMP45_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 0;
 	p->iPosition = 15;
 	p->iId = m_iId = WEAPON_UMP45;
@@ -82,6 +84,7 @@ void CUMP45::PrimaryAttack()
 
 void CUMP45::UMP45Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -168,7 +171,7 @@ void CUMP45::UMP45Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 void CUMP45::Reload()
 {
 #ifndef REGAMEDLL_FIXES
-	if (m_pPlayer->ammo_45acp <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 #endif
 
@@ -193,4 +196,9 @@ void CUMP45::WeaponIdle()
 
 	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
 	SendWeaponAnim(UMP45_IDLE1, UseDecrement() != FALSE);
+}
+
+float CUMP45::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::UMP45).speed[oc2_weapon::Mode(12,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

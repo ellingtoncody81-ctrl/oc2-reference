@@ -406,6 +406,7 @@ public:
 
 	bool ShouldDrawScoreboard() const;
 	int RoundScore(int team) const { return team >= 1 && team <= 2 ? m_teamScores[team] : 0; }
+	bool RoundScoreKnown(int team) const { return team >= 1 && team <= 2 && m_teamScoreKnown[team]; }
 
 	CHudUserCmd(ShowScores);
 	CHudUserCmd(HideScores);

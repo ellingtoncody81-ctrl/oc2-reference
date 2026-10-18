@@ -17,6 +17,7 @@
 #include "cbase.h"
 #include "player.h"
 #include "weapons.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_m4a1, CM4A1)
 
@@ -29,6 +30,8 @@ void CM4A1::Spawn(void)
 	m_iId = WEAPON_M4A1;
 	SET_MODEL(edict(), "models/w_m4a1.mdl");
 
+	// CS:GO suppressed variants spawn with the detachable silencer fitted.
+	m_iWeaponState |= WPNSTATE_M4A1_SILENCED;
 	m_iDefaultAmmo = M4A1_DEFAULT_GIVE;
 	m_flAccuracy = 0.2f;
 	m_iShotsFired = 0;
@@ -58,12 +61,13 @@ void CM4A1::Precache()
 
 int CM4A1::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::M4A1S);
 	p->pszName = STRING(pev->classname);
-	p->pszAmmo1 = "556Nato";
-	p->iMaxAmmo1 = MAX_AMMO_556NATO;
+	p->pszAmmo1 = "556natom4a1";
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = NULL;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = M4A1_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 0;
 	p->iPosition = 6;
 	p->iId = m_iId = WEAPON_M4A1;
@@ -89,6 +93,10 @@ BOOL CM4A1::Deploy()
 
 void CM4A1::SecondaryAttack()
 {
+    // The attach/detach sequence leaves the sight line before moving the gun.
+    m_pPlayer->pev->fov=m_pPlayer->m_iFOV=90;
+    m_pPlayer->m_iLastZoom=90;m_pPlayer->m_bResumeZoom=false;
+
 	if (m_iWeaponState & WPNSTATE_M4A1_SILENCED)
 	{
 		m_iWeaponState &= ~WPNSTATE_M4A1_SILENCED;
@@ -142,6 +150,7 @@ void CM4A1::PrimaryAttack()
 
 void CM4A1::M4A1Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -203,7 +212,7 @@ void CM4A1::M4A1Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 #endif
 
 #ifndef REGAMEDLL_FIXES
-	--m_pPlayer->ammo_556nato;
+	--m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType];
 #endif
 
 	PLAYBACK_EVENT_FULL(flag, m_pPlayer->edict(), m_usFireM4A1, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y,
@@ -238,7 +247,7 @@ void CM4A1::M4A1Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 
 void CM4A1::Reload()
 {
-	if (m_pPlayer->ammo_556nato <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 
 	if (DefaultReload(iMaxClip(), ((m_iWeaponState & WPNSTATE_M4A1_SILENCED) == WPNSTATE_M4A1_SILENCED) ? M4A1_RELOAD : M4A1_UNSIL_RELOAD, M4A1_RELOAD_TIME))
@@ -264,4 +273,9 @@ void CM4A1::WeaponIdle()
 
 	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
 	SendWeaponAnim((m_iWeaponState & WPNSTATE_M4A1_SILENCED) == WPNSTATE_M4A1_SILENCED ? M4A1_IDLE : M4A1_UNSIL_IDLE, UseDecrement() != FALSE);
+}
+
+float CM4A1::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::M4A1S).speed[oc2_weapon::Mode(22,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

@@ -194,6 +194,8 @@ extern int g_iPlayerFlags;
 static view_ads::State s_ADS;
 static float s_ADSWorldFov=90.0f,s_ADSObservedTime=-1.0f;
 static float s_ADSScreenX=0,s_ADSScreenY=0,s_ADSScreenRadius=0;
+static float s_ADSFrontX=0,s_ADSFrontY=0;
+static bool s_ADSFrontValid=false;
 static bool s_ADSObserved=false,s_ADSDotVisible=false,s_ADSPaused=false;
 static float s_ADSRelative[3]={0,0,0};
 
@@ -221,7 +223,7 @@ float V_ADSWorldFOV(float rawFov,float time)
 void V_ApplyADSBody(cl_entity_s *entity)
 {
 	const view_ads::Profile *profile=view_ads::Get(s_ADS.weapon);
-	if (!profile || !entity || entity!=gEngfuncs.GetViewModel() || !entity->model ||
+	if (!profile || profile->radius<=0 || !entity || entity!=gEngfuncs.GetViewModel() || !entity->model ||
 		stricmp(entity->model->name,profile->model)) return;
 	// Both converted assets have scope bodypart base=1, models={lens,blank}.
 	// The opaque baked lens must open before showing the real world through it.
@@ -246,6 +248,14 @@ void V_ObserveADSSight(cl_entity_s *entity,const char *bone,const float matrix[3
 	s_ADSScreenX=screen[0]*ScreenWidth*.5f;s_ADSScreenY=screen[1]*ScreenHeight*.5f;
 	const float dx=(screenEdge[0]-screen[0])*ScreenWidth*.5f,dy=(screenEdge[1]-screen[1])*ScreenHeight*.5f;
 	s_ADSScreenRadius=sqrtf(dx*dx+dy*dy);
+	float front[3];
+	for (int axis=0;axis<3;++axis)
+	{
+		front[axis]=matrix[axis][3];
+		for (int c=0;c<3;++c) front[axis]+=matrix[axis][c]*profile->localFront[c];
+	}
+	s_ADSFrontValid=!gEngfuncs.pTriAPI->WorldToScreen(front,screen);
+	s_ADSFrontX=screen[0]*ScreenWidth*.5f;s_ADSFrontY=screen[1]*ScreenHeight*.5f;
 	s_ADSObservedTime=gEngfuncs.GetClientTime();
 }
 
@@ -255,6 +265,8 @@ bool V_DrawADSCrosshair()
 	if (!view_ads::Supported(s_ADS.weapon) || s_ADS.amount<=.5f || g_iUser1 ||
 		gHUD.m_Health.m_iHealth<=0 || CL_IsThirdPerson()) return false;
 	if (gHUD.m_iHideHUDDisplay&(HIDEHUD_CROSSHAIR|HIDEHUD_ALL)) return true;
+	const auto *profile=view_ads::Get(s_ADS.weapon);
+	if (profile && profile->radius<=0) return true; // actual iron sights, no fabricated dot
 	// A Source-style collimated dot stays on the aiming ray, but is visible only
 	// inside the actually rendered aperture (including recoil and left hand).
 	const float age=gEngfuncs.GetClientTime()-s_ADSObservedTime;
@@ -278,6 +290,7 @@ static void V_DumpADS()
 		s_ADS.lastTime,s_ADS.weapon,s_ADS.amount,view_ads::Gain(s_ADS.amount),int(s_ADS.sighted),g_lastFOV,s_ADSWorldFov,
 		int(s_ADSObserved),s_ADSScreenX,s_ADSScreenY,s_ADSScreenRadius,gEngfuncs.GetClientTime()-s_ADSObservedTime,
 		view?view->curstate.body:0,s_ADSRelative[0],s_ADSRelative[1],s_ADSRelative[2],int(s_ADSDotVisible),int(s_ADSPaused));
+	gEngfuncs.Con_Printf("aimline: front_valid=%d front_px=%.3f/%.3f\n",int(s_ADSFrontValid),s_ADSFrontX,s_ADSFrontY);
 }
 
 static void V_PositionADS(ref_params_s *params,cl_entity_s *view)
@@ -292,12 +305,29 @@ static void V_PositionADS(ref_params_s *params,cl_entity_s *view)
 	// cannot move an aimed scope away from the shooting ray. Model-space Y is
 	// left; the GoldSrc right vector has the opposite sign. X remains forward.
 	const float front=gHUD.viewmodel_offset_y?view_ads::Clamp(gHUD.viewmodel_offset_y->value,-8,8):0;
+    // Compose the measured sight-line rotation with the camera, rather than
+    // adding Euler angles (which drifts when looking up/down). Studio flips
+    // entity pitch; mirror-conjugating yaw/roll keeps left-hand alignment.
+    float camera[3][4],correction[3][4],aimed[3][4];
+    vec3_t offset={profile->angles[0],profile->angles[1]*hand,profile->angles[2]*hand};
+    AngleMatrix(params->viewangles,camera);AngleMatrix(offset,correction);
+    for (int row=0;row<3;++row)
+        for (int column=0;column<3;++column)
+        {
+            aimed[row][column]=0;
+            for (int axis=0;axis<3;++axis) aimed[row][column]+=camera[row][axis]*correction[axis][column];
+        }
+    const float horizontal=sqrtf(aimed[0][0]*aimed[0][0]+aimed[1][0]*aimed[1][0]);
+    vec3_t wantedAngles={atan2f(aimed[2][0],horizontal)*180.0f/M_PI,
+        atan2f(aimed[1][0],aimed[0][0])*180.0f/M_PI,
+        atan2f(aimed[2][1],aimed[2][2])*180.0f/M_PI};
+
 	for(int axis=0;axis<3;++axis)
 	{
 		const float target=params->vieworg[axis]+forward[axis]*front+
 			right[axis]*profile->center[1]*hand-up[axis]*profile->center[2];
 		view->origin[axis]+=(target-view->origin[axis])*weight;
-		float wanted=params->viewangles[axis]*(axis==PITCH?-1.0f:1.0f);
+		float wanted=wantedAngles[axis];
 		float delta=wanted-view->angles[axis];
 		while(delta>180)delta-=360;
 		while(delta<-180)delta+=360;
@@ -853,7 +883,12 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 	if( !bVmActive || s_flBobContextTime < 0.0f || pparams->time < s_flBobContextTime
 		|| pparams->time - s_flBobContextTime > 1.0f || pparams->viewentity != s_iBobContextEntity )
 	{
+		const bool keepADS=bVmActive && s_flBobContextTime>=0 && pparams->viewentity==s_iBobContextEntity && s_ADS.weapon==iWeaponId;
+		const view_ads::State savedADS=s_ADS;
 		V_ResetViewModelEffects();
+		// A local pause can correct the clock before its pause flag arrives.
+		// Other effects keep their established reset; ADS retains its pose.
+		if (keepADS) { s_ADS=savedADS;s_ADS.lastTime=pparams->time; }
 		s_BobState.last_bob_time = pparams->time - pparams->frametime;
 		bSameBobFrame = false;
 	}
@@ -864,6 +899,93 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 		sqrtf( pparams->simvel[0] * pparams->simvel[0] + pparams->simvel[1] * pparams->simvel[1] ),
 		pparams->onground != 0, ( g_iPlayerFlags & FL_DUCKING ) != 0, g_lastFOV > 0.0f ? g_lastFOV : 90.0f };
 	oc2_weapon_spread::SpreadOutput spread = oc2_weapon_spread::Calculate( spreadInput );
+
+	// CS:GO smooths stairs in BOTH directions. The GoldSrc movement code
+	// only probes 2 units below the hull; inspect a full step for presentation
+	// so a continuous downhill surface does not appear as repeated falls.
+	view_stairs::Input stairInput;
+	stairInput.time = pparams->time;
+	stairInput.frame_time = pparams->frametime;
+	stairInput.x = pparams->simorg[0]; stairInput.y = pparams->simorg[1];
+	stairInput.z = pparams->simorg[2]; stairInput.view_height = pparams->viewheight[2];
+	stairInput.vertical_speed = pparams->simvel[2];
+	stairInput.grounded = pparams->onground != 0;
+	stairInput.paused = pparams->paused != 0;
+	stairInput.jumping = pparams->cmd && ( pparams->cmd->buttons & IN_JUMP ) != 0;
+	stairInput.enabled = bVmActive && !pparams->smoothing && pparams->waterlevel < 2
+		&& !gEngfuncs.IsNoClipping() && ent && ent->curstate.movetype == MOVETYPE_WALK;
+	stairInput.step_size = pparams->movevars ? pparams->movevars->stepsize : 18.0f;
+	if( stairInput.step_size > 18.0f ) stairInput.step_size = 18.0f;
+	stairInput.static_support = false;
+	stairInput.support_z = stairInput.z;
+	Vector stairNormal(0,0,0);
+	int stairTraceEntity=-1;
+	int stairTraceFlags=0;
+	const bool smoothStairs = cl_smoothstairs && cl_smoothstairs->value != 0.0f;
+	if( smoothStairs && stairInput.enabled && stairInput.step_size > 0.0f )
+	{
+		const int hull = gEngfuncs.pEventAPI->EV_LocalPlayerDucking() ? 1 : 0;
+		Vector start = pparams->simorg, end = pparams->simorg;
+		end[2] += 2.0f;
+		pmtrace_t upTrace = *gEngfuncs.PM_TraceLine( start, end, PM_TRACELINE_PHYSENTSONLY, hull, -1 );
+		stairTraceFlags=(upTrace.startsolid?1:0)|(upTrace.allsolid?2:0);
+		if( !upTrace.startsolid && !upTrace.allsolid )
+		{
+			// PM_TraceLine returns a shared result; copy the first trace before
+			// calling it again. The API restores its temporary usehull value.
+			start = upTrace.endpos;
+			end = pparams->simorg; end[2] -= stairInput.step_size;
+			pmtrace_t downTrace = *gEngfuncs.PM_TraceLine( start, end, PM_TRACELINE_PHYSENTSONLY, hull, -1 );
+			stairNormal=downTrace.plane.normal;
+			stairTraceEntity=downTrace.ent;
+			stairTraceFlags|=(downTrace.startsolid?4:0)|(downTrace.allsolid?8:0);
+			physent_t *ground = gEngfuncs.pEventAPI->EV_GetPhysent( downTrace.ent );
+			if( downTrace.fraction > 0.0f && downTrace.fraction < 1.0f && !downTrace.startsolid
+				&& !downTrace.allsolid && downTrace.plane.normal[2] >= 0.7f
+				&& ground && !ground->player && ground->movetype == MOVETYPE_NONE )
+			{
+				stairInput.static_support = true;
+				stairInput.support_z = downTrace.endpos[2];
+				stairInput.normal_x = downTrace.plane.normal[0];
+				stairInput.normal_y = downTrace.plane.normal[1];
+				stairInput.normal_z = downTrace.plane.normal[2];
+				stairInput.support_entity = downTrace.ent;
+			}
+		}
+	}
+	view_stairs::Output stairOutput;
+	int stairSeamSamples=0;
+	const view_stairs::SeamProbe seam=view_stairs::DescribeSeam(s_ViewStairs,stairInput);
+	if( smoothStairs && seam.required )
+	{
+		const float dx=stairInput.x-s_ViewStairs.x,dy=stairInput.y-s_ViewStairs.y;
+		const int intervals=bound(2,int(ceilf(sqrtf(dx*dx+dy*dy)*2.0f)),64);
+		const int hull=gEngfuncs.pEventAPI->EV_LocalPlayerDucking()?1:0;
+		stairInput.seam_verified=true;
+		// A plane intersection can lie past the end of the real face. Verify
+		// both sides of that join AND the intervening segment against collision
+		// geometry. At most 65 probes, only when the support normal changes;
+		// coplanar ramp frames retain the original two traces. PM_TraceLine
+		// saves/restores usehull internally for every call.
+		for( int sample=-2;sample<intervals-1 && stairInput.seam_verified;++sample )
+		{
+			const float fraction=sample==-2?seam.crossing*.5f:sample==-1?(seam.crossing+1)*.5f:
+				float(sample+1)/intervals;
+			const float support=view_stairs::SeamHeight(s_ViewStairs,stairInput,seam,fraction);
+			Vector start(s_ViewStairs.x+dx*fraction,s_ViewStairs.y+dy*fraction,support+2.0f);
+			Vector end=start;end[2]=support-2.0f;
+			const pmtrace_t trace=*gEngfuncs.PM_TraceLine(start,end,PM_TRACELINE_PHYSENTSONLY,hull,-1);
+			const physent_t *ground=gEngfuncs.pEventAPI->EV_GetPhysent(trace.ent);
+			++stairSeamSamples;
+			stairInput.seam_verified=trace.fraction>0 && trace.fraction<1 && !trace.startsolid && !trace.allsolid
+				&& ground && !ground->player && ground->movetype==MOVETYPE_NONE
+				&& view_stairs::MatchSeamSample(s_ViewStairs,stairInput,seam,fraction,trace.endpos[2],
+					trace.plane.normal[0],trace.plane.normal[1],trace.plane.normal[2],trace.ent);
+		}
+	}
+	if( smoothStairs ) stairOutput = view_stairs::Step( s_ViewStairs, stairInput );
+	const bool visualGrounded = pparams->onground != 0 || stairOutput.continuous_slope;
+
 
 	// transform the view offset by the model's matrix to get the offset from
 	// model origin for the view
@@ -1091,7 +1213,7 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 
 		in.vx               = pparams->simvel[0];
 		in.vy               = pparams->simvel[1];
-		in.onground         = pparams->onground != 0;
+		in.onground         = visualGrounded;
 		in.ducking          = ( g_iPlayerFlags & FL_DUCKING ) != 0;
 		in.in_reload        = iInReload != 0;
 		in.is_elite         = ( iWeaponId == WEAPON_ELITE );
@@ -1284,52 +1406,8 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 
 	V_DropPunchAngle ( pparams->frametime, (float *)&ev_punchangle );
 #endif
-	// CS:GO smooths stairs in BOTH directions. The GoldSrc movement code
-	// only probes 2 units below the hull; inspect a full step for presentation
-	// so a continuous downhill surface does not appear as repeated falls.
-	view_stairs::Input stairInput;
-	stairInput.time = pparams->time;
-	stairInput.frame_time = pparams->frametime;
-	stairInput.x = pparams->simorg[0]; stairInput.y = pparams->simorg[1];
-	stairInput.z = pparams->simorg[2]; stairInput.view_height = pparams->viewheight[2];
-	stairInput.vertical_speed = pparams->simvel[2];
-	stairInput.grounded = pparams->onground != 0;
-	stairInput.paused = pparams->paused != 0;
-	stairInput.jumping = pparams->cmd && ( pparams->cmd->buttons & IN_JUMP ) != 0;
-	stairInput.enabled = bVmActive && !pparams->smoothing && pparams->waterlevel < 2
-		&& !gEngfuncs.IsNoClipping() && ent && ent->curstate.movetype == MOVETYPE_WALK;
-	stairInput.step_size = pparams->movevars ? pparams->movevars->stepsize : 18.0f;
-	if( stairInput.step_size > 18.0f ) stairInput.step_size = 18.0f;
-	stairInput.static_support = false;
-	stairInput.support_z = stairInput.z;
-	const bool smoothStairs = cl_smoothstairs && cl_smoothstairs->value != 0.0f;
-	if( smoothStairs && stairInput.enabled && stairInput.step_size > 0.0f )
-	{
-		const int hull = gEngfuncs.pEventAPI->EV_LocalPlayerDucking() ? 1 : 0;
-		Vector start = pparams->simorg, end = pparams->simorg;
-		end[2] += 2.0f;
-		pmtrace_t upTrace = *gEngfuncs.PM_TraceLine( start, end, PM_TRACELINE_PHYSENTSONLY, hull, -1 );
-		if( !upTrace.startsolid && !upTrace.allsolid )
-		{
-			// PM_TraceLine returns a shared result; copy the first trace before
-			// calling it again. The API restores its temporary usehull value.
-			start = upTrace.endpos;
-			end = pparams->simorg; end[2] -= stairInput.step_size;
-			pmtrace_t downTrace = *gEngfuncs.PM_TraceLine( start, end, PM_TRACELINE_PHYSENTSONLY, hull, -1 );
-			physent_t *ground = gEngfuncs.pEventAPI->EV_GetPhysent( downTrace.ent );
-			if( downTrace.fraction > 0.0f && downTrace.fraction < 1.0f && !downTrace.startsolid
-				&& !downTrace.allsolid && downTrace.plane.normal[2] >= 0.7f
-				&& ground && !ground->player && ground->movetype == MOVETYPE_NONE )
-			{
-				stairInput.static_support = true;
-				stairInput.support_z = downTrace.endpos[2];
-			}
-		}
-	}
-	view_stairs::Output stairOutput;
 	if( smoothStairs )
 	{
-		stairOutput = view_stairs::Step( s_ViewStairs, stairInput );
 		// One common translation keeps the weapon's position relative to the
 		// eye unchanged, just as Source passes its finished eye to the model.
 		pparams->vieworg[2] += stairOutput.offset;
@@ -1388,7 +1466,7 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 	effectInput.time = pparams->time;
 	effectInput.frame_time = pparams->frametime;
 	effectInput.vertical_speed = pparams->simvel[2];
-	effectInput.grounded = pparams->onground != 0;
+	effectInput.grounded = visualGrounded;
 	effectInput.active = bVmActive && view->model != NULL;
 	effectInput.paused = pparams->paused != 0;
 	effectInput.left_hand = gHUD.cl_righthand && gHUD.cl_righthand->value == 0.0f;
@@ -1531,12 +1609,18 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		&& bVmActive && !pparams->paused )
 		gEngfuncs.Con_Printf( "stairsdbg: t %.5f mode %d pos %.3f %.3f %.3f vz %.3f "
 			"ground %d support %d track %d target %.3f offset %.3f eye %.3f rel %.3f "
-			"vh %.3f move %d jump %d\n", pparams->time, (int)smoothStairs,
+			"vh %.3f move %d jump %d normal %.6f %.6f %.6f probe %.6f ent %d "
+			"punch %.4f %.4f %.4f angles %.4f %.4f %.4f traceflags %d slope %d visualground %d landdip %.6f planedelta %.6f seam_samples %d seam_ok %d\n", pparams->time, (int)smoothStairs,
 			pparams->simorg[0], pparams->simorg[1], pparams->simorg[2], pparams->simvel[2],
 			(int)stairInput.grounded, (int)stairInput.static_support, (int)stairOutput.supported,
 			stairOutput.target_z, stairOutput.offset, pparams->vieworg[2],
 			view->origin[2] - pparams->vieworg[2], pparams->viewheight[2],
-			ent ? ent->curstate.movetype : -1, (int)stairInput.jumping );
+			ent ? ent->curstate.movetype : -1, (int)stairInput.jumping,
+			stairNormal[0],stairNormal[1],stairNormal[2],stairInput.support_z,stairTraceEntity,
+			pparams->punchangle[0],pparams->punchangle[1],pparams->punchangle[2],
+			pparams->viewangles[0],pparams->viewangles[1],pparams->viewangles[2],stairTraceFlags,
+			int(stairOutput.continuous_slope),int(visualGrounded),effects.land_dip,stairOutput.plane_delta,
+			stairSeamSamples,int(stairInput.seam_verified) );
 	lasttime = pparams->time;
 
 	v_origin = pparams->vieworg;

@@ -27,6 +27,7 @@
 */
 #include "events.h"
 #include "wpn_shared.h"
+#include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
 
 static const char *SOUNDS_NAME = "weapons/elite_fire.wav";
@@ -86,8 +87,8 @@ void EV_FireElite( event_args_s *args, bool isRight )
 	VectorCopy( forward, vecAiming );
 	Vector vSpread;
 	
-	vSpread.x = args->fparam2;
-	vSpread.y = args->iparam1 / 100.0f;
+	vSpread.x = args->fparam2 / 1024;
+	vSpread.y = args->iparam1 / 102400.0f;
 
 	if( isRight )
 	{
@@ -101,7 +102,7 @@ void EV_FireElite( event_args_s *args, bool isRight )
 	EV_HLDM_FireBullets( idx,
 		forward, right,	up,
 		1, vecSrc, vecAiming,
-		vSpread, 8192.0, BULLET_PLAYER_9MM,
+		vSpread, oc2_weapon::Get(oc2_weapon::DualBerettas).range, BULLET_PLAYER_9MM,
 		2 );
 }
 

@@ -20,7 +20,8 @@ constexpr float grenadeNameOffset = 129.6f;
 constexpr float slotHeight = 16.0f;
 constexpr float slotOffset = 31.0f;
 constexpr float cardWidth = 468.0f;
-constexpr float cardHeight = 180.0f;
+// OC2 card canvases are 768x268; preserve their actual aspect ratio.
+constexpr float cardHeight = cardWidth * (268.0f / 768.0f);
 constexpr float cardBottomMargin = 45.0f;
 constexpr float cardCountHeight = 28.8f;
 constexpr float cardCountOffset = 66.0f;

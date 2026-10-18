@@ -26,6 +26,7 @@
 *
 */
 #include "events.h"
+#include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
 enum scout_e
 {
@@ -67,11 +68,11 @@ void EV_FireScout(event_args_s *args)
 	VectorCopy( forward, vecAiming );
 	Vector vSpread;
 	
-	vSpread.x = args->fparam1 / 1000.0f;
-	vSpread.y = args->fparam2 / 1000.0f;
+	vSpread.x = args->fparam1 / 1024;
+	vSpread.y = args->fparam2 / 1024;
 	EV_HLDM_FireBullets( idx,
 		forward, right,	up,
 		1, vecSrc, vecAiming,
-		vSpread, 8192.0, BULLET_PLAYER_762MM,
+		vSpread, oc2_weapon::Get(oc2_weapon::SSG08).range, BULLET_PLAYER_762MM,
 		2 );
 }

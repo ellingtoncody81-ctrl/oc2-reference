@@ -270,6 +270,7 @@ public:
 	// Paired prediction/server presentation, using existing animation + idle state.
 	float AnimationDuration(int animation, float fallback) const;
 	void StartInspect();
+	void ToggleAim();
 	bool AdvanceInspect();
 	void AdvanceReload(void); // Ammo insertion event; the sequence-end attack lock remains active.
 	bool DefaultShotgunReload(int iAnim, int iStartAnim, float fDelay, float fStartDelay,
@@ -459,7 +460,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 221; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -490,7 +491,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 240; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void SecondaryAttack(void);
@@ -588,7 +589,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return m_fMaxSpeed; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_SECONDARY; }
 	void PrimaryAttack(void);
 	void SecondaryAttack(void);
@@ -619,7 +620,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 250; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_SECONDARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -650,7 +651,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 240; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void SecondaryAttack(void);
@@ -681,7 +682,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return m_fMaxSpeed; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_SECONDARY; }
 	void PrimaryAttack(void);
 	void SecondaryAttack(void);
@@ -717,6 +718,7 @@ public:
 	void Holster(int skiplocal);
 	float GetMaxSpeed(void) { return m_fMaxSpeed; }
 	int iItemSlot(void) { return WPNSLOT_GRENADE; }
+	void ItemPostFrame(void);
 	void PrimaryAttack(void);
 	void SecondaryAttack(void);
 	void WeaponIdle(void);
@@ -772,7 +774,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 240; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -803,7 +805,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return m_fMaxSpeed; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_SECONDARY; }
 	void PrimaryAttack(void);
 	void SecondaryAttack(void);
@@ -840,6 +842,7 @@ public:
 	void Holster(int skiplocal);
 	float GetMaxSpeed(void) { return m_fMaxSpeed; }
 	int iItemSlot(void) { return WPNSLOT_GRENADE; }
+	void ItemPostFrame(void);
 	void PrimaryAttack(void);
 	void SecondaryAttack(void);
 	void WeaponIdle(void);
@@ -907,7 +910,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 220; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -938,7 +941,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 220; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -966,7 +969,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 230; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void SecondaryAttack(void);
@@ -998,7 +1001,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 250; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -1029,7 +1032,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 220; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -1060,7 +1063,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return m_fMaxSpeed; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_SECONDARY; }
 	void PrimaryAttack(void);
 	void SecondaryAttack(void);
@@ -1091,7 +1094,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 245; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -1221,6 +1224,7 @@ public:
 	void Holster(int skiplocal);
 	float GetMaxSpeed(void) { return m_fMaxSpeed; }
 	int iItemSlot(void) { return WPNSLOT_GRENADE; }
+	void ItemPostFrame(void);
 	void PrimaryAttack(void);
 	void SecondaryAttack(void);
 	void WeaponIdle(void);
@@ -1248,7 +1252,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 240; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -1279,7 +1283,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 250; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);
@@ -1310,7 +1314,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 250; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_SECONDARY; }
 	void PrimaryAttack(void);
 	void SecondaryAttack(void);
@@ -1341,7 +1345,7 @@ public:
 	void Precache(void);
 	int GetItemInfo(ItemInfo *p);
 	BOOL Deploy(void);
-	float GetMaxSpeed(void) { return 240; }
+	float GetMaxSpeed(void);
 	int iItemSlot(void) { return WPNSLOT_PRIMARY; }
 	void PrimaryAttack(void);
 	void Reload(void);

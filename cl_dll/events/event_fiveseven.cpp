@@ -27,6 +27,7 @@
 */
 #include "events.h"
 #include "wpn_shared.h"
+#include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
 
 static const char *SOUNDS_NAME = "weapons/fiveseven-1.wav";
@@ -85,11 +86,11 @@ void EV_Fire57(event_args_t *args)
 	VectorCopy( forward, vecAiming );
 	Vector vSpread;
 	
-	vSpread.x = args->fparam1;
-	vSpread.y = args->fparam2;
+	vSpread.x = args->fparam1 / 1024;
+	vSpread.y = args->fparam2 / 1024;
 	EV_HLDM_FireBullets( idx,
 		forward, right,	up,
 		1, vecSrc, vecAiming,
-		vSpread, 8192.0, BULLET_PLAYER_57MM,
+		vSpread, oc2_weapon::Get(oc2_weapon::FiveSeven).range, BULLET_PLAYER_57MM,
 		2 );
 }

@@ -27,6 +27,7 @@
 */
 #include "events.h"
 #include "wpn_shared.h"
+#include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
 
 static const char *SOUNDS_NAME[] =
@@ -43,8 +44,8 @@ void EV_FireGALIL( event_args_t *args )
 	int idx = args->entindex;
 	Vector origin( args->origin );
 	Vector angles(
-		args->iparam1 / 10000000.0f + args->angles[0],
-		args->iparam2 / 10000000.0f + args->angles[1],
+		args->iparam1 / 100.0f + args->angles[0],
+		args->iparam2 / 100.0f + args->angles[1],
 		args->angles[2]
 		);
 	Vector velocity( args->velocity );
@@ -81,11 +82,11 @@ void EV_FireGALIL( event_args_t *args )
 	VectorCopy( forward, vecAiming );
 	Vector vSpread;
 
-	vSpread.x = args->fparam1;
-	vSpread.y = args->fparam2;
+	vSpread.x = args->fparam1 / 1024;
+	vSpread.y = args->fparam2 / 1024;
 	EV_HLDM_FireBullets( idx,
 		forward, right,	up,
 		1, vecSrc, vecAiming,
-		vSpread, 8192.0, BULLET_PLAYER_556MM,
+		vSpread, oc2_weapon::Get(oc2_weapon::GalilAR).range, BULLET_PLAYER_556MM,
 		2 );
 }

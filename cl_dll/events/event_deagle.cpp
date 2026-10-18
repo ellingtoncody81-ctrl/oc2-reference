@@ -27,6 +27,7 @@
 */
 #include "events.h"
 #include "wpn_shared.h"
+#include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
 
 static const char *SOUNDS_NAME[] =
@@ -83,11 +84,11 @@ void EV_FireDEAGLE( event_args_t *args )
 	PLAY_EVENT_SOUND( SOUNDS_NAME[Com_RandomLong(0, 1)] );
 
 	EV_GetGunPosition( args, vecSrc, origin );
-	Vector vSpread( args->fparam1, args->fparam2, 0.0f );
+	Vector vSpread( args->fparam1 / 1024, args->fparam2 / 1024, 0.0f );
 	
 	EV_HLDM_FireBullets( idx,
 		forward, right,	up,
 		1, vecSrc, forward,
-		vSpread, 8192.0, BULLET_PLAYER_50AE,
+		vSpread, oc2_weapon::Get(oc2_weapon::Deagle).range, BULLET_PLAYER_50AE,
 		2 );
 }

@@ -27,6 +27,7 @@
 */
 #include "events.h"
 #include "wpn_shared.h"
+#include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
 static const char *SOUNDS_NAME = "weapons/aug-1.wav";
 
@@ -72,11 +73,11 @@ void EV_FireAUG( struct event_args_s *args )
 	VectorCopy( forward, vecAiming );
 	Vector vSpread;
 	
-	vSpread.x = args->fparam1;
-	vSpread.y = args->fparam2;
+	vSpread.x = args->fparam1 / 1024;
+	vSpread.y = args->fparam2 / 1024;
 	EV_HLDM_FireBullets( idx,
 		forward, right,	up,
 		1, vecSrc, vecAiming,
-		vSpread, 8192.0, BULLET_PLAYER_556MM,
+		vSpread, oc2_weapon::Get(oc2_weapon::AUG).range, BULLET_PLAYER_556MM,
 		2 );
 }

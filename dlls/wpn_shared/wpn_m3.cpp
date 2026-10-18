@@ -18,6 +18,7 @@
 #include "player.h"
 #include "weapons.h"
 #include "oc2_weapon_params.h"
+#include "oc2_gunshot.h"
 
 namespace
 {
@@ -179,4 +180,9 @@ void CM3::WeaponIdle()
 		SendWeaponAnim(M3_IDLE, UseDecrement() != FALSE);
 		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20;
 	}
+}
+
+float CM3::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::Nova).speed[oc2_weapon::Mode(21,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

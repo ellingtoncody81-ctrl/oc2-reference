@@ -1,5 +1,6 @@
 #include "precompiled.h"
 #include "oc2_weapon_params.h"
+#include "oc2_gunshot.h"
 
 namespace
 {
@@ -189,5 +190,5 @@ void CSG552::WeaponIdle()
 
 float CSG552::GetMaxSpeed()
 {
-	return m_pPlayer->pev->fov == DEFAULT_FOV ? SG552_MAX_SPEED : SG552_MAX_SPEED_ZOOM;
+	return oc2_weapon::Get(oc2_weapon::SG553).speed[oc2_weapon::Mode(27,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

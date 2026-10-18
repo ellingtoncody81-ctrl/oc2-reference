@@ -2066,26 +2066,26 @@ void PanelWeaponName(const WEAPON *weapon, char *text, size_t size)
 	switch (weapon->iId)
 	{
 	case WEAPON_P228: name = "P250"; break;
-	case WEAPON_SCOUT: name = "Scout"; break;
+	case WEAPON_SCOUT: name = "SSG 08"; break;
 	case WEAPON_HEGRENADE: name = "HE Grenade"; break;
 	case WEAPON_XM1014: name = "XM1014"; break;
 	case WEAPON_C4: name = "C4"; break;
 	case WEAPON_MAC10: name = "MAC-10"; break;
 	case WEAPON_AUG: name = "AUG"; break;
 	case WEAPON_SMOKEGRENADE: name = "Smoke Grenade"; break;
-	case WEAPON_ELITE: name = "Dual Elites"; break;
+	case WEAPON_ELITE: name = "Dual Berettas"; break;
 	case WEAPON_FIVESEVEN: name = "Five-SeveN"; break;
 	case WEAPON_UMP45: name = "UMP-45"; break;
-	case WEAPON_SG550: name = "SG550"; break;
-	case WEAPON_GALIL: name = "Galil"; break;
+	case WEAPON_SG550: name = "SCAR-20"; break;
+	case WEAPON_GALIL: name = "Galil AR"; break;
 	case WEAPON_FAMAS: name = "FAMAS"; break;
-	case WEAPON_USP: name = "USP"; break;
+	case WEAPON_USP: name = "USP-S"; break;
 	case WEAPON_GLOCK18: name = "Glock-18"; break;
 	case WEAPON_AWP: name = "AWP"; break;
 	case WEAPON_MP5N: name = "MP7"; break;
 	case WEAPON_M249: name = "M249"; break;
 	case WEAPON_M3: name = "Nova"; break;
-	case WEAPON_M4A1: name = "M4A1"; break;
+	case WEAPON_M4A1: name = "M4A1-S"; break;
 	case WEAPON_TMP: name = "MP9"; break;
 	case WEAPON_G3SG1: name = "G3SG1"; break;
 	case WEAPON_FLASHBANG: name = "Flashbang"; break;

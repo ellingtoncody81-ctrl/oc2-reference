@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_g3sg1, CG3SG1, CCSG3SG1)
 
@@ -40,12 +41,13 @@ void CG3SG1::Precache()
 
 int CG3SG1::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::G3SG1);
 	p->pszName = STRING(pev->classname);
 	p->pszAmmo1 = "762Nato";
-	p->iMaxAmmo1 = MAX_AMMO_762NATO;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = nullptr;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = G3SG1_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 0;
 	p->iPosition = 3;
 	p->iId = m_iId = WEAPON_G3SG1;
@@ -108,6 +110,7 @@ void CG3SG1::PrimaryAttack()
 
 void CG3SG1::G3SG1Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -199,7 +202,7 @@ void CG3SG1::G3SG1Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 void CG3SG1::Reload()
 {
 #ifndef REGAMEDLL_FIXES
-	if (m_pPlayer->ammo_762nato <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 #endif
 
@@ -213,11 +216,6 @@ void CG3SG1::Reload()
 			m_pPlayer->m_iFOV = m_pPlayer->pev->fov = 15;
 			SecondaryAttack();
 		}
-
-#ifdef REGAMEDLL_FIXES
-		// G3SG1_RELOAD_TIME == 3.5 default model "reload" animation time 4.7 (frames 141 / fps 30)
-		m_flTimeWeaponIdle = m_flTimeWeaponIdle + 1.2f;
-#endif
 
 	}
 }
@@ -239,5 +237,5 @@ void CG3SG1::WeaponIdle()
 
 float CG3SG1::GetMaxSpeed()
 {
-	return (m_pPlayer->m_iFOV == DEFAULT_FOV) ? G3SG1_MAX_SPEED : G3SG1_MAX_SPEED_ZOOM;
+	return oc2_weapon::Get(oc2_weapon::G3SG1).speed[oc2_weapon::Mode(24,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

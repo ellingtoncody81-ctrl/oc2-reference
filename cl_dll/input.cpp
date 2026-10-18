@@ -504,6 +504,7 @@ void IN_Cancel(void)
 // these converted resources have no Source AE_BEGIN_TAUNT_LOOP event.
 void IN_LookAtWeapon(void) { in_impulse = 180; }
 void IN_EndLookAtWeapon(void) {}
+void IN_Ironsight(void) { in_impulse=181; }
 extern void HUD_WeaponPresentationDump();
 
 void IN_Impulse (void)
@@ -953,6 +954,7 @@ void InitInput (void)
 	gEngfuncs.pfnAddCommand ("+jump", IN_JumpDown);
 	gEngfuncs.pfnAddCommand ("-jump", IN_JumpUp);
 	gEngfuncs.pfnAddCommand ("impulse", IN_Impulse);
+	gEngfuncs.pfnAddCommand ("ironsight", IN_Ironsight);
 	gEngfuncs.pfnAddCommand ("lookatweapon", IN_LookAtWeapon);
 	gEngfuncs.pfnAddCommand ("+lookatweapon", IN_LookAtWeapon);
 	gEngfuncs.pfnAddCommand ("-lookatweapon", IN_EndLookAtWeapon);

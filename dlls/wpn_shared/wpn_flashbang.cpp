@@ -17,11 +17,13 @@
 #include "cbase.h"
 #include "player.h"
 #include "weapons.h"
+#include "oc2_timed_grenade.h"
 
 LINK_ENTITY_TO_CLASS(weapon_flashbang, CFlashbang)
 
 void CFlashbang::Spawn(void)
 {
+	oc2_grenade::Reset(m_flStartThrow,m_flReleaseThrow,m_flLastFire);
 	pev->classname = MAKE_STRING("weapon_flashbang");
 
 	Precache();
@@ -71,6 +73,7 @@ int CFlashbang::GetItemInfo(ItemInfo *p)
 
 BOOL CFlashbang::Deploy(void)
 {
+	oc2_grenade::Reset(m_flStartThrow,m_flReleaseThrow,m_flLastFire);
 	m_flReleaseThrow = -1.0f;
 	m_fMaxSpeed = FLASHBANG_MAX_SPEED;
 
@@ -85,6 +88,7 @@ BOOL CFlashbang::Deploy(void)
 
 void CFlashbang::Holster(int skiplocal)
 {
+	oc2_grenade::Reset(m_flStartThrow,m_flReleaseThrow,m_flLastFire);
 	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + 0.5f;
 
 	if (!m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
@@ -99,19 +103,8 @@ void CFlashbang::Holster(int skiplocal)
 
 void CFlashbang::PrimaryAttack(void)
 {
-	if (m_iWeaponState & WPNSTATE_SHIELD_DRAWN)
-	{
-		return;
-	}
-
-	if (!m_flStartThrow && m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] > 0)
-	{
-		m_flReleaseThrow = 0;
-		m_flStartThrow = gpGlobals->time;
-
-		SendWeaponAnim(FLASHBANG_PULLPIN, UseDecrement() != FALSE);
-		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 0.5f;
-	}}
+	oc2_grenade::Begin(*this,false);
+}
 
 void CFlashbang::SetPlayerShieldAnim(void)
 {
@@ -177,106 +170,17 @@ bool CFlashbang::ShieldSecondaryFire(int iUpAnim, int iDownAnim)
 
 void CFlashbang::SecondaryAttack(void)
 {
-	ShieldSecondaryFire(SHIELDGUN_DRAW, SHIELDGUN_DRAWN_IDLE);
+	if (!ShieldSecondaryFire(SHIELDGUN_DRAW, SHIELDGUN_DRAWN_IDLE)) oc2_grenade::Begin(*this,true);
+}
+
+void CFlashbang::ItemPostFrame()
+{
+	oc2_grenade::PostFrame(*this,0);
 }
 
 void CFlashbang::WeaponIdle(void)
 {
-	if (m_flReleaseThrow == 0 && m_flStartThrow != 0.0f)
-		m_flReleaseThrow = gpGlobals->time;
-
-	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase())
-		return;
-
-	if (m_flStartThrow)
-	{
-		m_pPlayer->Radio("%!MRAD_FIREINHOLE", "#Fire_in_the_hole");
-
-		Vector angThrow = m_pPlayer->pev->v_angle + m_pPlayer->pev->punchangle;
-
-		if (angThrow.x < 0)
-			angThrow.x = -10 + angThrow.x * ((90 - 10) / 90.0);
-		else
-			angThrow.x = -10 + angThrow.x * ((90 + 10) / 90.0);
-
-		float flVel = (90.0f - angThrow.x) * 6.0f;
-
-		if (flVel > 750.0f)
-			flVel = 750.0f;
-
-		UTIL_MakeVectors(angThrow);
-
-		Vector vecSrc = m_pPlayer->pev->origin + m_pPlayer->pev->view_ofs + gpGlobals->v_forward * 16;
-		Vector vecThrow = gpGlobals->v_forward * flVel + m_pPlayer->pev->velocity;
-
-		CGrenade::ShootTimed(m_pPlayer->pev, vecSrc, vecThrow, 1.5);
-
-		SendWeaponAnim(FLASHBANG_THROW, UseDecrement() != FALSE);
-		SetPlayerShieldAnim();
-
-		// player "shoot" animation
-#ifndef CLIENT_DLL
-		m_pPlayer->SetAnimation(PLAYER_ATTACK1);
-#endif
-
-		m_flStartThrow = 0;
-		m_flNextPrimaryAttack = GetNextAttackDelay(0.5);
-		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 0.75f;
-
-		if (--m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
-		{
-			// just threw last grenade
-			// set attack times in the future, and weapon idle in the future so we can see the whole throw
-			// animation, weapon idle will automatically retire the weapon for us.
-			// ensure that the animation can finish playing
-			m_flTimeWeaponIdle = m_flNextSecondaryAttack = m_flNextPrimaryAttack = GetNextAttackDelay(0.5);
-		}
-
-		ResetPlayerShieldAnim();
-	}
-	else if (m_flReleaseThrow > 0)
-	{
-		// we've finished the throw, restart.
-		m_flStartThrow = 0;
-		RetireWeapon();
-	}
-	else if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType])
-	{
-		int iAnim;
-		float flRand = RANDOM_FLOAT(0, 1);
-
-		if (m_pPlayer->HasShield())
-		{
-			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
-
-			if (m_iWeaponState & WPNSTATE_SHIELD_DRAWN)
-			{
-				SendWeaponAnim(SHIELDREN_IDLE, UseDecrement() != FALSE);
-			}
-		}
-		else
-		{
-			if (flRand <= 0.75)
-			{
-				iAnim = FLASHBANG_IDLE;
-
-				// how long till we do this again.
-				m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + RANDOM_FLOAT(10, 15);
-			}
-			else
-			{
-			#ifdef REGAMEDLL_FIXES
-				iAnim = FLASHBANG_IDLE;
-			#else
-				// TODO: This is a bug?
-				iAnim = *(int *)&flRand;
-			#endif
-				m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 75.0f / 30.0f;
-			}
-
-			SendWeaponAnim(iAnim, UseDecrement() != FALSE);
-		}
-	}
+	oc2_grenade::IdleFrame(*this);
 }
 
 BOOL CFlashbang::CanDeploy(void)
