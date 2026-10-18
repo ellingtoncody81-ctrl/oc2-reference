@@ -127,6 +127,16 @@ inline bool BurstMode(int id,int state) { return (id==17 && (state&(1<<1))) || (
 inline bool RequiresTriggerRelease(int id,int state) { const Params *p=FromId(id);return p && (!p->fullAuto || BurstMode(id,state)); }
 inline bool DirectShotAdapter(int id) { return id==21 || id==19 || id==1 || id==27 || id==23; }
 inline bool SupportsAim(int id) { return FromId(id) && id!=10 && id!=3 && id!=18 && id!=13 && id!=24; }
+// AUG/SG553 keep their native right-button optic. Mouse3 only owns the added sights.
+inline bool SupportsManualAim(int id) { return SupportsAim(id) && id!=8 && id!=27; }
+inline float MaxSpeed(int id,int state,float fov)
+{
+    const Params *p=FromId(id);if (!p) return 250.0f;
+    // CS:GO GetMaxSpeed reads the mode's schema value. Both AUG and SG553 use
+    // 150 in secondary mode; the added iron sights share that cap, not a ratio.
+    if (SupportsManualAim(id) && fov>0 && fov<90) return Get(AUG).speed[1];
+    return p->speed[Mode(id,state,fov)];
+}
 inline float Cycle(int id,int state,float fov)
 {
     const Params *p=FromId(id);if (!p) return .1f;

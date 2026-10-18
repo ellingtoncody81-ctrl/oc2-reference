@@ -178,5 +178,5 @@ void CMP5N::WeaponIdle()
 
 float CMP5N::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::MP7).speed[oc2_weapon::Mode(19,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(19,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }

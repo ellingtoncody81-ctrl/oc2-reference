@@ -875,8 +875,9 @@ void CBasePlayerWeapon::FireRemaining(int &shotsFired, float &shootTime, BOOL bI
 			flag = 0;
 #endif
 
-		PLAYBACK_EVENT_FULL(flag, m_pPlayer->edict(), m_usFireFamas, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y,
+		PLAYBACK_EVENT_FULL(flag & ~FEV_NOTHOST, m_pPlayer->edict(), m_usFireFamas, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y,
 			int(m_pPlayer->pev->punchangle.x * 100), int(m_pPlayer->pev->punchangle.y * 100), FALSE, FALSE);
+		SendWeaponAnim(FAMAS_SHOOT1 + (m_iClip % 3), UseDecrement() != FALSE);
 	}
 
 	m_pPlayer->pev->effects |= EF_MUZZLEFLASH;
@@ -1596,7 +1597,7 @@ float CBasePlayerWeapon::AnimationDuration(int animation, float fallback) const
 
 void CBasePlayerWeapon::ToggleAim()
 {
-    if (!m_pPlayer || !oc2_weapon::SupportsAim(m_iId) || m_pPlayer->pev->health<=0 ||
+    if (!m_pPlayer || !oc2_weapon::SupportsManualAim(m_iId) || m_pPlayer->pev->health<=0 ||
         m_fInReload || m_fInSpecialReload || m_pPlayer->m_flNextAttack>UTIL_WeaponTimeBase()) return;
     if (m_flNextPrimaryAttack-UTIL_WeaponTimeBase()>.6f) return; // attach/detach transition
     if (oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim))
