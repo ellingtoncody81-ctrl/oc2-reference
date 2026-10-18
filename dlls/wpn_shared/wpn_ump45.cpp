@@ -209,5 +209,5 @@ void CUMP45::WeaponIdle()
 
 float CUMP45::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::UMP45).speed[oc2_weapon::Mode(12,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(12,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }

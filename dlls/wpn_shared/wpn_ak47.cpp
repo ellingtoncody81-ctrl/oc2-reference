@@ -212,5 +212,5 @@ void CAK47::WeaponIdle(void)
 
 float CAK47::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::AK47).speed[oc2_weapon::Mode(28,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(28,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }

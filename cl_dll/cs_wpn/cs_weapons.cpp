@@ -358,17 +358,17 @@ void HUD_WeaponPresentationDump()
 		weapon->AnimationDuration(player.pev->weaponanim,0),player.m_flNextAttack,weapon->m_flNextPrimaryAttack,
 		weapon->m_flNextSecondaryAttack,weapon->m_flTimeWeaponIdle,weapon->m_iClip,weapon->m_fInReload,weapon->m_iWeaponState);
 
-    gEngfuncs.Con_Printf("sourceweapon: id=%d clip=%d reserve=%d fov=%.3f speed=%.3f burst=%d bursttime=%.6f penalty=%.8f index=%.6f last=%.6f\n",
+    gEngfuncs.Con_Printf("sourceweapon: id=%d clip=%d reserve=%d fov=%.3f speed=%.3f burst=%d bursttime=%.6f penalty=%.8f index=%.6f last=%.6f cap=%.3f\n",
         weapon->m_iId,weapon->m_iClip,weapon->m_iPrimaryAmmoType>=0?player.m_rgAmmo[weapon->m_iPrimaryAmmoType]:-1,
         player.pev->fov,weapon->GetMaxSpeed(),weapon->m_iId==17?weapon->m_iGlock18ShotsFired:weapon->m_iFamasShotsFired,
         weapon->m_iId==17?weapon->m_flGlock18Shoot:weapon->m_flFamasShoot,
-        weapon->m_flStartThrow/1024,weapon->m_flReleaseThrow/64,weapon->m_flLastFire);
+        weapon->m_flStartThrow/1024,weapon->m_flReleaseThrow/64,weapon->m_flLastFire,player.pev->maxspeed);
 }
 
 
 void CBasePlayerWeapon::ToggleAim()
 {
-    if (!m_pPlayer || !oc2_weapon::SupportsAim(m_iId) || m_pPlayer->pev->health<=0 ||
+    if (!m_pPlayer || !oc2_weapon::SupportsManualAim(m_iId) || m_pPlayer->pev->health<=0 ||
         m_fInReload || m_fInSpecialReload || m_pPlayer->m_flNextAttack>UTIL_WeaponTimeBase()) return;
     if (m_flNextPrimaryAttack-UTIL_WeaponTimeBase()>.6f) return; // attach/detach transition
     if (oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim))
@@ -565,7 +565,9 @@ void CBasePlayerWeapon::FireRemaining(int &shotsFired, float &shootTime, BOOL is
 	else
 	{
 		vecDir = m_pPlayer->FireBullets3(vecSrc, gpGlobals->v_forward, m_fBurstSpread, 8192, 2, BULLET_PLAYER_556MM, 30, 0.96, m_pPlayer->pev, TRUE, m_pPlayer->random_seed);
-		PLAYBACK_EVENT_FULL(FEV_NOTHOST, ENT(m_pPlayer->pev), m_usFireFamas, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y, (int)(m_pPlayer->pev->punchangle.x * 100), (int)(m_pPlayer->pev->punchangle.y * 100), FALSE, FALSE);
+		// Actual server continuation owns feedback, including the host. A replay
+		// can already be corrected to shot 2/3 before g_runfuncs permits effects.
+		SendWeaponAnim(FAMAS_SHOOT1 + (m_iClip % 3), UseDecrement() != FALSE);
 	}
 
 	m_pPlayer->pev->effects |= EF_MUZZLEFLASH;
@@ -1597,6 +1599,16 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 	}
 
 	s_iBobPredictedWeapon = to->client.health > 0 ? to->client.m_iId : 0;
+
+	// Predict both entering and leaving the added sights. The inherited client
+	// ResetMaxSpeed stub cannot update this cap; preserve freezes and VIP policy.
+	const bool aimSpeedVIP=pplayer && pplayer->index>0 && pplayer->index<=MAX_PLAYERS &&
+		g_PlayerExtraInfo[pplayer->index].vip;
+	if (!aimSpeedVIP && !g_iUser1 && player.m_pActiveItem && (flags & PLAYER_FREEZE_TIME_OVER) && to->client.health>0 &&
+		player.pev->maxspeed>1 && player.pev->fov!=from->client.fov &&
+		(oc2_weapon::SupportsManualAim(player.m_pActiveItem->m_iId) ||
+		 oc2_weapon::SupportsManualAim(from->client.m_iId)))
+		player.pev->maxspeed=player.m_pActiveItem->GetMaxSpeed();
 
 	// Copy in results of prediction code
 	to->client.viewmodel				= player.pev->viewmodel;

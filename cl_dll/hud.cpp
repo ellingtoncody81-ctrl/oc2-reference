@@ -407,7 +407,7 @@ void CHud :: Init( void )
 	viewmodel_shift = CVAR_CREATE( "viewmodel_shift", "1", FCVAR_ARCHIVE );
 
 	viewmodel_offset_x = CVAR_CREATE( "viewmodel_offset_x", "0", FCVAR_ARCHIVE );
-	viewmodel_offset_y = CVAR_CREATE( "viewmodel_offset_y", "1", FCVAR_ARCHIVE );
+	viewmodel_offset_y = CVAR_CREATE( "viewmodel_offset_y", "0", FCVAR_ARCHIVE );
 	viewmodel_offset_z = CVAR_CREATE( "viewmodel_offset_z", "0", FCVAR_ARCHIVE );
 
 	// weapon lag. GoldClient's defaults: scale 2, speed 8.

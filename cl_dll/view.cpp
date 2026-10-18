@@ -19,6 +19,8 @@
 #include "view_effects.h"
 #include "view_stairs.h"
 #include "view_ads.h"
+#include "view_ads_motion.h"
+#include "viewmodel_settings.h"
 #include "weapon_spread.h"
 
 #include "entity_state.h"
@@ -198,6 +200,74 @@ static float s_ADSFrontX=0,s_ADSFrontY=0;
 static bool s_ADSFrontValid=false;
 static bool s_ADSObserved=false,s_ADSDotVisible=false,s_ADSPaused=false;
 static float s_ADSRelative[3]={0,0,0};
+static float s_ADSMotionPosition[3]={0,0,0},s_ADSMotionAngles[3]={0,0,0};
+static float s_ADSMotionBobGain=0,s_ADSMotionInertiaGain=0,s_ADSMotionSpeed=0;
+static cvar_t *s_ViewModelFov=nullptr,*s_ViewModelPreset=nullptr,*s_ViewModelRenderFov=nullptr;
+static bool s_ViewModelPresetPrimed=false;
+static float s_ViewModelLastPreset=1,s_ViewModelOffsetApplied[3]={0,0,0};
+static float s_ViewModelRelative[3]={0,0,0};
+
+static viewmodel_settings::Settings V_ViewModelSettings()
+{
+	return viewmodel_settings::Effective(s_ViewModelFov?s_ViewModelFov->value:54,
+		gHUD.viewmodel_offset_x?gHUD.viewmodel_offset_x->value:0,
+		gHUD.viewmodel_offset_y?gHUD.viewmodel_offset_y->value:0,
+		gHUD.viewmodel_offset_z?gHUD.viewmodel_offset_z->value:0);
+}
+
+static void V_ApplyViewModelPreset(int number)
+{
+	viewmodel_settings::Settings preset;
+	if (!viewmodel_settings::Preset(number,preset)) return;
+	gEngfuncs.Cvar_SetValue("viewmodel_fov",preset.fov);
+	gEngfuncs.Cvar_SetValue("viewmodel_offset_x",preset.x);
+	gEngfuncs.Cvar_SetValue("viewmodel_offset_y",preset.y);
+	gEngfuncs.Cvar_SetValue("viewmodel_offset_z",preset.z);
+}
+
+static void V_ViewModelPresetCommand()
+{
+	const int number=gEngfuncs.Cmd_Argc()>1?atoi(gEngfuncs.Cmd_Argv(1)):0;
+	if (number<1 || number>3)
+	{
+		gEngfuncs.Con_Printf("viewmodel_apply_preset <1=Desktop,2=Couch,3=Classic>\n");return;
+	}
+	V_ApplyViewModelPreset(number);
+	gEngfuncs.Cvar_SetValue("viewmodel_presetpos",float(number));
+	s_ViewModelLastPreset=float(number);s_ViewModelPresetPrimed=true;
+}
+
+static void V_UpdateViewModelSettings()
+{
+	const float preset=s_ViewModelPreset?s_ViewModelPreset->value:1;
+	// First-frame initialization honors archived custom offsets/FOV. Only a
+	// later explicit preset change applies its four values; never reapply it
+	// every frame after a user has adjusted an individual setting.
+	if (!s_ViewModelPresetPrimed) s_ViewModelPresetPrimed=true;
+	else if ((preset==1 || preset==2 || preset==3) && preset!=s_ViewModelLastPreset)
+		V_ApplyViewModelPreset(int(preset));
+	s_ViewModelLastPreset=preset;
+	const float fov=viewmodel_settings::ModelFov(V_ViewModelSettings().fov,s_ADS.amount);
+	if (s_ViewModelRenderFov && s_ViewModelRenderFov->value!=fov)
+		gEngfuncs.Cvar_SetValue("_oc2_viewmodel_fov",fov);
+}
+
+static void V_DumpViewModelSettings()
+{
+	const auto effective=V_ViewModelSettings();
+	cl_entity_t *view=gEngfuncs.GetViewModel();
+	gEngfuncs.Con_Printf("viewmodelsettings: raw_fov=%.6f raw_offset=%.6f/%.6f/%.6f effective_fov=%.6f effective_offset=%.6f/%.6f/%.6f render_fov=%.6f ads=%.6f world_fov=%.6f preset=%.6f applied_offset=%.6f/%.6f/%.6f actual_relative=%.6f/%.6f/%.6f model=%s\n",
+		s_ViewModelFov?s_ViewModelFov->value:54,
+		gHUD.viewmodel_offset_x?gHUD.viewmodel_offset_x->value:0,
+		gHUD.viewmodel_offset_y?gHUD.viewmodel_offset_y->value:0,
+		gHUD.viewmodel_offset_z?gHUD.viewmodel_offset_z->value:0,
+		effective.fov,effective.x,effective.y,effective.z,
+		s_ViewModelRenderFov?s_ViewModelRenderFov->value:0,s_ADS.amount,s_ADSWorldFov,
+		s_ViewModelPreset?s_ViewModelPreset->value:1,
+		s_ViewModelOffsetApplied[0],s_ViewModelOffsetApplied[1],s_ViewModelOffsetApplied[2],
+		s_ViewModelRelative[0],s_ViewModelRelative[1],s_ViewModelRelative[2],
+		view&&view->model?view->model->name:"none");
+}
 
 float V_ADSWorldFOV(float rawFov,float time)
 {
@@ -233,6 +303,9 @@ void V_ApplyADSBody(cl_entity_s *entity)
 
 void V_ObserveADSSight(cl_entity_s *entity,const char *bone,const float matrix[3][4])
 {
+	// R_DrawViewModel temporarily installs both its GL projection and RI WVP.
+	// Draw-time WorldToScreen therefore observes the actual weapon projection;
+	// applying a second world-FOV correction here would distort the aperture.
 	const view_ads::Profile *profile=view_ads::Get(s_ADS.weapon);
 	if (!profile || !entity || entity!=gEngfuncs.GetViewModel() || !entity->model ||
 		stricmp(entity->model->name,profile->model) || stricmp(bone,profile->bone)) return;
@@ -291,10 +364,16 @@ static void V_DumpADS()
 		int(s_ADSObserved),s_ADSScreenX,s_ADSScreenY,s_ADSScreenRadius,gEngfuncs.GetClientTime()-s_ADSObservedTime,
 		view?view->curstate.body:0,s_ADSRelative[0],s_ADSRelative[1],s_ADSRelative[2],int(s_ADSDotVisible),int(s_ADSPaused));
 	gEngfuncs.Con_Printf("aimline: front_valid=%d front_px=%.3f/%.3f\n",int(s_ADSFrontValid),s_ADSFrontX,s_ADSFrontY);
+	gEngfuncs.Con_Printf("adsmotion: bob_gain=%.6f inertia_gain=%.6f speed_ratio=%.6f applied_pos=%.6f/%.6f/%.6f applied_angles=%.6f/%.6f/%.6f\n",
+		s_ADSMotionBobGain,s_ADSMotionInertiaGain,s_ADSMotionSpeed,
+		s_ADSMotionPosition[0],s_ADSMotionPosition[1],s_ADSMotionPosition[2],
+		s_ADSMotionAngles[0],s_ADSMotionAngles[1],s_ADSMotionAngles[2]);
 }
 
-static void V_PositionADS(ref_params_s *params,cl_entity_s *view)
+static void V_PositionADS(ref_params_s *params,cl_entity_s *view,const view_ads_motion::Motion &motion)
 {
+	for (int axis=0;axis<3;++axis) s_ADSMotionPosition[axis]=s_ADSMotionAngles[axis]=0;
+	s_ADSMotionBobGain=s_ADSMotionInertiaGain=s_ADSMotionSpeed=0;
 	const view_ads::Profile *profile=view_ads::Get(s_ADS.weapon);
 	if (!profile || s_ADS.amount<=0 || !view->model || stricmp(view->model->name,profile->model)) return;
 	const float weight=view_ads::Gain(s_ADS.amount);
@@ -304,7 +383,8 @@ static void V_PositionADS(ref_params_s *params,cl_entity_s *view)
 	// Re-anchor to the finished eye, so viewsize, hip offsets and stair smoothing
 	// cannot move an aimed scope away from the shooting ray. Model-space Y is
 	// left; the GoldSrc right vector has the opposite sign. X remains forward.
-	const float front=gHUD.viewmodel_offset_y?view_ads::Clamp(gHUD.viewmodel_offset_y->value,-8,8):0;
+	// Preserve the calibrated native sight depth, independent of hip offsets.
+	const float front=1.0f;
     // Compose the measured sight-line rotation with the camera, rather than
     // adding Euler angles (which drifts when looking up/down). Studio flips
     // entity pitch; mirror-conjugating yaw/roll keeps left-hand alignment.
@@ -327,12 +407,27 @@ static void V_PositionADS(ref_params_s *params,cl_entity_s *view)
 		const float target=params->vieworg[axis]+forward[axis]*front+
 			right[axis]*profile->center[1]*hand-up[axis]*profile->center[2];
 		view->origin[axis]+=(target-view->origin[axis])*weight;
+		const float staticOrigin=view->origin[axis];
+		view->origin[axis]+=motion.position[axis]*weight;
+		s_ADSMotionPosition[axis]=view->origin[axis]-staticOrigin;
 		float wanted=wantedAngles[axis];
 		float delta=wanted-view->angles[axis];
 		while(delta>180)delta-=360;
 		while(delta<-180)delta+=360;
 		view->angles[axis]+=delta*weight;
+		const float staticAngle=view->angles[axis];
+		view->angles[axis]+=motion.angles[axis]*weight;
+		s_ADSMotionAngles[axis]=view->angles[axis]-staticAngle;
 	}
+	// Report the actual float deltas surviving the final ADS placement, rather
+	// than upstream StepBob values that used to be overwritten at gain=1.
+	Vector applied(s_ADSMotionPosition[0],s_ADSMotionPosition[1],s_ADSMotionPosition[2]);
+	s_ADSMotionPosition[0]=DotProduct(applied,forward);
+	s_ADSMotionPosition[1]=DotProduct(applied,right);
+	s_ADSMotionPosition[2]=DotProduct(applied,up);
+	s_ADSMotionBobGain=motion.bobGain*weight;
+	s_ADSMotionInertiaGain=motion.inertiaGain*weight;
+	s_ADSMotionSpeed=motion.speedRatio;
 	VectorCopy(view->angles,view->curstate.angles);
 	Vector relative=view->origin-params->vieworg;
 	s_ADSRelative[0]=DotProduct(relative,forward);s_ADSRelative[1]=DotProduct(relative,right);s_ADSRelative[2]=DotProduct(relative,up);
@@ -831,6 +926,8 @@ void V_ResetViewModelEffects()
 {
 	s_ADS.Reset();
 	s_ADSObserved=false;
+	for (int axis=0;axis<3;++axis) s_ADSMotionPosition[axis]=s_ADSMotionAngles[axis]=0;
+	s_ADSMotionBobGain=s_ADSMotionInertiaGain=s_ADSMotionSpeed=0;
 	s_BobState = view_bob::BobState();
 	view_effects::ResetEffects( s_ViewEffects );
 	s_ViewStairs = view_stairs::State();
@@ -895,6 +992,7 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 	s_flBobContextTime = pparams->time;
 	s_iBobContextEntity = pparams->viewentity;
 	s_ADS.Update(iWeaponId,bVmActive,iInReload!=0,g_lastFOV,pparams->time,pparams->paused!=0);
+	V_UpdateViewModelSettings();
 	oc2_weapon_spread::SpreadInput spreadInput = { iWeaponId, flWeaponAccuracy, iWeaponState,
 		sqrtf( pparams->simvel[0] * pparams->simvel[0] + pparams->simvel[1] * pparams->simvel[1] ),
 		pparams->onground != 0, ( g_iPlayerFlags & FL_DUCKING ) != 0, g_lastFOV > 0.0f ? g_lastFOV : 90.0f };
@@ -1357,12 +1455,19 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		bobPitch   = bound( bobPitch,   -30.0f, 30.0f );
 		bobYaw     = bound( bobYaw,     -30.0f, 30.0f );
 	}
+	view_ads_motion::Motion adsBob;
+	const float adsHand=gHUD.cl_righthand && gHUD.cl_righthand->value==0?-1.0f:1.0f;
 	for ( i = 0; i < 3; i++ )
 	{
 		view->origin[ i ] += bobForward * pparams->forward[ i ];
 		view->origin[ i ] += bobSide * pparams->right[ i ];
+		adsBob.position[i]=bobForward*pparams->forward[i]+bobSide*adsHand*pparams->right[i];
 	}
 	view->origin[2] += bobUp;
+	adsBob.position[2]+=bobUp;
+	adsBob.angles[PITCH]=bobPitch;
+	adsBob.angles[YAW]=bobYaw*adsHand;
+	adsBob.angles[ROLL]=bobRoll*adsHand;
 
 	// throw in a little tilt.
 	view->angles[YAW]   += bobYaw;
@@ -1479,15 +1584,27 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		effectInput.mouse_angles[i] = pparams->cl_viewangles[i];
 	}
 	view_effects::EffectsOutput effects = view_effects::StepEffects( s_ViewEffects, effectParams, effectInput );
+	const auto vmSettings=V_ViewModelSettings();
 	view_effects::Vec3 fixed = view_effects::FixedOffset( effectInput.mouse_angles,
-		gHUD.viewmodel_offset_x->value, gHUD.viewmodel_offset_y->value,
-		gHUD.viewmodel_offset_z->value, effectInput.left_hand );
+		vmSettings.x,vmSettings.y,vmSettings.z,effectInput.left_hand );
+	// V_PositionADS removes the hip placement with the same gained blend.
+	const float hipWeight=1-view_ads::Gain(s_ADS.amount);
+	s_ViewModelOffsetApplied[0]=vmSettings.x*(effectInput.left_hand?-1.0f:1.0f)*hipWeight;
+	s_ViewModelOffsetApplied[1]=vmSettings.y*hipWeight;
+	s_ViewModelOffsetApplied[2]=vmSettings.z*hipWeight;
 	if( effectInput.active )
 	{
 		for( i = 0; i < 3; ++i ) view->origin[i] += effects.sway_offset[i] + fixed[i];
 		view->origin[2] -= effects.land_dip;
 		view->angles[ROLL] += effects.mouse_roll;
 	}
+	// Capture only dynamic weapon effects. Fixed hip offsets, viewsize and
+	// common stair/eye compensation must not become an ADS sight displacement.
+	const float adsSway[3]={effects.sway_offset.x,effects.sway_offset.y,effects.sway_offset.z};
+	const float adsSpeed=gHUD.cl_bobstyle && gHUD.cl_bobstyle->value==view_bob::kStyleModern?
+		s_BobState.last_speed:sqrtf(pparams->simvel[0]*pparams->simvel[0]+pparams->simvel[1]*pparams->simvel[1]);
+	const view_ads_motion::Motion adsMotion=view_ads_motion::Dampen(adsBob,adsSway,
+		effects.land_dip,effects.mouse_roll,flMaxSpeed>0?adsSpeed/flMaxSpeed:0);
 	if( gHUD.viewmodel_bob_debug && gHUD.viewmodel_bob_debug->value && bVmActive && !pparams->paused )
 	{
 		if( effects.land_dip > s_flHudLandPeak ) s_flHudLandPeak = effects.land_dip;
@@ -1596,7 +1713,13 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		}
 	}
 
-	V_PositionADS(pparams,view);
+	V_PositionADS(pparams,view,adsMotion);
+	Vector vmForward,vmRight,vmUp;
+	AngleVectors(pparams->viewangles,vmForward,vmRight,vmUp);
+	const Vector vmRelative=view->origin-pparams->vieworg;
+	s_ViewModelRelative[0]=DotProduct(vmRelative,vmForward);
+	s_ViewModelRelative[1]=DotProduct(vmRelative,vmRight);
+	s_ViewModelRelative[2]=DotProduct(vmRelative,vmUp);
 	if ( gHUD.cl_viewbob && gHUD.cl_viewbob->value )
 	{
 		VectorCopy( view->origin, view->curstate.origin );
@@ -2446,6 +2569,13 @@ V_Init
 void V_Init (void)
 {
 	gEngfuncs.pfnAddCommand("ads_dump",V_DumpADS);
+	gEngfuncs.pfnAddCommand("viewmodel_dump",V_DumpViewModelSettings);
+	gEngfuncs.pfnAddCommand("viewmodel_apply_preset",V_ViewModelPresetCommand);
+	s_ViewModelFov=gEngfuncs.pfnRegisterVariable("viewmodel_fov","54",FCVAR_ARCHIVE);
+	s_ViewModelPreset=gEngfuncs.pfnRegisterVariable("viewmodel_presetpos","1",FCVAR_ARCHIVE);
+	// Non-archived renderer hand-off; no public ABI or world-FOV change.
+	s_ViewModelRenderFov=gEngfuncs.pfnRegisterVariable("_oc2_viewmodel_fov","54",0);
+	s_ViewModelPresetPrimed=false;
 	//gEngfuncs.pfnAddCommand ("centerview", V_StartPitchDrift );
 
 	scr_ofsx			= gEngfuncs.pfnRegisterVariable( "scr_ofsx","0", 0 );

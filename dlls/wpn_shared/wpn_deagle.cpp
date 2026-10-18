@@ -229,5 +229,5 @@ void CDEAGLE::WeaponIdle(void)
 
 float CDEAGLE::GetMaxSpeed()
 {
-	return oc2_weapon::Get(oc2_weapon::Deagle).speed[oc2_weapon::Mode(26,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
+	return oc2_weapon::MaxSpeed(26,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90);
 }
