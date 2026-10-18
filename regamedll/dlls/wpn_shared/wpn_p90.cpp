@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_p90, CP90, CCSP90)
 
@@ -42,12 +43,13 @@ void CP90::Precache()
 
 int CP90::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::P90);
 	p->pszName = STRING(pev->classname);
 	p->pszAmmo1 = "57mm";
-	p->iMaxAmmo1 = MAX_AMMO_57MM;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = nullptr;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = P90_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 0;
 	p->iPosition = 8;
 	p->iId = m_iId = WEAPON_P90;
@@ -86,6 +88,7 @@ void CP90::PrimaryAttack()
 
 void CP90::P90Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -171,7 +174,7 @@ void CP90::P90Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 void CP90::Reload()
 {
 #ifndef REGAMEDLL_FIXES
-	if (m_pPlayer->ammo_57mm <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 #endif
 
@@ -200,5 +203,5 @@ void CP90::WeaponIdle()
 
 float CP90::GetMaxSpeed()
 {
-	return P90_MAX_SPEED;
+	return oc2_weapon::Get(oc2_weapon::P90).speed[oc2_weapon::Mode(30,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

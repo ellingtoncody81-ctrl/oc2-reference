@@ -1,5 +1,6 @@
 #include "precompiled.h"
 #include "oc2_weapon_params.h"
+#include "oc2_gunshot.h"
 
 namespace
 {
@@ -173,4 +174,9 @@ void CTMP::WeaponIdle()
 	if (m_flTimeWeaponIdle > UTIL_WeaponTimeBase()) return;
 	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 20.0f;
 	SendWeaponAnim(TMP_IDLE1, UseDecrement() != FALSE);
+}
+
+float CTMP::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::MP9).speed[oc2_weapon::Mode(23,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

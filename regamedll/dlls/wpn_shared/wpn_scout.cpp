@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_scout, CSCOUT, CCSSCOUT)
 
@@ -39,12 +40,13 @@ void CSCOUT::Precache()
 
 int CSCOUT::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::SSG08);
 	p->pszName = STRING(pev->classname);
 	p->pszAmmo1 = "762Nato";
-	p->iMaxAmmo1 = MAX_AMMO_762NATO;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = nullptr;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = SCOUT_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 0;
 	p->iPosition = 9;
 	p->iId = m_iId = WEAPON_SCOUT;
@@ -113,6 +115,7 @@ void CSCOUT::PrimaryAttack()
 
 void CSCOUT::SCOUTFire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -170,7 +173,7 @@ void CSCOUT::SCOUTFire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 	flag = 0;
 #endif
 
-	PLAYBACK_EVENT_FULL(flag, m_pPlayer->edict(), m_usFireScout, 0, (float *)&g_vecZero, (float *)&m_pPlayer->pev->angles, (vecDir.x * 1000), (vecDir.y * 1000),
+	PLAYBACK_EVENT_FULL(flag, m_pPlayer->edict(), m_usFireScout, 0, (float *)&g_vecZero, (float *)&m_pPlayer->pev->angles, (vecDir.x), (vecDir.y),
 		int(m_pPlayer->pev->punchangle.x * 100), int(m_pPlayer->pev->punchangle.x * 100), FALSE, FALSE);
 
 	m_flNextPrimaryAttack = m_flNextSecondaryAttack = GetNextAttackDelay(flCycleTime);
@@ -221,5 +224,5 @@ void CSCOUT::WeaponIdle()
 
 float CSCOUT::GetMaxSpeed()
 {
-	return (m_pPlayer->m_iFOV == DEFAULT_FOV) ? SCOUT_MAX_SPEED : SCOUT_MAX_SPEED_ZOOM;
+	return oc2_weapon::Get(oc2_weapon::SSG08).speed[oc2_weapon::Mode(3,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

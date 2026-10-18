@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_gunshot.h"
 
 const Vector XM1014_CONE_VECTOR = Vector(0.0725, 0.0725, 0.0); // special shotgun spreads
 
@@ -40,12 +41,13 @@ void CXM1014::Precache()
 
 int CXM1014::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::XM1014);
 	p->pszName = STRING(pev->classname);
 	p->pszAmmo1 = "buckshot";
-	p->iMaxAmmo1 = MAX_AMMO_BUCKSHOT;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = nullptr;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = XM1014_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 0;
 	p->iPosition = 12;
 	p->iId = m_iId = WEAPON_XM1014;
@@ -69,6 +71,7 @@ BOOL CXM1014::PlayEmptySound()
 
 void CXM1014::PrimaryAttack()
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -118,19 +121,17 @@ void CXM1014::PrimaryAttack()
 	vecSrc = m_pPlayer->GetGunPosition();
 	vecAiming = gpGlobals->v_forward;
 
-#ifdef REGAMEDLL_API
-	float flBaseDamage = CSPlayerWeapon()->m_flBaseDamage;
-#else
-	float flBaseDamage = XM1014_DAMAGE;
-#endif
+    Vector sourceAngles=m_pPlayer->pev->v_angle+m_pPlayer->pev->punchangle;
+    const auto &schema=oc2_weapon::Get(oc2_weapon::XM1014);
+    for (int pellet=0;pellet<schema.pellets;++pellet)
+    {
+        // ReGameDLL's VectorRef trace advances its source after a hit.
+        // Every pellet must begin at the same muzzle, as Source FireBullets does.
+        Vector pelletSource=vecSrc,pelletAim=vecAiming;
+        m_pPlayer->FireBullets3(pelletSource,pelletAim,0,schema.range,1,BULLET_PLAYER_BUCKSHOT,
+            schema.damage,schema.rangeModifier,m_pPlayer->pev,false,m_pPlayer->random_seed);
+    }
 
-	Vector vecCone(XM1014_CONE_VECTOR);
-
-#ifdef REGAMEDLL_FIXES
-	m_pPlayer->FireBuckshots(6, vecSrc, vecAiming, vecCone, 3048.0f, 0, flBaseDamage, m_pPlayer->pev);
-#else
-	m_pPlayer->FireBullets(6, vecSrc, vecAiming, vecCone, 3048, BULLET_PLAYER_BUCKSHOT, 0, 0, NULL);
-#endif
 
 #ifdef CLIENT_WEAPONS
 	flag = FEV_NOTHOST;
@@ -144,8 +145,9 @@ void CXM1014::PrimaryAttack()
 		flag = 0;
 #endif
 
-	PLAYBACK_EVENT_FULL(flag, m_pPlayer->edict(), m_usFireXM1014, 0, (float *)&g_vecZero, (float *)&g_vecZero, m_vVecAiming.x, m_vVecAiming.y, 7,
-		int(m_vVecAiming.x * 100), m_iClip == 0, FALSE);
+    PLAYBACK_EVENT_FULL(flag,m_pPlayer->edict(),m_usFireXM1014,0,(float *)&g_vecZero,
+        (float *)&sourceAngles,sourceShot.Inaccuracy()*1024,0,int(m_pPlayer->random_seed&255),
+        int(sourceShot.RecoilIndex()),m_iClip==0,FALSE);
 
 	if (!m_iClip && m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 	{
@@ -227,4 +229,9 @@ void CXM1014::WeaponIdle()
 			SendWeaponAnim(XM1014_IDLE, UseDecrement() != FALSE);
 		}
 	}
+}
+
+float CXM1014::GetMaxSpeed()
+{
+	return oc2_weapon::Get(oc2_weapon::XM1014).speed[oc2_weapon::Mode(5,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }

@@ -4835,6 +4835,14 @@ int EXT_FUNC GetWeaponData(edict_t *pEdict, struct weapon_data_s *info)
 					item->fuser2 = weapon->m_flStartThrow;
 					item->fuser3 = weapon->m_flReleaseThrow;
 					item->iuser1 = weapon->m_iSwing;
+                    if (II.iId==17 || II.iId==15)
+                    {
+                        const bool glock=II.iId==17;
+                        const float timer=glock?weapon->m_flGlock18Shoot:weapon->m_flFamasShoot;
+                        item->iuser1=glock?weapon->m_iGlock18ShotsFired:weapon->m_iFamasShotsFired;
+                        item->fuser1=timer>0?timer-gpGlobals->time:0;
+                    }
+
 
 #ifdef REGAMEDLL_FIXES
 					if (pPlayerItem == pPlayer->m_pActiveItem && !weapon->m_fInReload && weapon->m_iClip == II.iMaxClip)

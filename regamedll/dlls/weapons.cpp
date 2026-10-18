@@ -3,6 +3,7 @@
 #include "wpn_shared/wpn_molotov.h"
 #include "wpn_shared/oc2_reload.h"
 #include "wpn_shared/oc2_presentation.h"
+#include "wpn_shared/oc2_gunshot.h"
 
 short g_sModelIndexLaser;		// holds the index for the laser beam
 short g_sModelIndexLaserDot;	// holds the index for the laser beam dot
@@ -823,7 +824,9 @@ void EXT_FUNC CBasePlayerWeapon::__API_HOOK(KickBack)(float up_base, float later
 
 void CBasePlayerWeapon::FireRemaining(int &shotsFired, float &shootTime, BOOL bIsGlock)
 {
-	float nexttime = 0.1f;
+	if (shootTime<=0 || gpGlobals->time<shootTime) return;
+	OC2GunShot sourceShot(this,true);
+	const float nexttime = oc2_weapon::FromId(m_iId)->burstSpacing;
 	if (--m_iClip < 0)
 	{
 		m_iClip = 0;
@@ -857,7 +860,7 @@ void CBasePlayerWeapon::FireRemaining(int &shotsFired, float &shootTime, BOOL bI
 		--m_pPlayer->ammo_9mm;
 #endif
 		PLAYBACK_EVENT_FULL(flag, m_pPlayer->edict(), m_usFireGlock18, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y,
-			int(m_pPlayer->pev->punchangle.x * 10000), int(m_pPlayer->pev->punchangle.y * 10000), m_iClip == 0, FALSE);
+			int(m_pPlayer->pev->punchangle.x * 100), int(m_pPlayer->pev->punchangle.y * 100), m_iClip == 0, FALSE);
 	}
 	else
 	{
@@ -873,7 +876,7 @@ void CBasePlayerWeapon::FireRemaining(int &shotsFired, float &shootTime, BOOL bI
 #endif
 
 		PLAYBACK_EVENT_FULL(flag, m_pPlayer->edict(), m_usFireFamas, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y,
-			int(m_pPlayer->pev->punchangle.x * 10000000), int(m_pPlayer->pev->punchangle.y * 10000000), FALSE, FALSE);
+			int(m_pPlayer->pev->punchangle.x * 100), int(m_pPlayer->pev->punchangle.y * 100), FALSE, FALSE);
 	}
 
 	m_pPlayer->pev->effects |= EF_MUZZLEFLASH;
@@ -991,6 +994,9 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayerWeapon, ItemPostFrame)
 
 void EXT_FUNC CBasePlayerWeapon::__API_HOOK(ItemPostFrame)()
 {
+	// Release the semi-auto/burst latch even while a secondary action is held.
+	const bool releaseTrigger=oc2_weapon::RequiresTriggerRelease(m_iId,m_iWeaponState);
+	if (releaseTrigger && !(m_pPlayer->pev->button & IN_ATTACK)) m_iShotsFired=0;
 	AdvanceReload();
 	if (AdvanceInspect()) return;
 	int usableButtons = m_pPlayer->pev->button;
@@ -1094,7 +1100,7 @@ void EXT_FUNC CBasePlayerWeapon::__API_HOOK(ItemPostFrame)()
 			}
 			else
 			{
-				PrimaryAttack();
+				if (!releaseTrigger || m_iShotsFired==0) PrimaryAttack();
 			}
 		}
 	}
@@ -1490,6 +1496,10 @@ LINK_HOOK_CLASS_CHAIN(BOOL, CBasePlayerWeapon, DefaultDeploy, (char *szViewModel
 
 BOOL EXT_FUNC CBasePlayerWeapon::__API_HOOK(DefaultDeploy)(char *szViewModel, char *szWeaponModel, int iAnim, char *szAnimExt, int skiplocal)
 {
+    if (const auto *schema=oc2_weapon::FromId(m_iId))
+        if (!oc2_weapon::DirectShotAdapter(m_iId))
+            oc2_weapon::ResetState(*schema,m_flStartThrow,m_flReleaseThrow,m_flLastFire,m_flAccuracy,m_iShotsFired);
+
 	if (!CanDeploy())
 		return FALSE;
 
@@ -1572,7 +1582,7 @@ int EXT_FUNC CBasePlayerWeapon::__API_HOOK(DefaultReload)(int iClipSize, int iAn
 	SendWeaponAnim(iAnim, UseDecrement() ? 1 : 0);
 
 	m_fInReload = TRUE;
-	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay + 0.5f;
+	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay;
 
 	return TRUE;
 }
@@ -1581,6 +1591,25 @@ float CBasePlayerWeapon::AnimationDuration(int animation, float fallback) const
 {
 	return oc2_presentation::Duration(m_iId,animation,(m_iWeaponState & (1 << 6)) != 0,
 		m_pPlayer && m_pPlayer->HasShield(),fallback);
+}
+
+
+void CBasePlayerWeapon::ToggleAim()
+{
+    if (!m_pPlayer || !oc2_weapon::SupportsAim(m_iId) || m_pPlayer->pev->health<=0 ||
+        m_fInReload || m_fInSpecialReload || m_pPlayer->m_flNextAttack>UTIL_WeaponTimeBase()) return;
+    if (m_flNextPrimaryAttack-UTIL_WeaponTimeBase()>.6f) return; // attach/detach transition
+    if (oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim))
+    {
+        SendWeaponAnim(oc2_presentation::IdleSequence(m_iId,m_iWeaponState,m_iClip),UseDecrement());
+        m_flTimeWeaponIdle=UTIL_WeaponTimeBase()+20;
+    }
+    const bool enable=m_pPlayer->pev->fov>=90 || m_pPlayer->pev->fov<=0;
+    m_pPlayer->pev->fov=m_pPlayer->m_iFOV=enable?45:90;
+    m_pPlayer->m_iLastZoom=90;m_pPlayer->m_bResumeZoom=false;
+#ifndef CLIENT_DLL
+    m_pPlayer->ResetMaxSpeed();
+#endif
 }
 
 void CBasePlayerWeapon::StartInspect()
@@ -1618,6 +1647,12 @@ bool CBasePlayerWeapon::AdvanceInspect()
 
 void CBasePlayerWeapon::AdvanceReload()
 {
+    if (m_pPlayer && (m_fInReload || m_fInSpecialReload) && oc2_weapon::SupportsAim(m_iId))
+    {
+        m_pPlayer->pev->fov=m_pPlayer->m_iFOV=90;
+        m_pPlayer->m_iLastZoom=90;m_pPlayer->m_bResumeZoom=false;
+    }
+
 	if (!m_pPlayer || m_pPlayer->m_pActiveItem != this || !m_pPlayer->IsAlive() ||
 		m_iPrimaryAmmoType < 0 || m_iPrimaryAmmoType >= MAX_AMMO_SLOTS) return;
 	const bool shell = oc2_reload::Shotgun(m_iId) && m_fInSpecialReload == 2;
@@ -1676,8 +1711,8 @@ bool EXT_FUNC CBasePlayerWeapon::__API_HOOK(DefaultShotgunReload)(int iAnim, int
 
 		SendWeaponAnim(iAnim, UseDecrement());
 		m_flNextReload = oc2_reload::PendingTail(m_iId,iAnim,false,fDelay);
-		m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
-			m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay;
+		// Source permits firing a loaded shell while the next shell is moving.
+		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + fDelay;
 	}
 
 	return true;
@@ -1691,7 +1726,8 @@ void CBasePlayerWeapon::FinishShotgunReload(int animation, float fallback)
 	m_fInSpecialReload = 0;
 	m_flNextReload = -1;
 	m_pPlayer->m_flNextAttack = m_flNextPrimaryAttack = m_flNextSecondaryAttack =
-		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + duration;
+		UTIL_WeaponTimeBase();
+	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + duration;
 }
 
 BOOL CBasePlayerWeapon::PlayEmptySound()

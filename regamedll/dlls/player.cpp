@@ -30,6 +30,7 @@
 #include "oc2_inferno.h"
 #include "wpn_shared/wpn_molotov.h"
 #include <limits.h>
+#include "wpn_shared/oc2_weapon_params.h"
 
 extern int gmsgFireVariant;
 
@@ -1210,43 +1211,8 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
 			iGunType = pAttack->m_pActiveItem->m_iId;
 			flRatio += flShieldRatio;
 
-			switch (iGunType)
-			{
-			case WEAPON_AUG:
-			case WEAPON_M4A1:		flRatio *= 1.4;  break;
-			case WEAPON_AWP:		flRatio *= 1.95; break;
-			case WEAPON_G3SG1:		flRatio *= 1.65; break;
-			case WEAPON_SG550:		flRatio *= 1.45; break;
-			case WEAPON_M249:		flRatio *= 1.5;  break;
-			case WEAPON_ELITE:		flRatio *= 1.05; break;
-			case WEAPON_DEAGLE:		flRatio *= 1.5;  break;
-			case WEAPON_GLOCK18:	flRatio *= 1.05; break;
-			case WEAPON_FIVESEVEN:
-			case WEAPON_P90:
-				flRatio *= 1.5;
-				break;
-			case WEAPON_MAC10:
-				flRatio *= 0.95;
-				break;
-			case WEAPON_P228:
-				flRatio *= 1.28;
-				break;
-			case WEAPON_SCOUT:
-			case WEAPON_KNIFE:
-				flRatio *= 1.7;
-				break;
-			case WEAPON_SG552: flRatio *= 2.0; break;
-			case WEAPON_MP5N: flRatio *= 1.25; break;
-			case WEAPON_TMP: flRatio *= 1.20; break;
-			case WEAPON_M3: flRatio *= 1.0; break;
-			case WEAPON_FAMAS:
-				flRatio *= 1.4;
-				break;
-			case WEAPON_GALIL:
-			case WEAPON_AK47:
-				flRatio *= 1.55;
-				break;
-			}
+			if (const auto *schema=oc2_weapon::FromId(iGunType))
+				flRatio *= schema->armorRatio;
 		}
 
 		if (!oc2Elemental)
@@ -1700,7 +1666,8 @@ void EXT_FUNC CBasePlayer::__API_HOOK(GiveDefaultItems)()
 	auto GiveWeapon = [&](int ammo, const char *pszWeaponName) {
 		auto pItem = static_cast<CBasePlayerItem *>(GiveNamedItemEx(pszWeaponName));
 		if (pItem) {
-			GiveAmmo(refill_bpammo_weapons.value != 0.0f ? pItem->iMaxAmmo1() : ammo, pItem->pszAmmo1(), pItem->iMaxAmmo1());
+			const bool schemaGun=oc2_weapon::FromId(pItem->m_iId)!=nullptr;
+			GiveAmmo(schemaGun || refill_bpammo_weapons.value != 0.0f ? pItem->iMaxAmmo1() : ammo, pItem->pszAmmo1(), pItem->iMaxAmmo1());
 		}
 	};
 
@@ -1852,13 +1819,13 @@ void EXT_FUNC CBasePlayer::__API_HOOK(GiveDefaultItems)()
 	{
 	case CT:
 		GiveNamedItem("weapon_knife");
-		GiveNamedItem("weapon_usp");
-		GiveAmmo(m_bIsVIP ? 12 : 24, "45acp");
+		GiveNamedItem("weapon_glock18");
+		GiveAmmo(oc2_weapon::Get(oc2_weapon::Glock18).reserve, "9mmglock");
 		break;
 	case TERRORIST:
 		GiveNamedItem("weapon_knife");
 		GiveNamedItem("weapon_glock18");
-		GiveAmmo(40, "9mm");
+		GiveAmmo(oc2_weapon::Get(oc2_weapon::Glock18).reserve, "9mmglock");
 		break;
 	}
 #endif
@@ -2390,44 +2357,47 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Killed)(entvars_t *pevAttacker, int iGib)
 		{
 		case WEAPON_HEGRENADE:
 		{
-			CHEGrenade *pHEGrenade = static_cast<CHEGrenade *>(m_pActiveItem);
-			if ((pev->button & IN_ATTACK) && m_rgAmmo[pHEGrenade->m_iPrimaryAmmoType])
+			CHEGrenade *grenade = static_cast<CHEGrenade *>(m_pActiveItem);
+			const int ammo=grenade->PrimaryAmmoIndex();
+			if (grenade->m_flStartThrow>0 && ammo>=0 && ammo<MAX_AMMO_SLOTS && m_rgAmmo[ammo]>0)
 			{
-				ThrowGrenade(pHEGrenade, (pev->origin + pev->view_ofs), pev->angles, 1.5, pHEGrenade->m_usCreateExplosion);
-
-#ifdef REGAMEDLL_FIXES
-				m_rgAmmo[m_pActiveItem->PrimaryAmmoIndex()]--;
-				pHEGrenade->m_flStartThrow = 0;
-#endif
+				CGrenade *dropped=ThrowGrenade(grenade,pev->origin+pev->view_ofs,pev->velocity,1.5f, grenade->m_usCreateExplosion);
+				const int before=m_rgAmmo[ammo];
+				if (dropped) --m_rgAmmo[ammo];
+				if (CVAR_GET_FLOAT("developer")>0) ALERT(at_console,"oc2deathgrenade: t=%.6f player=%d id=%d created=%d before=%d after=%d velocity=%.6f,%.6f,%.6f\n",
+					gpGlobals->time,entindex(),grenade->m_iId,dropped?dropped->entindex():0,before,m_rgAmmo[ammo],pev->velocity.x,pev->velocity.y,pev->velocity.z);
 			}
+			grenade->m_flStartThrow=0;grenade->m_flReleaseThrow=-1;grenade->m_flLastFire=1024;
 			break;
 		}
 		case WEAPON_FLASHBANG:
 		{
-			CFlashbang *pFlashbang = static_cast<CFlashbang *>(m_pActiveItem);
-			if ((pev->button & IN_ATTACK) && m_rgAmmo[pFlashbang->m_iPrimaryAmmoType])
+			CFlashbang *grenade = static_cast<CFlashbang *>(m_pActiveItem);
+			const int ammo=grenade->PrimaryAmmoIndex();
+			if (grenade->m_flStartThrow>0 && ammo>=0 && ammo<MAX_AMMO_SLOTS && m_rgAmmo[ammo]>0)
 			{
-				ThrowGrenade(pFlashbang, (pev->origin + pev->view_ofs), pev->angles, 1.5);
-
-#ifdef REGAMEDLL_FIXES
-				m_rgAmmo[m_pActiveItem->PrimaryAmmoIndex()]--;
-				pFlashbang->m_flStartThrow = 0;
-#endif
+				CGrenade *dropped=ThrowGrenade(grenade,pev->origin+pev->view_ofs,pev->velocity,1.5f);
+				const int before=m_rgAmmo[ammo];
+				if (dropped) --m_rgAmmo[ammo];
+				if (CVAR_GET_FLOAT("developer")>0) ALERT(at_console,"oc2deathgrenade: t=%.6f player=%d id=%d created=%d before=%d after=%d velocity=%.6f,%.6f,%.6f\n",
+					gpGlobals->time,entindex(),grenade->m_iId,dropped?dropped->entindex():0,before,m_rgAmmo[ammo],pev->velocity.x,pev->velocity.y,pev->velocity.z);
 			}
+			grenade->m_flStartThrow=0;grenade->m_flReleaseThrow=-1;grenade->m_flLastFire=1024;
 			break;
 		}
 		case WEAPON_SMOKEGRENADE:
 		{
-			CSmokeGrenade *pSmoke = static_cast<CSmokeGrenade *>(m_pActiveItem);
-			if ((pev->button & IN_ATTACK) && m_rgAmmo[pSmoke->m_iPrimaryAmmoType])
+			CSmokeGrenade *grenade = static_cast<CSmokeGrenade *>(m_pActiveItem);
+			const int ammo=grenade->PrimaryAmmoIndex();
+			if (grenade->m_flStartThrow>0 && ammo>=0 && ammo<MAX_AMMO_SLOTS && m_rgAmmo[ammo]>0)
 			{
-				ThrowGrenade(pSmoke, (pev->origin + pev->view_ofs), pev->angles, 1.5, pSmoke->m_usCreateSmoke);
-
-#ifdef REGAMEDLL_FIXES
-				m_rgAmmo[m_pActiveItem->PrimaryAmmoIndex()]--;
-				pSmoke->m_flStartThrow = 0;
-#endif
+				CGrenade *dropped=ThrowGrenade(grenade,pev->origin+pev->view_ofs,pev->velocity,1.5f, grenade->m_usCreateSmoke);
+				const int before=m_rgAmmo[ammo];
+				if (dropped) --m_rgAmmo[ammo];
+				if (CVAR_GET_FLOAT("developer")>0) ALERT(at_console,"oc2deathgrenade: t=%.6f player=%d id=%d created=%d before=%d after=%d velocity=%.6f,%.6f,%.6f\n",
+					gpGlobals->time,entindex(),grenade->m_iId,dropped?dropped->entindex():0,before,m_rgAmmo[ammo],pev->velocity.x,pev->velocity.y,pev->velocity.z);
 			}
+			grenade->m_flStartThrow=0;grenade->m_flReleaseThrow=-1;grenade->m_flLastFire=1024;
 			break;
 		}
 		case WEAPON_MOLOTOV:
@@ -6862,6 +6832,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(ImpulseCommands)()
 
 	switch (iImpulse)
 	{
+		case 181: // ironsight: Mouse3, command-local and predicted.
+			if (m_pActiveItem) static_cast<CBasePlayerWeapon *>(m_pActiveItem)->ToggleAim();
+			break;
 		case 180: // lookatweapon: command-local, mirrored in client prediction.
 			if (m_pActiveItem) static_cast<CBasePlayerWeapon *>(m_pActiveItem)->StartInspect();
 			break;
@@ -8061,12 +8034,25 @@ void CBasePlayer::RecordBuyPresentation(int weaponID)
 		return;
 	m_iOc2PurchasedWeapon = weaponID;
 	m_flOc2PurchaseTime = gpGlobals->time;
+	// Present the confirmed owned weapon immediately. The first-person model
+	// stays visible while shopping; closing the UI does not replay purchases.
+	if (m_bIsDefusing) return;
+	CBasePlayerItem *item = GetItemById(static_cast<WeaponIdType>(weaponID));
+	if (!item || !item->CanDeploy() || (m_pActiveItem && !m_pActiveItem->CanHolster())) return;
+	CBasePlayerWeapon *weapon = static_cast<CBasePlayerWeapon *>(item);
+	if (m_pActiveItem == item)
+	{
+		item->Holster(); // Preserve committed reload ammo; cancel unfinished presentation.
+		if (!item->Deploy()) return;
+		ResetMaxSpeed();
+	}
+	else if (!SwitchWeapon(item)) return;
+	// A purchase command is outside prediction. Force same-sequence replays too.
+	weapon->SendWeaponAnim(pev->weaponanim,0);
 }
 
 void CBasePlayer::SetBuyPresentationOpen(bool open)
 {
-	// CS:GO cs_player::SetBuyMenuOpen has paired explicit UI notifications.
-	// GoldSrc hides the viewmodel in this UI, so defer the visible deploy until close.
 	if (open)
 	{
 		if (m_bOc2BuyMenuOpen || !CanPlayerBuy(false)) return;
@@ -8075,30 +8061,12 @@ void CBasePlayer::SetBuyPresentationOpen(bool open)
 		m_iOc2BuyMenuTeam = m_iTeam;
 		return;
 	}
-	const int weaponID = m_iOc2PurchasedWeapon;
-	const bool valid = m_bOc2BuyMenuOpen && IsAlive() && m_iTeam == m_iOc2BuyMenuTeam &&
-		gpGlobals->time >= m_flOc2PurchaseTime && gpGlobals->time - m_flOc2PurchaseTime <= 120.0f;
-	ResetBuyPresentation(); // Repeated/forged close cannot replay a completed purchase.
-	if (!valid || weaponID <= 0 || weaponID >= MAX_WEAPONS || m_bIsDefusing) return;
-	CBasePlayerItem *item = GetItemById(static_cast<WeaponIdType>(weaponID));
-	if (!item || !item->CanDeploy() || (m_pActiveItem && !m_pActiveItem->CanHolster())) return;
-	CBasePlayerWeapon *weapon = static_cast<CBasePlayerWeapon *>(item);
-	if (m_pActiveItem == item)
-	{
-		item->Holster(); // Preserve committed reload ammo; cancel any unfinished presentation.
-		if (!item->Deploy()) return;
-		ResetMaxSpeed();
-	}
-	else if (!SwitchWeapon(item)) return;
-	// This server command is outside weapon prediction. Force an animation
-	// message even if the sequence number equals the hidden, already-ended draw.
-	weapon->SendWeaponAnim(pev->weaponanim,0);
+	ResetBuyPresentation(); // Repeated close cannot replay an earlier purchase.
 }
 
 void CBasePlayer::SendBuyState()
 {
-	if (m_bOc2BuyMenuOpen && (!IsAlive() || m_iTeam != m_iOc2BuyMenuTeam ||
-		(m_iOc2PurchasedWeapon && (gpGlobals->time < m_flOc2PurchaseTime || gpGlobals->time-m_flOc2PurchaseTime > 120.0f))))
+	if (m_bOc2BuyMenuOpen && (!IsAlive() || m_iTeam != m_iOc2BuyMenuTeam))
 		ResetBuyPresentation();
 	CBasePlayerItem *fire = GetItemById(WEAPON_MOLOTOV);
 	const int ammo = fire ? fire->PrimaryAmmoIndex() : -1;

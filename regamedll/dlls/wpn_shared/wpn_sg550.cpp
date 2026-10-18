@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_gunshot.h"
 
 LINK_ENTITY_TO_CLASS(weapon_sg550, CSG550, CCSSG550)
 
@@ -44,12 +45,13 @@ void CSG550::Precache()
 
 int CSG550::GetItemInfo(ItemInfo *p)
 {
+	const oc2_weapon::Params &params=oc2_weapon::Get(oc2_weapon::SCAR20);
 	p->pszName = STRING(pev->classname);
 	p->pszAmmo1 = "556Nato";
-	p->iMaxAmmo1 = MAX_AMMO_556NATO;
+	p->iMaxAmmo1 = params.reserve;
 	p->pszAmmo2 = nullptr;
 	p->iMaxAmmo2 = -1;
-	p->iMaxClip = SG550_MAX_CLIP;
+	p->iMaxClip = params.clip;
 	p->iSlot = 0;
 	p->iPosition = 16;
 	p->iId = m_iId = WEAPON_SG550;
@@ -115,6 +117,7 @@ void CSG550::PrimaryAttack()
 
 void CSG550::SG550Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 {
+	OC2GunShot sourceShot(this);
 	Vector vecAiming, vecSrc, vecDir;
 	int flag;
 
@@ -202,7 +205,7 @@ void CSG550::SG550Fire(float flSpread, float flCycleTime, BOOL fUseAutoAim)
 void CSG550::Reload()
 {
 #ifndef REGAMEDLL_FIXES
-	if (m_pPlayer->ammo_556nato <= 0)
+	if (m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0)
 		return;
 #endif
 
@@ -237,5 +240,5 @@ void CSG550::WeaponIdle()
 
 float CSG550::GetMaxSpeed()
 {
-	return (m_pPlayer->m_iFOV == DEFAULT_FOV) ? SG550_MAX_SPEED : SG550_MAX_SPEED_ZOOM;
+	return oc2_weapon::Get(oc2_weapon::SCAR20).speed[oc2_weapon::Mode(13,m_iWeaponState,m_pPlayer?m_pPlayer->pev->fov:90)];
 }
