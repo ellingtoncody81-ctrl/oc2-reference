@@ -216,11 +216,11 @@ bool OC2_DrawBuyPreview(int team, int weaponId, int x, int y, int width, int hei
 	// unnecessarily shrink the actor if used directly for camera fitting.
 	const PoseBounds &bounds = actorMetadata.poses[sequence];
 	const float halfHeight = (bounds.maxs[2] - bounds.mins[2])*0.5f;
-	const float halfWidth = (bounds.maxs[1] - bounds.mins[1])*0.5f + (drawWeapon ? 12.0f : 4.0f);
 	const float halfDepth = (bounds.maxs[0] - bounds.mins[0])*0.5f;
 	const float fitHeight = halfHeight/tanY;
-	const float fitWidth = halfWidth/tanX;
-	const float distance = (fitHeight > fitWidth ? fitHeight : fitWidth)*1.12f + halfDepth + 4.0f;
+	// Keep the actor at a consistent portrait size across armor, pistols and
+	// long guns. Fitting the complete weapon width made every person too small.
+	const float distance = fitHeight*1.02f + halfDepth*.25f + 4.0f;
 	float origin[3] =
 	{
 		distance - (bounds.mins[0] + bounds.maxs[0])*0.5f,
