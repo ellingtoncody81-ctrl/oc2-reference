@@ -3366,9 +3366,34 @@ void R_RunViewmodelEvents( void )
 R_DrawViewModel
 =================
 */
+#include "gl_viewmodel_fov.h"
+CVAR_DEFINE_AUTO( r_viewmodel_projection_debug, "0", 0, "verify viewmodel-only GL projection restoration" );
+static struct
+{
+	unsigned int draws;
+	float fov, fov_x, fov_y, world_x, world_y;
+	float world_scale[2], model_scale[2];
+	qboolean restored_projection, restored_wvp;
+	int gl_restored;
+} r_viewmodel_projection;
+
+static void R_DumpViewModelProjection( void )
+{
+	gEngfuncs.Con_Printf( "vmprojection: draws=%u fov=%.6f fov_xy=%.6f/%.6f world_fov=%.6f/%.6f world_scale=%.6f/%.6f model_scale=%.6f/%.6f restored_projection=%d restored_wvp=%d gl_restored=%d\n",
+		r_viewmodel_projection.draws,r_viewmodel_projection.fov,r_viewmodel_projection.fov_x,r_viewmodel_projection.fov_y,
+		r_viewmodel_projection.world_x,r_viewmodel_projection.world_y,
+		r_viewmodel_projection.world_scale[0],r_viewmodel_projection.world_scale[1],
+		r_viewmodel_projection.model_scale[0],r_viewmodel_projection.model_scale[1],
+		r_viewmodel_projection.restored_projection,r_viewmodel_projection.restored_wvp,r_viewmodel_projection.gl_restored );
+}
+
 void R_DrawViewModel( void )
 {
 	cl_entity_t	*view = tr.viewent;
+	matrix4x4 saved_projection, saved_wvp;
+	float bounds[2], gl_projection_before[16];
+	qboolean custom_projection = false;
+	qboolean check_gl = false;
 
 	R_GatherPlayerLight( view );
 
@@ -3390,6 +3415,42 @@ void R_DrawViewModel( void )
 
 	if( !RI.currententity->model )
 		return;
+	// The client publishes its ADS-interpolated model FOV without changing
+	// the world FOV or the public renderer ABI. Other games have no cvar and
+	// keep their original projection. Refresh the pointer across DLL reloads.
+	cvar_t *model_fov = gEngfuncs.pfnGetCvarPointer( "_oc2_viewmodel_fov" );
+	// Source client/view.cpp uses zNearViewmodel=1 independently of the eye.
+	const float znear = 1.0f;
+	if( model_fov && OC2_ViewModelFrustum( model_fov->value,
+		RI.rvp.viewport[2], RI.rvp.viewport[3], znear, bounds ))
+	{
+		custom_projection = true;
+		check_gl = r_viewmodel_projection_debug.value != 0;
+		Matrix4x4_Copy( saved_projection, RI.projectionMatrix );
+		Matrix4x4_Copy( saved_wvp, RI.worldviewProjectionMatrix );
+		if( check_gl ) pglGetFloatv( GL_PROJECTION_MATRIX, gl_projection_before );
+		if( tr.rotation & 1 )
+			Matrix4x4_CreateProjection( RI.projectionMatrix, bounds[1], -bounds[1], bounds[0], -bounds[0], znear, Q_max( 256.0f, RI.farClip ));
+		else
+			Matrix4x4_CreateProjection( RI.projectionMatrix, bounds[0], -bounds[0], bounds[1], -bounds[1], znear, Q_max( 256.0f, RI.farClip ));
+		// Studio callbacks use WorldToScreen to observe sights. Install the
+		// same projection there for the entire gun+merged-arms draw as in GL.
+		Matrix4x4_Concat( RI.worldviewProjectionMatrix, RI.projectionMatrix, RI.worldviewMatrix );
+		pglMatrixMode( GL_PROJECTION );
+		pglPushMatrix();
+		GL_LoadMatrix( RI.projectionMatrix );
+		pglMatrixMode( GL_MODELVIEW );
+		r_viewmodel_projection.draws++;
+		r_viewmodel_projection.fov = model_fov->value;
+		r_viewmodel_projection.fov_x = RAD2DEG( 2 * atanf( bounds[0] / znear ));
+		r_viewmodel_projection.fov_y = RAD2DEG( 2 * atanf( bounds[1] / znear ));
+		r_viewmodel_projection.world_x = RI.rvp.fov_x;
+		r_viewmodel_projection.world_y = RI.rvp.fov_y;
+		r_viewmodel_projection.world_scale[0] = saved_projection[0][0];
+		r_viewmodel_projection.world_scale[1] = saved_projection[1][1];
+		r_viewmodel_projection.model_scale[0] = RI.projectionMatrix[0][0];
+		r_viewmodel_projection.model_scale[1] = RI.projectionMatrix[1][1];
+	}
 
 	// adjust the depth range to prevent view model from poking into walls
 	pglDepthRange( gldepthmin, gldepthmin + VIEWMODEL_DEPTH_RANGE * ( gldepthmax - gldepthmin ));
@@ -3404,6 +3465,23 @@ void R_DrawViewModel( void )
 		R_StudioSetupTimings();
 		R_StudioDrawModelInternal( RI.currententity, STUDIO_RENDER );
 		break;
+	}
+	if( custom_projection )
+	{
+		Matrix4x4_Copy( RI.projectionMatrix, saved_projection );
+		Matrix4x4_Copy( RI.worldviewProjectionMatrix, saved_wvp );
+		pglMatrixMode( GL_PROJECTION );
+		pglPopMatrix();
+		pglMatrixMode( GL_MODELVIEW );
+		r_viewmodel_projection.restored_projection = !memcmp( RI.projectionMatrix, saved_projection, sizeof( saved_projection ));
+		r_viewmodel_projection.restored_wvp = !memcmp( RI.worldviewProjectionMatrix, saved_wvp, sizeof( saved_wvp ));
+		r_viewmodel_projection.gl_restored = -1;
+		if( check_gl )
+		{
+			float restored[16];
+			pglGetFloatv( GL_PROJECTION_MATRIX, restored );
+			r_viewmodel_projection.gl_restored = !memcmp( restored, gl_projection_before, sizeof( restored ));
+		}
 	}
 
 	// restore depth range
@@ -3566,6 +3644,9 @@ static void pfnStudioDynamicLight( cl_entity_t *ent, alight_t *plight )
 
 qboolean R_StudioFillAPI( engine_studio_api_t *api, r_studio_interface_t *pDefaultDraw )
 {
+	if( CVAR_CHECK_SENTINEL( &r_viewmodel_projection_debug ))
+		gEngfuncs.Cvar_RegisterVariable( &r_viewmodel_projection_debug );
+	gEngfuncs.Cmd_AddCommand( "viewmodel_projection_dump", R_DumpViewModelProjection, "show actual weapon FOV and world projection restoration" );
 	cl_righthand = gEngfuncs.pfnGetCvarPointer( "cl_righthand" );
 
 	api->GetCurrentEntity        = pfnGetCurrentEntity;
