@@ -8042,15 +8042,16 @@ void CBasePlayer::ResetBuyPresentation()
 
 void CBasePlayer::RecordBuyPresentation(int weaponID)
 {
-	if (!m_bOc2BuyMenuOpen || !IsAlive() || m_iTeam != m_iOc2BuyMenuTeam || weaponID <= 0 || weaponID >= MAX_WEAPONS)
+	if (!IsAlive() || (m_bOc2BuyMenuOpen && m_iTeam != m_iOc2BuyMenuTeam) ||
+		weaponID <= 0 || weaponID >= MAX_WEAPONS)
 		return;
-	m_iOc2PurchasedWeapon = weaponID;
-	m_flOc2PurchaseTime = gpGlobals->time;
 	// Present the confirmed owned weapon immediately. The first-person model
 	// stays visible while shopping; closing the UI does not replay purchases.
 	if (m_bIsDefusing) return;
 	CBasePlayerItem *item = GetItemById(static_cast<WeaponIdType>(weaponID));
 	if (!item || !item->CanDeploy() || (m_pActiveItem && !m_pActiveItem->CanHolster())) return;
+	m_iOc2PurchasedWeapon = item->m_iId;
+	m_flOc2PurchaseTime = gpGlobals->time;
 	CBasePlayerWeapon *weapon = static_cast<CBasePlayerWeapon *>(item);
 	if (m_pActiveItem == item)
 	{
@@ -8061,6 +8062,9 @@ void CBasePlayer::RecordBuyPresentation(int weaponID)
 	else if (!SwitchWeapon(item)) return;
 	// A purchase command is outside prediction. Force same-sequence replays too.
 	weapon->SendWeaponAnim(pev->weaponanim,0);
+	if (CVAR_GET_FLOAT("developer") >= 2)
+		ALERT(at_console, "oc2purchase: t=%.6f id=%d anim=%d menu=%d\n",
+			gpGlobals->time, item->m_iId, pev->weaponanim, int(m_bOc2BuyMenuOpen));
 }
 
 void CBasePlayer::SetBuyPresentationOpen(bool open)

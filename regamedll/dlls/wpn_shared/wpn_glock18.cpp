@@ -210,6 +210,9 @@ void CGLOCK18::GLOCK18Fire(float flSpread, float flCycleTime, BOOL bFireBurst)
 
 	m_iClip--;
 	m_pPlayer->pev->effects |= EF_MUZZLEFLASH;
+	const int animation=m_pPlayer->HasShield()?(m_iClip?GLOCK18_SHIELD_SHOOT:GLOCK18_SHIELD_SHOOT_EMPTY):
+		(m_iClip?GLOCK18_SHOOT+(m_iClip%3):GLOCK18_SHOOT_EMPTY);
+	SendWeaponAnim(animation,UseDecrement()!=FALSE);
 
 	// player "shoot" animation
 	m_pPlayer->SetAnimation(PLAYER_ATTACK1);
