@@ -859,8 +859,11 @@ void CBasePlayerWeapon::FireRemaining(int &shotsFired, float &shootTime, BOOL bI
 #ifndef REGAMEDLL_FIXES
 		--m_pPlayer->ammo_9mm;
 #endif
-		PLAYBACK_EVENT_FULL(flag, m_pPlayer->edict(), m_usFireGlock18, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y,
+		PLAYBACK_EVENT_FULL(flag & ~FEV_NOTHOST, m_pPlayer->edict(), m_usFireGlock18, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y,
 			int(m_pPlayer->pev->punchangle.x * 100), int(m_pPlayer->pev->punchangle.y * 100), m_iClip == 0, FALSE);
+		const int animation=m_pPlayer->HasShield()?(m_iClip?GLOCK18_SHIELD_SHOOT:GLOCK18_SHIELD_SHOOT_EMPTY):
+			(m_iClip?GLOCK18_SHOOT+(m_iClip%3):GLOCK18_SHOOT_EMPTY);
+		SendWeaponAnim(animation,UseDecrement()!=FALSE);
 	}
 	else
 	{
