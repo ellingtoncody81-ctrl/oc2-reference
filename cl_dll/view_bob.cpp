@@ -71,6 +71,36 @@ namespace
 
 namespace view_bob
 {
+	RenderStep StepRenderClock( RenderClock &state, double stamp, float frame_time,
+		bool active, bool paused, int view_entity )
+	{
+		RenderStep out{ static_cast<float>( state.elapsed ), 0.0f, false };
+		if( !active || !std::isfinite( stamp ) || !std::isfinite( frame_time ) || frame_time < 0.0f )
+		{
+			state = RenderClock();
+			return RenderStep{ 0.0f, 0.0f, true };
+		}
+		// A map/demo seek, camera change or a real hitch still invalidates
+		// history. A <=250ms clock correction must not restart a walking stride.
+		if( state.primed && ( view_entity != state.view_entity ||
+			( !paused && ( stamp < state.last_stamp - 0.25 || stamp > state.last_stamp + 1.0 || frame_time > 0.25f ) ) ) )
+		{
+			state = RenderClock();
+			out.reset = true;
+			out.time = 0.0f;
+		}
+		if( state.primed && stamp == state.last_stamp ) return out;
+		state.primed = true;
+		state.view_entity = view_entity;
+		state.last_stamp = stamp;
+		if( paused || frame_time > 0.25f ) return out;
+		const float previous = static_cast<float>( state.elapsed );
+		state.elapsed += frame_time;
+		out.time = static_cast<float>( state.elapsed );
+		out.delta = out.time - previous;
+		return out;
+	}
+
 	BobOutput StepBob( BobState &state, const BobParams &params,
 	                   const BobInput &input,
 	                   float time, float frametime )

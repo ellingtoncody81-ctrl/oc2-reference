@@ -54,6 +54,7 @@
 #include "GameStudioModelRenderer.h"
 #include "ammohistory.h"
 #include "../../dlls/wpn_shared/oc2_gunshot.h"
+#include "../weapon_fire_feedback.h"
 #ifndef min
 #define min(a,b)  (((a) < (b)) ? (a) : (b))
 #endif
@@ -363,6 +364,7 @@ void HUD_WeaponPresentationDump()
         player.pev->fov,weapon->GetMaxSpeed(),weapon->m_iId==17?weapon->m_iGlock18ShotsFired:weapon->m_iFamasShotsFired,
         weapon->m_iId==17?weapon->m_flGlock18Shoot:weapon->m_flFamasShoot,
         weapon->m_flStartThrow/1024,weapon->m_flReleaseThrow/64,weapon->m_flLastFire,player.pev->maxspeed);
+	HUD_WeaponFireFeedbackDump();
 }
 
 
@@ -560,7 +562,11 @@ void CBasePlayerWeapon::FireRemaining(int &shotsFired, float &shootTime, BOOL is
 	if (isGlock18)
 	{
 		vecDir = m_pPlayer->FireBullets3(vecSrc, gpGlobals->v_forward, 0.05, 8192, 1, BULLET_PLAYER_9MM, 18, 0.9, m_pPlayer->pev, TRUE, m_pPlayer->random_seed);
-		PLAYBACK_EVENT_FULL(FEV_NOTHOST, ENT(m_pPlayer->pev), m_usFireGlock18, 0, (float *)&g_vecZero, (float *)&g_vecZero, vecDir.x, vecDir.y, (int)(m_pPlayer->pev->punchangle.x * 100), (int)(m_pPlayer->pev->punchangle.y * 100), m_iClip == 0, FALSE);
+		// Server continuation owns feedback; replay can cross this round before
+		// runfuncs permits effects. Prediction still advances ammo and pose.
+		const int animation=m_pPlayer->HasShield()?(m_iClip?GLOCK18_SHIELD_SHOOT:GLOCK18_SHIELD_SHOOT_EMPTY):
+			(m_iClip?GLOCK18_SHOOT+(m_iClip%3):GLOCK18_SHOOT_EMPTY);
+		SendWeaponAnim(animation,UseDecrement()!=FALSE);
 	}
 	else
 	{
@@ -1764,6 +1770,7 @@ void DLLEXPORT HUD_PostRunCmd( local_state_t *from, local_state_t *to, struct us
 	g_runfuncs = runfuncs;
 
 	HUD_WeaponsPostThink( from, to, cmd, time, random_seed );
+	HUD_UpdateReloadAnimation(to,time+cmd->msec*.001);
 	if (from->client.m_iId != WEAPON_SG552 && to->client.m_iId != WEAPON_SG552 &&
 		from->client.m_iId != WEAPON_AUG && to->client.m_iId != WEAPON_AUG)
 		to->client.fov = g_lastFOV;

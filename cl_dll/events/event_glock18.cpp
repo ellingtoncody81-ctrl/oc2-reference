@@ -58,27 +58,8 @@ void EV_Fireglock18( event_args_t *args )
 	{
 		++g_iShotsFired;
 		EV_MuzzleFlash();
-		int seq;
-		bool isBurst = (g_iWeaponFlags & WPNSTATE_GLOCK18_BURST_MODE) != 0 || g_bGlockBurstMode;
-		if( !args->bparam1 )
-		{
-			if( g_bHoldingShield )
-			{
-				seq = Com_RandomLong(GLOCK18_SHIELD_SHOOT, GLOCK18_SHIELD_SHOOT2);
-			}
-			else
-			{
-				seq = isBurst? GLOCK18_SHOOT : GLOCK18_SHOOT3;
-			}
-		}
-		else
-		{
-			if( g_bHoldingShield )
-				seq = GLOCK18_SHIELD_SHOOT_EMPTY;
-			else
-				seq = GLOCK18_SHOOT_EMPTY;
-		}
-		gEngfuncs.pEventAPI->EV_WeaponAnimation(seq, 2);
+		// Each real round's weapon code commits its pose. This event owns one
+		// sound, brass and flash authorization, not a baked three-shot pose.
 		if( !gHUD.cl_righthand->value )
 		{
 			EV_GetDefaultShellInfo( args, origin, velocity, ShellVelocity, ShellOrigin, forward, right, up, 36.0, -14.0, -14.0, 0);
@@ -98,6 +79,8 @@ void EV_Fireglock18( event_args_t *args )
 
 	PLAY_EVENT_SOUND( ((g_iWeaponFlags & WPNSTATE_GLOCK18_BURST_MODE) != 0 || g_bGlockBurstMode )
 						&& !g_bHoldingShield ? SOUNDS_NAME[0] : SOUNDS_NAME[1] );
+	if (EV_IsLocal(idx) && gEngfuncs.pfnGetCvarFloat("developer")>=2)
+		gEngfuncs.Con_Printf("glock_feedback: t=%.6f shot=%d last=%d sound=1 brass=1\n",gEngfuncs.GetClientTime(),g_iShotsFired,args->bparam1);
 
 	EV_GetGunPosition( args, vecSrc, origin );
 	VectorCopy( forward, vecAiming );
