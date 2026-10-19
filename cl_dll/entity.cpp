@@ -26,6 +26,28 @@
 #include "ev_hldm.h"
 #include "particleman.h"
 #include "particleman_internal.h"
+#include "../dlls/wpn_shared/oc2_weapon_params.h"
+
+static weapon_fire_feedback::State s_weaponFireFeedback;
+
+void HUD_CommitWeaponFlash()
+{
+	const int id=HUD_GetWeapon();
+	if (oc2_weapon::FromId(id)) s_weaponFireFeedback.Commit(id,gEngfuncs.GetClientTime());
+}
+
+void HUD_ClearWeaponFlash() { s_weaponFireFeedback.Clear(); }
+
+void HUD_WeaponFireFeedbackDump()
+{
+	const int id=HUD_GetWeapon();
+	if (id<=0 || id>=32) return;
+	const auto &stats=s_weaponFireFeedback.stats[id];
+	cl_entity_t *view=gEngfuncs.GetViewModel();
+	gEngfuncs.Con_Printf("firefeedback: t=%.6f id=%d accepted=%u rendered=%u blocked=%u pending=%d effects=%d\n",
+		gEngfuncs.GetClientTime(),id,stats.accepted,stats.rendered,stats.blocked,s_weaponFireFeedback.count,
+		view?view->curstate.effects:0);
+}
 
 extern vec3_t v_origin;
 
@@ -339,6 +361,18 @@ fired during this frame, handle the event by it's tag ( e.g., muzzleflash, sound
 */
 void DLLEXPORT HUD_StudioEvent( const struct mstudioevent_s *event, struct cl_entity_s *entity )
 {
+    // Authorization is retained for the final live bullet even with clip==0.
+    // Other players, the Zeus and non-firearm model effects keep their path.
+    if ((event->event==5001 || event->event==5011 || event->event==5021 || event->event==5031) &&
+        entity==gEngfuncs.GetViewModel() && oc2_weapon::FromId(HUD_GetWeapon()))
+    {
+        const int id=HUD_GetWeapon();
+        const bool allowed=s_weaponFireFeedback.Consume(id,gEngfuncs.GetClientTime());
+        if (gEngfuncs.pfnGetCvarFloat("developer")>=2)
+            gEngfuncs.Con_Printf("muzzle_feedback: t=%.6f id=%d event=%d rendered=%d sequence=%d\n",
+                gEngfuncs.GetClientTime(),id,event->event,int(allowed),entity->curstate.sequence);
+        if (!allowed) return;
+    }
 // #define CL_MuzzleFlash( x, y, z ) gEngfuncs.pEfxAPI->R_MuzzleFlash( y, z )
 	switch( event->event )
 	{

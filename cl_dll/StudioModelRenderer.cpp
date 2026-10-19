@@ -309,6 +309,7 @@ static void DumpOC2ViewModel()
 	studiohdr_t *header = view && view->model && view->model->type == mod_studio ?
 		(studiohdr_t *)IEngineStudio.Mod_Extradata(view->model) : NULL;
 	if (!header) { gEngfuncs.Con_Printf("oc2viewmodel: model=none\n"); return; }
+	HUD_DumpReloadAnimation();
 	const ViewModelArmsInfo arms = InspectViewModelArms(header, view->curstate.body, view->curstate.skin);
 	float animFrame = -1, animFps = 0;
 	int animFrames = 0, frameCount;
@@ -1344,6 +1345,13 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 
 	IEngineStudio.StudioSetHeader(m_pStudioHeader);
 	IEngineStudio.SetRenderModel(m_pRenderModel);
+
+	if (m_pCurrentEntity == gEngfuncs.GetViewModel())
+	{
+		bool shield;
+		const int weapon = ViewModelReloadWeapon(m_pRenderModel,shield);
+		HUD_ApplyReloadAnimation(m_pCurrentEntity,weapon,shield,m_clTime);
+	}
 
 	StudioSetUpTransform(0);
 

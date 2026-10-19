@@ -1157,6 +1157,12 @@ CBasePlayerItem *OC2OwnedWeapon(CBasePlayer *player, int weaponID)
 			if (item->m_iId == weaponID) return item;
 	return nullptr;
 }
+
+int OC2WeaponAmmoIndex(CBasePlayer *player, int weaponID)
+{
+	const WeaponInfoStruct *info = GetWeaponInfo(weaponID);
+	return info && info->ammoName2 ? player->GetAmmoIndex(info->ammoName2) : -1;
+}
 }
 
 bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
@@ -1449,7 +1455,7 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 			if (pPlayer->HasRestrictItem(ITEM_FLASHBANG, ITEM_TYPE_BUYING))
 				return;
 #endif
-			if (pPlayer->AmmoInventory(AMMO_FLASHBANG) >= MaxAmmoCarry(WEAPON_FLASHBANG))
+			if (pPlayer->AmmoInventory(OC2WeaponAmmoIndex(pPlayer, WEAPON_FLASHBANG)) >= MaxAmmoCarry(WEAPON_FLASHBANG))
 			{
 				if (g_bClientPrintEnable)
 				{
@@ -1474,7 +1480,7 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 			if (pPlayer->HasRestrictItem(ITEM_HEGRENADE, ITEM_TYPE_BUYING))
 				return;
 #endif
-			if (pPlayer->AmmoInventory(AMMO_HEGRENADE) >= MaxAmmoCarry(WEAPON_HEGRENADE))
+			if (pPlayer->AmmoInventory(OC2WeaponAmmoIndex(pPlayer, WEAPON_HEGRENADE)) >= MaxAmmoCarry(WEAPON_HEGRENADE))
 			{
 				if (g_bClientPrintEnable)
 				{
@@ -1498,7 +1504,7 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 			if (pPlayer->HasRestrictItem(ITEM_SMOKEGRENADE, ITEM_TYPE_BUYING))
 				return;
 #endif
-			if (pPlayer->AmmoInventory(AMMO_SMOKEGRENADE) >= MaxAmmoCarry(WEAPON_SMOKEGRENADE))
+			if (pPlayer->AmmoInventory(OC2WeaponAmmoIndex(pPlayer, WEAPON_SMOKEGRENADE)) >= MaxAmmoCarry(WEAPON_SMOKEGRENADE))
 			{
 				if (g_bClientPrintEnable)
 				{
@@ -1567,15 +1573,18 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 		const int acquired = iSlot == MENU_SLOT_ITEM_FLASHGREN ? WEAPON_FLASHBANG :
 			iSlot == MENU_SLOT_ITEM_HEGREN ? WEAPON_HEGRENADE :
 			iSlot == MENU_SLOT_ITEM_SMOKEGREN ? WEAPON_SMOKEGRENADE : 0;
-		const int ammoIndex = acquired == WEAPON_FLASHBANG ? AMMO_FLASHBANG :
-			acquired == WEAPON_HEGRENADE ? AMMO_HEGRENADE : acquired == WEAPON_SMOKEGRENADE ? AMMO_SMOKEGRENADE : 0;
+		const int ammoIndex = acquired ? OC2WeaponAmmoIndex(pPlayer, acquired) : -1;
 		const int ammoBefore = acquired ? pPlayer->AmmoInventory(ammoIndex) : 0;
+		const bool previousBuying = g_bItemCreatedByBuying;
 		g_bItemCreatedByBuying = true;
 		pPlayer->GiveNamedItem(pszItem);
-		g_bItemCreatedByBuying = false;
+		g_bItemCreatedByBuying = previousBuying;
+		// Confirm the real ammo pool before charging or replaying an acquisition.
+		if (acquired && (!OC2OwnedWeapon(pPlayer, acquired) || ammoIndex < 0 ||
+			pPlayer->AmmoInventory(ammoIndex) <= ammoBefore)) return;
 
 		pPlayer->AddAccount(-iItemPrice, RT_PLAYER_BOUGHT_SOMETHING);
-		if (acquired && OC2OwnedWeapon(pPlayer,acquired) && pPlayer->AmmoInventory(ammoIndex) > ammoBefore)
+		if (acquired)
 			pPlayer->RecordBuyPresentation(acquired);
 	}
 

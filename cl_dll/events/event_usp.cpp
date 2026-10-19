@@ -58,6 +58,7 @@ void EV_FireUSP( event_args_t *args )
 	if ( EV_IsLocal( idx ) )
 	{
 		++g_iShotsFired;
+		HUD_CommitWeaponFlash();
 		int seq;
 		if( g_bHoldingShield )
 		{
@@ -73,7 +74,7 @@ void EV_FireUSP( event_args_t *args )
 		}
 		else
 		{
-			EV_MuzzleFlash();
+			EV_MuzzleFlash(false);
 			if( !empty )
 				seq = Com_RandomLong(USP_SHOOT1, USP_SHOOT3);
 			else seq = USP_SHOOT_EMPTY;

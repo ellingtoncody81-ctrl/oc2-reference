@@ -13,6 +13,7 @@
 #include "pm_shared.h"
 #include "event_api.h"
 #include "r_efx.h"
+#include "../weapon_fire_feedback.h"
 
 // defaults for clientinfo messages
 #define	DEFAULT_VIEWHEIGHT	17
@@ -80,7 +81,7 @@ EV_MuzzleFlash
 Flag weapon/view model for muzzle flash
 =================
 */
-inline void EV_MuzzleFlash( void )
+inline void EV_MuzzleFlash( bool authorize = true )
 {
 	// Add muzzle flash to current weapon model
 	cl_entity_t *ent = gEngfuncs.GetViewModel();
@@ -88,6 +89,7 @@ inline void EV_MuzzleFlash( void )
 		return;
 
 	// Or in the muzzle flash
+	if (authorize) HUD_CommitWeaponFlash();
 	ent->curstate.effects |= EF_MUZZLEFLASH;
 }
 

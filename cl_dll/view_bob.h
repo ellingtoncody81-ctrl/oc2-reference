@@ -118,6 +118,27 @@ namespace view_bob
 		float lateral;    // m_flLateralBob,  already clamped to [-8, 8]
 	};
 
+	// cl.time is corrected after rendering by Xash's CL_AdjustClock. Keep
+	// presentation integration on one frame clock instead of mixing that
+	// corrected timestamp with host.frametime. The double engine timestamp
+	// identifies duplicate refdef calls without float-time quantization.
+	struct RenderClock
+	{
+		double elapsed, last_stamp;
+		int view_entity;
+		bool primed;
+		RenderClock() : elapsed( 0.0 ), last_stamp( 0.0 ), view_entity( -1 ), primed( false ) {}
+	};
+
+	struct RenderStep
+	{
+		float time, delta;
+		bool reset;
+	};
+
+	RenderStep StepRenderClock( RenderClock &state, double stamp, float frame_time,
+		bool active, bool paused, int view_entity );
+
 	// ---- persistent state ----
 	struct BobState
 	{

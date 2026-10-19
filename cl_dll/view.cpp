@@ -169,6 +169,8 @@ void V_InterpolateAngles( float *start, float *end, float *output, float frac )
 // the classic bob it replaced rather than inside view_bob.cpp, which stays pure
 // math with no engine types.
 static view_bob::BobState s_BobState;
+static view_bob::RenderClock s_ViewMotionClock;
+static view_bob::RenderStep s_ViewMotionStep{ 0.0f, 0.0f, false };
 static view_effects::EffectsState s_ViewEffects;
 static view_stairs::State s_ViewStairs;
 static cvar_t *cl_smoothstairs;
@@ -354,6 +356,14 @@ bool V_DrawADSCrosshair()
 	FillRGBA(x-dot/2,y-dot/2,max(1,dot),max(1,dot),red,green,50,alpha);
 	s_ADSDotVisible=true;
 	return true;
+}
+
+static void V_DumpBob()
+{
+	gEngfuncs.Con_Printf("bobclock: stamp=%.9f present=%.6f dt=%.6f phase=%.6f speed=%.6f air=%.6f vertical=%.6f lateral=%.6f reset=%d\n",
+		s_ViewMotionClock.last_stamp,s_ViewMotionStep.time,s_ViewMotionStep.delta,
+		s_BobState.bob_time,s_BobState.last_speed,s_BobState.air_mix,
+		s_BobState.vertical_bob,s_BobState.lateral_bob,int(s_ViewMotionStep.reset));
 }
 
 static void V_DumpADS()
@@ -929,6 +939,8 @@ void V_ResetViewModelEffects()
 	for (int axis=0;axis<3;++axis) s_ADSMotionPosition[axis]=s_ADSMotionAngles[axis]=0;
 	s_ADSMotionBobGain=s_ADSMotionInertiaGain=s_ADSMotionSpeed=0;
 	s_BobState = view_bob::BobState();
+	s_ViewMotionClock = view_bob::RenderClock();
+	s_ViewMotionStep = view_bob::RenderStep{ 0.0f, 0.0f, false };
 	view_effects::ResetEffects( s_ViewEffects );
 	s_ViewStairs = view_stairs::State();
 	s_flBobContextTime = -1.0f;
@@ -976,21 +988,34 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 		&flWeaponAccuracy, &iWeaponState, &iWeaponClip );
 	bool bVmActive = pparams->health > 0 && !g_iUser1 && !gEngfuncs.IsSpectateOnly()
 		&& !CL_IsThirdPerson() && pparams->viewentity <= pparams->maxclients;
-	bool bSameBobFrame = s_flBobContextTime == pparams->time;
+	// Studio exposes cl.time as double; ref_params truncates it to float.
+	// Use it only as a frame key. Motion itself advances with host.frametime.
+	double motionStamp = pparams->time;
+	if( IEngineStudio.GetTimes ) IEngineStudio.GetTimes( NULL, &motionStamp, NULL );
 	if( !bVmActive || s_flBobContextTime < 0.0f || pparams->time < s_flBobContextTime
 		|| pparams->time - s_flBobContextTime > 1.0f || pparams->viewentity != s_iBobContextEntity )
 	{
 		const bool keepADS=bVmActive && s_flBobContextTime>=0 && pparams->viewentity==s_iBobContextEntity && s_ADS.weapon==iWeaponId;
 		const view_ads::State savedADS=s_ADS;
+		const bool keepMotion=bVmActive && s_ViewMotionClock.primed &&
+			pparams->viewentity==s_iBobContextEntity &&
+			motionStamp>=s_ViewMotionClock.last_stamp-0.25 && motionStamp<=s_ViewMotionClock.last_stamp+1.0;
+		const view_bob::BobState savedBob=s_BobState;
+		const view_effects::EffectsState savedEffects=s_ViewEffects;
+		const view_bob::RenderClock savedClock=s_ViewMotionClock;
 		V_ResetViewModelEffects();
 		// A local pause can correct the clock before its pause flag arrives.
 		// Other effects keep their established reset; ADS retains its pose.
 		if (keepADS) { s_ADS=savedADS;s_ADS.lastTime=pparams->time; }
-		s_BobState.last_bob_time = pparams->time - pparams->frametime;
-		bSameBobFrame = false;
+		// Preserve only presentation motion across a small clock correction.
+		// The established camera/stairs reset and ADS calibration stay intact.
+		if (keepMotion) { s_BobState=savedBob;s_ViewEffects=savedEffects;s_ViewMotionClock=savedClock; }
 	}
 	s_flBobContextTime = pparams->time;
 	s_iBobContextEntity = pparams->viewentity;
+	s_ViewMotionStep=view_bob::StepRenderClock(s_ViewMotionClock,motionStamp,pparams->frametime,
+		bVmActive,pparams->paused!=0,pparams->viewentity);
+	if (s_ViewMotionStep.reset) { s_BobState=view_bob::BobState();view_effects::ResetEffects(s_ViewEffects); }
 	s_ADS.Update(iWeaponId,bVmActive,iInReload!=0,g_lastFOV,pparams->time,pparams->paused!=0);
 	V_UpdateViewModelSettings();
 	oc2_weapon_spread::SpreadInput spreadInput = { iWeaponId, flWeaponAccuracy, iWeaponState,
@@ -1330,7 +1355,7 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		in.inaccuracy        = spread.current - spread.stand;
 
 		view_bob::BobOutput offsets = view_bob::StepBob( s_BobState, params, in,
-			pparams->time, pparams->paused || bSameBobFrame ? 0.0f : pparams->frametime );
+			s_ViewMotionStep.time, s_ViewMotionStep.delta );
 
 		// ---- diagnostics, off by default ----
 		//
@@ -1568,8 +1593,8 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 	effectParams.land_scale = gHUD.viewmodel_lag_scale_land->value;
 	effectParams.roll_angle = gHUD.viewmodel_rollangle->value;
 	view_effects::EffectsInput effectInput;
-	effectInput.time = pparams->time;
-	effectInput.frame_time = pparams->frametime;
+	effectInput.time = s_ViewMotionStep.time;
+	effectInput.frame_time = s_ViewMotionStep.delta;
 	effectInput.vertical_speed = pparams->simvel[2];
 	effectInput.grounded = visualGrounded;
 	effectInput.active = bVmActive && view->model != NULL;
@@ -2569,6 +2594,7 @@ V_Init
 void V_Init (void)
 {
 	gEngfuncs.pfnAddCommand("ads_dump",V_DumpADS);
+	gEngfuncs.pfnAddCommand("viewbob_dump",V_DumpBob);
 	gEngfuncs.pfnAddCommand("viewmodel_dump",V_DumpViewModelSettings);
 	gEngfuncs.pfnAddCommand("viewmodel_apply_preset",V_ViewModelPresetCommand);
 	s_ViewModelFov=gEngfuncs.pfnRegisterVariable("viewmodel_fov","54",FCVAR_ARCHIVE);

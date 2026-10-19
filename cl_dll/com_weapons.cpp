@@ -23,6 +23,9 @@
 #include "const.h"
 #include "entity_state.h"
 #include "r_efx.h"
+#include "wpn_shared/oc2_reload.h"
+#include "wpn_shared/oc2_presentation.h"
+#include "weapon_fire_feedback.h"
 
 // g_runfuncs is true if this is the first time we've "predicated" a particular movement/firing
 //  command.  If it is 1, then we should play events/sounds etc., otherwise, we just will be
@@ -74,6 +77,114 @@ void COM_Log( char *pszFile, char *fmt, ...)
 static int g_currentanim;
 static int g_currentweapon;
 
+struct ReloadAnimationSnapshot
+{
+	bool active = false, shield = false;
+	int weapon = 0, animation = 0, model = 0;
+	float remaining = 0;
+	double deadline = 0, sampled = 0;
+} g_reloadAnimation;
+
+struct ReloadAnimationDisplay
+{
+	bool active = false, repaired = false;
+	int weapon = 0, animation = 0, model = 0, repairs = 0, reason = 0;
+	double deadline = 0, start = 0, engineStart = 0, time = 0;
+	float elapsed = 0, observed = 0;
+} g_reloadDisplay;
+
+void HUD_UpdateReloadAnimation(const local_state_s *state, double predictedTime)
+{
+	// A corrected prediction can first enter Reload on a replay (runfuncs == 0), after the
+	// original command was rejected by a corrected attack gate. Record the
+	// final state, without dispatching replayed sounds or restarting a clock.
+	g_reloadAnimation.active = false;
+	if (!state || predictedTime-predictedTime != 0) return;
+	const int id = state->client.m_iId;
+	if (id <= 0 || id >= 32 || state->client.health <= 0 || !state->client.viewmodel) return;
+	const weapon_data_t &weapon = state->weapondata[id];
+	const bool shield = (state->client.iuser3 & PLAYER_HOLDING_SHIELD) != 0;
+	if (!(weapon.m_fInReload || weapon.m_fInSpecialReload) ||
+		!oc2_reload::Find(id,state->client.weaponanim,shield)) return;
+	const float remaining = oc2_reload::Shotgun(id) ? weapon.m_flTimeWeaponIdle : state->client.m_flNextAttack;
+	if (!oc2_reload::Finite(remaining) || remaining <= 0) return;
+	g_reloadAnimation.active = true; g_reloadAnimation.shield = shield;
+	g_reloadAnimation.weapon = id; g_reloadAnimation.animation = state->client.weaponanim;
+	g_reloadAnimation.model = state->client.viewmodel; g_reloadAnimation.remaining = remaining;
+	g_reloadAnimation.deadline = predictedTime + remaining;
+	g_reloadAnimation.sampled = gEngfuncs.GetClientTime();
+}
+
+void HUD_ApplyReloadAnimation(cl_entity_s *view, int weapon, bool shield, double time)
+{
+	if (!view || time-time != 0) return;
+	if (time < g_reloadDisplay.time)
+		g_reloadDisplay.active = g_reloadDisplay.repaired = false;
+	g_reloadDisplay.time = time;
+	if (!g_reloadAnimation.active || weapon != g_reloadAnimation.weapon ||
+		shield != g_reloadAnimation.shield || view->curstate.modelindex != g_reloadAnimation.model)
+	{
+		// A repaired clock may finish on its terminal pose while R is held.
+		// Keep that correction until a real new animation changes the engine
+		// start/sequence; do not resurrect a cancelled reload or override fire.
+		if (g_reloadDisplay.repaired && weapon == g_reloadDisplay.weapon &&
+			view->curstate.modelindex == g_reloadDisplay.model && view->curstate.sequence == g_reloadDisplay.animation &&
+			view->curstate.animtime == g_reloadDisplay.engineStart)
+			view->curstate.animtime = g_reloadDisplay.start;
+		else g_reloadDisplay.repaired = false;
+		g_reloadDisplay.active = false;
+		return;
+	}
+	const bool changed = !g_reloadDisplay.active || weapon != g_reloadDisplay.weapon ||
+		g_reloadAnimation.animation != g_reloadDisplay.animation ||
+		fabs(g_reloadAnimation.deadline-g_reloadDisplay.deadline) > .2;
+	if (changed)
+	{
+		g_reloadDisplay.repaired = false;
+		g_reloadDisplay.weapon = weapon; g_reloadDisplay.animation = g_reloadAnimation.animation;
+		g_reloadDisplay.model = g_reloadAnimation.model;
+	}
+	g_reloadDisplay.active = true; g_reloadDisplay.deadline = g_reloadAnimation.deadline;
+	const float duration = oc2_reload::Duration(weapon,g_reloadAnimation.animation,shield,0);
+	const float elapsed = duration-g_reloadAnimation.remaining+static_cast<float>(time-g_reloadAnimation.sampled);
+	if (!oc2_reload::Finite(elapsed) || elapsed < -.1f || elapsed >= duration) return;
+	g_reloadDisplay.elapsed = elapsed > 0 ? elapsed : 0;
+	g_reloadDisplay.observed = static_cast<float>(time-view->curstate.animtime);
+	const bool sequenceMismatch = view->curstate.sequence != g_reloadAnimation.animation;
+	const bool staleClock = !g_reloadDisplay.repaired &&
+		fabs(g_reloadDisplay.observed-g_reloadDisplay.elapsed) > .15f;
+	if (sequenceMismatch || staleClock)
+	{
+		// Source has animation parity for a new instance of the same sequence.
+		// GoldSrc only has its sequence number, so recover a missing instance
+		// from the existing predicted reload lock, never from an R key press.
+		HUD_ClearWeaponFlash();
+		g_currentanim = g_reloadAnimation.animation; g_currentweapon = weapon;
+		gEngfuncs.pfnWeaponAnim(g_currentanim,view->curstate.body);
+		view->curstate.sequence = g_currentanim; view->curstate.frame = 0;
+		g_reloadDisplay.start = static_cast<float>(time-g_reloadDisplay.elapsed);
+		g_reloadDisplay.repaired = true; ++g_reloadDisplay.repairs;
+		g_reloadDisplay.reason = sequenceMismatch ? 1 : 2;
+	}
+	if (g_reloadDisplay.repaired)
+	{
+		// pfnWeaponAnim queues the engine clock for the next view setup. Only
+		// presentation is corrected here; magazine events and firing locks
+		// continue using the unchanged predicted/server reload state.
+		if (view->curstate.animtime != g_reloadDisplay.start)
+			g_reloadDisplay.engineStart = view->curstate.animtime;
+		view->curstate.animtime = g_reloadDisplay.start;
+	}
+}
+
+void HUD_DumpReloadAnimation()
+{
+	gEngfuncs.Con_Printf("oc2reloadsync: active=%d weapon=%d seq=%d remaining=%.6f expected_elapsed=%.6f observed_elapsed=%.6f repaired=%d repairs=%d reason=%d deadline=%.6f\n",
+		g_reloadAnimation.active,g_reloadAnimation.weapon,g_reloadAnimation.animation,g_reloadAnimation.remaining,
+		g_reloadDisplay.elapsed,g_reloadDisplay.observed,g_reloadDisplay.repaired,g_reloadDisplay.repairs,
+		g_reloadDisplay.reason,g_reloadAnimation.deadline);
+}
+
 /*
 =====================
 HUD_SendWeaponAnim
@@ -85,6 +196,10 @@ void HUD_SendWeaponAnim( int iAnim, int iWeaponId, int iBody, int iForce )
 {
 	if( g_runfuncs || iForce )
 	{
+		if (g_currentweapon != iWeaponId || oc2_presentation::Find(iWeaponId,iAnim) ||
+			oc2_reload::Find(iWeaponId,iAnim,g_bHoldingShield))
+			HUD_ClearWeaponFlash();
+		g_reloadDisplay.active = g_reloadDisplay.repaired = false;
 		g_currentanim = iAnim;
 		g_currentweapon = iWeaponId;
 
