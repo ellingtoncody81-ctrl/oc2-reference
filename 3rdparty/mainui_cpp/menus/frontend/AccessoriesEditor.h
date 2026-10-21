@@ -14,7 +14,7 @@
 class CMenuAccessoryPad : public CMenuBaseItem
 {
 public:
-    float *u=nullptr,*v=nullptr;bool *dirty=nullptr;bool dragging=false;int weapon=0;
+    float *u=nullptr,*v=nullptr;bool dragging=false;int weapon=0;
     bool KeyDown(int key) override
     {
         if(!u||!v)return false;
@@ -67,7 +67,7 @@ private:
     void Set(float x,float y)
     {
         x=Q_max(0.f,Q_min(1.f,x));y=Q_max(0.f,Q_min(1.f,y));
-        if(*u!=x||*v!=y){*u=x;*v=y;if(dirty)*dirty=true;}
+        if(*u!=x||*v!=y){*u=x;*v=y;_Event(QM_CHANGED);}
     }
     void MovePointer()
     {
@@ -105,7 +105,8 @@ public:
         Text(48,30,w-96,44,oc2_accessories::Name(m_weapon),32,Ink(),true);
         Text(48,78,w-96,22,"LOCAL WEAPON CUSTOMIZATION   /   shared by both teams",15,Muted());
         Text(48,194,left,22,m_tab?"CHARM POSITION":"STATTRAK POSITION",16,Accent(),true);
-        Text(48,494,left,32,"Drag or use arrows. Positions auto-fit.",13,Muted());
+        Text(48,490,left,24,"Drag or use arrows. Positions auto-fit.",13,Muted());
+        Text(48,516,left,22,"Editing turns it ON; you can switch it OFF.",12,Muted());
         char value[160];
         std::snprintf(value,sizeof(value),"Horizontal %.0f%%",100*(m_tab?m_draft.charmU:m_draft.statU));
         Text(48,543,left,24,value,15,Ink());
@@ -274,6 +275,7 @@ private:
         Button(m_import,"ADD IMAGE","accessory_import");m_import.onReleased=VoidCb(&CMenuAccessoriesEditor::ImportSticker);
         m_filename.SetNameAndStatus("",nullptr,"accessory_filename");m_filename.iMaxLength=80;m_filename.bAllowColorstrings=false;
         AddItem(m_filename);m_pad.SetNameAndStatus("",nullptr,"accessory_pad");AddItem(m_pad);
+        m_pad.onChanged=VoidCb(&CMenuAccessoriesEditor::PositionEdited);
         static const char *tags[6]={"accessory_u","accessory_v","accessory_amplitude","accessory_length","accessory_stiffness","accessory_damping"};
         const float lo[6]={0,0,0,.5f,20,2},hi[6]={100,100,25,1.5f,160,30},step[6]={1,1,1,.05f,5,1};
         for(int i=0;i<6;++i)
@@ -309,12 +311,23 @@ private:
         m_sliders[0].SetCurrentValue(100*(m_tab?m_draft.charmU:m_draft.statU));
         m_sliders[1].SetCurrentValue(100*(m_tab?m_draft.charmV:m_draft.statV));
     }
-    void Sync()
+    void SyncEnableLabels()
     {
         m_statToggle.SetText(m_draft.stattrak?"StatTrak ON":"StatTrak OFF");
         m_charmToggle.SetText(m_draft.charm?"Charm ON":"Charm OFF");
+    }
+    void EditedAttachment(bool charm)
+    {
+        (charm?m_draft.charm:m_draft.stattrak)=true;
+        m_dirty=true;SyncEnableLabels();
+        Message(charm?"Charm ON. Apply to save.":"StatTrak ON. Apply to save.");
+    }
+    void PositionEdited(){EditedAttachment(m_tab!=0);SyncPositionSliders();}
+    void Sync()
+    {
+        SyncEnableLabels();
         m_statTab.colorBase=m_tab?Ink():Accent();m_charmTab.colorBase=m_tab?Accent():Ink();
-        m_pad.u=m_tab?&m_draft.charmU:&m_draft.statU;m_pad.v=m_tab?&m_draft.charmV:&m_draft.statV;m_pad.dirty=&m_dirty;m_pad.weapon=m_weapon;
+        m_pad.u=m_tab?&m_draft.charmU:&m_draft.statU;m_pad.v=m_tab?&m_draft.charmV:&m_draft.statV;m_pad.weapon=m_weapon;
         m_reset.SetVisibility(!m_tab);m_prevSticker.SetVisibility(m_tab);m_nextSticker.SetVisibility(m_tab);
         m_filename.SetVisibility(m_tab);m_import.SetVisibility(m_tab);
         for(int i=2;i<6;++i)m_sliders[i].SetVisibility(m_tab);
@@ -325,12 +338,12 @@ private:
     {
         for(int i=0;i<6;++i)if(item==&m_sliders[i])
         {
-            const float v=m_sliders[i].GetCurrentValue();
-            if(i==0)(m_tab?m_draft.charmU:m_draft.statU)=v*.01f;
-            if(i==1)(m_tab?m_draft.charmV:m_draft.statV)=v*.01f;
-            if(i==2)m_draft.amplitude=v;if(i==3)m_draft.length=v;
-            if(i==4)m_draft.stiffness=v;if(i==5)m_draft.damping=v;
-            m_dirty=true;
+            float *const values[6]={m_tab?&m_draft.charmU:&m_draft.statU,
+                m_tab?&m_draft.charmV:&m_draft.statV,&m_draft.amplitude,&m_draft.length,
+                &m_draft.stiffness,&m_draft.damping};
+            const float value=m_sliders[i].GetCurrentValue()*(i<2?.01f:1.f);
+            if(*values[i]!=value){*values[i]=value;EditedAttachment(i<2?m_tab!=0:true);}
+            return;
         }
     }
     void StatTab(){m_pad.dragging=false;m_tab=0;Sync();}
@@ -341,7 +354,8 @@ private:
     {
         if(m_catalog.empty())return;
         int i=0;for(std::size_t n=0;n<m_catalog.size();++n)if(m_catalog[n].id==m_draft.sticker)i=int(n);
-        i=(i+direction+int(m_catalog.size()))%int(m_catalog.size());m_draft.sticker=m_catalog[i].id;m_dirty=true;
+        i=(i+direction+int(m_catalog.size()))%int(m_catalog.size());m_draft.sticker=m_catalog[i].id;
+        EditedAttachment(true);
     }
     void PreviousSticker(){SelectSticker(-1);}
     void NextSticker(){SelectSticker(1);}
@@ -354,7 +368,7 @@ private:
             {m_importStatus="catalog_write_failed";Message("Could not save sticker catalog.",true);return;}
         m_catalogDirty=false;
         for(const auto &s:m_catalog)if(s.file==file)m_draft.sticker=s.id;
-        m_importStatus="registered";m_dirty=true;Message("Image added. Apply to save this weapon's selection.");
+        m_importStatus="registered";EditedAttachment(true);Message("Image added; Charm ON. Apply to save.");
     }
     void Apply()
     {
@@ -371,15 +385,17 @@ private:
         latest.revision=latest.revision==std::numeric_limits<unsigned>::max()?1:latest.revision+1;
         if(!Write(oc2_accessories::kConfigPath,oc2_accessories::SerializeConfig(latest)))
             {Message("Save failed. Your changes are still unsaved.",true);return;}
-        m_revision=latest.revision;m_dirty=false;m_catalogDirty=false;Message("Saved for the next game / restart.");
+        m_revision=latest.revision;m_dirty=false;m_catalogDirty=false;
+        char status[96];std::snprintf(status,sizeof(status),"Saved: StatTrak %s / Charm %s.",
+            m_draft.stattrak?"ON":"OFF",m_draft.charm?"ON":"OFF");Message(status);
     }
     void UseDefaults()
     {
         const auto defaults=oc2_accessories::DefaultConfig();
         const auto *value=oc2_accessories::Find(defaults,m_weapon);if(!value)return;
-        const bool stat=m_draft.stattrak,charm=m_draft.charm;const int sticker=m_draft.sticker;
-        m_draft=*value;m_draft.stattrak=stat;m_draft.charm=charm;m_draft.sticker=sticker;
-        m_pad.dragging=false;m_dirty=true;Sync();Message("Defaults ready. Apply to save.");
+        const int sticker=m_draft.sticker;
+        m_draft=*value;m_draft.stattrak=true;m_draft.charm=true;m_draft.sticker=sticker;
+        m_pad.dragging=false;m_dirty=true;Sync();Message("Defaults: both ON. Apply to save.");
     }
     void Revert(){m_pad.dragging=false;ReloadData();Sync();}
     void Back()
