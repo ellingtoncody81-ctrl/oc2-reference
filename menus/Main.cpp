@@ -30,6 +30,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "gameinfo.h"
 #include "AnimatedBanner.h"
 #include "MovieBanner.h"
+#include "frontend/ModernMain.h"
 
 #define ART_MINIMIZE_N	"gfx/shell/min_n"
 #define ART_MINIMIZE_F	"gfx/shell/min_f"
@@ -406,6 +407,18 @@ void CMenuMain::_VidInit()
 
 void CMenuMain::Think()
 {
+	// A real disconnect can leave this former pause root on the stack. Return
+	// through the normal main-menu entry only when it is the active window;
+	// never steal focus from a confirmation dialog or another native page.
+	// Hide uses the window stack's deferred closing path, rather than clearing
+	// or removing list nodes while CWindowStack::Update is traversing them.
+	if( !CL_IsActive() && WindowStack()->Current() == this )
+	{
+		Hide();
+		UI_Main_Menu();
+		return;
+	}
+
 	if( gpGlobals->developer )
 	{
 		if( !console.IsVisible( ))
@@ -420,4 +433,31 @@ void CMenuMain::Think()
 	CMenuFramework::Think();
 }
 
-ADD_MENU( menu_main, CMenuMain, UI_Main_Menu );
+// Preserve the original menu and its resume/disconnect behavior in game.
+ADD_MENU( menu_main_legacy, CMenuMain, UI_LegacyMain_Menu );
+ADD_MENU3( menu_main, CMenuModernMain, UI_Main_Menu );
+
+void UI_Main_Menu()
+{
+	if( CL_IsActive() ) UI_LegacyMain_Menu();
+	else menu_main->Show();
+}
+
+static void UI_FrontendDump()
+{
+	if( menu_main ) menu_main->Dump();
+}
+
+static void UI_FrontendPage()
+{
+	if( menu_main ) menu_main->DebugPage( EngFuncs::CmdArgv( 1 ) );
+}
+
+static void UI_FrontendAccessory()
+{
+	if( menu_main ) menu_main->OpenAccessory( atoi( EngFuncs::CmdArgv( 1 ) ));
+}
+
+ADD_COMMAND( frontend_dump, UI_FrontendDump );
+ADD_COMMAND( frontend_page, UI_FrontendPage );
+ADD_COMMAND( frontend_accessory, UI_FrontendAccessory );
