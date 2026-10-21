@@ -45,6 +45,7 @@
 #include "wpn_shared/oc2_presentation.h"
 #include "wpn_shared/oc2_reload.h"
 #include "view_ads.h"
+#include "accessory_client.h"
 
 extern CGameStudioModelRenderer g_StudioRenderer;
 extern engine_studio_api_t IEngineStudio;
@@ -1281,6 +1282,7 @@ static void DrawOC2EquipmentArms(CStudioModelRenderer &renderer, alight_t &light
 		// StudioSaveBones already cached the animated weapon. Never replace
 		// that cache between glove and sleeve; both follow that same pose.
 		renderer.StudioMergeBones(model);
+		OC2_ObserveAccessoryOccluder(renderer);
 		IEngineStudio.StudioSetupLighting(&lighting);
 		IEngineStudio.StudioSetRemapColors(renderer.m_nTopColor, renderer.m_nBottomColor);
 		renderer.StudioRenderModel(lightdir);
@@ -1426,7 +1428,13 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 		IEngineStudio.StudioSetRemapColors(m_nTopColor, m_nBottomColor);
 
 		StudioRenderModel(dir);
-		if (bIsViewModel) DrawOC2EquipmentArms(*this, lighting, dir);
+		if (bIsViewModel)
+		{
+			bool shield;
+			OC2_BeginAccessories(*this,ViewModelReloadWeapon(m_pRenderModel,shield));
+			DrawOC2EquipmentArms(*this, lighting, dir);
+			OC2_DrawAccessories(*this,lighting,dir);
+		}
 	}
 
 	return 1;
