@@ -111,7 +111,8 @@ struct Diagnostics
  double drawMs[2]{},refitMs[2]{},collisionMs[2]{};
  unsigned collisionPairs[2]{},containmentSamples[2]{};
  bool statEnabled=false,charmEnabled=false;
- unsigned count=0;
+ unsigned count=0,revision=0;
+ WeaponConfig config;
 } diag;
 void Dump()
 {
@@ -119,7 +120,11 @@ void Dump()
  const int index=Index(diag.weapon);const unsigned count=index<0?0:counters.values[index];
  gEngfuncs.Con_Printf("oc2accessory: weapon=%d stat=%d charm=%d drawn=%d count=%u stat_bone=%d charm_bone=%d stat_offset=%.6f charm_offset=%.6f pitch=%.6f yaw=%.6f sticker=%d revision=%u read_error=%d\n",
   diag.weapon,int(diag.statEnabled),int(diag.charmEnabled),diag.drawn,count,diag.statBone,diag.charmBone,
-  diag.statOffset,diag.charmOffset,diag.pitch,diag.yaw,diag.sticker,settings.revision,int(readError));
+  diag.statOffset,diag.charmOffset,diag.pitch,diag.yaw,diag.sticker,diag.revision,int(readError));
+ gEngfuncs.Con_Printf("oc2accessory_config: weapon=%d revision=%u loaded_revision=%u stattrak=%d stat_u=%.6f stat_v=%.6f charm=%d charm_u=%.6f charm_v=%.6f sticker=%d amplitude=%.6f length=%.6f stiffness=%.6f damping=%.6f\n",
+  diag.config.weapon,diag.revision,settings.revision,int(diag.config.stattrak),diag.config.statU,diag.config.statV,
+  int(diag.config.charm),diag.config.charmU,diag.config.charmV,diag.config.sticker,
+  diag.config.amplitude,diag.config.length,diag.config.stiffness,diag.config.damping);
  gEngfuncs.Con_Printf("oc2accessory_geometry: stat_uv=%.6f/%.6f charm_uv=%.6f/%.6f required=%.6f/%.6f min_depth=%.6f box_min_depth=%.6f triangles=%d steps=%u resets=%u near_clamp=%d/%d near_iterations=%d/%d\n",
   diag.statUV[0],diag.statUV[1],diag.charmUV[0],diag.charmUV[1],diag.statRequired,diag.charmRequired,diag.minDepth,diag.boxMinDepth,diag.triangles,diag.steps,diag.resets,
   int(diag.statNearClamped),int(diag.charmNearClamped),diag.statNearIterations,diag.charmNearIterations);
@@ -259,8 +264,17 @@ struct Motion
  const studiohdr_t *header=nullptr;bool left=false;
  double statTime=-1,charmTime=-1;
  float statUV[2]{},charmUV[2]{};
+ float statReturnUV[2]{},charmReturnUV[2]{};
+ bool statReturning=false,charmReturning=false;
+ WeaponConfig config;
  bool statPlaced=false,charmPlaced=false;
 } motion;
+bool SameCustomization(const WeaponConfig &a,const WeaponConfig &b)
+{
+ return a.weapon==b.weapon&&a.stattrak==b.stattrak&&a.statU==b.statU&&a.statV==b.statV&&
+  a.charm==b.charm&&a.charmU==b.charmU&&a.charmV==b.charmV&&a.sticker==b.sticker&&
+  a.amplitude==b.amplitude&&a.length==b.length&&a.stiffness==b.stiffness&&a.damping==b.damping;
+}
 std::array<geo::MeshCollider,2> attachmentObstacles;
 bool counterColliderReady=false;
 struct ObstacleSource
@@ -571,6 +585,8 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
  const double previousTime=charm?motion.charmTime:motion.statTime;
  const bool previousPlaced=charm?motion.charmPlaced:motion.statPlaced;
  float *previousUV=charm?motion.charmUV:motion.statUV;
+ float *returnUV=charm?motion.charmReturnUV:motion.statReturnUV;
+ bool &returning=charm?motion.charmReturning:motion.statReturning;
  Placement selected=evaluate(mount);
  const bool requestedFit=selected.fitted;
  const bool nearClamped=selected.minDepth<1.10f;
@@ -581,13 +597,21 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
   {
    const float dt=previousTime<0?0:std::max(0.f,std::min(.1f,float(r.m_clTime-previousTime)));
    const float release=selected.fitted?1-std::exp(-8.f*dt):0;
+   if(!returning)for(int i=0;i<2;++i)returnUV[i]=previousUV[i];
+   returning=selected.fitted;
+   // Advance a continuous request independently of the snapped draw point.
+   // Feeding actualUV back here can stick forever at a gap between parts.
+   for(int i=0;i<2;++i)returnUV[i]+=(mount.actualUV[i]-returnUV[i])*release;
    geo::Mount preferred;
-   if(geo::FindMount(*weaponSurface,previousUV[0]+(u-previousUV[0])*release,previousUV[1]+(v-previousUV[1])*release,preferred))
+   const bool arrived=std::fabs(returnUV[0]-mount.actualUV[0])<.0005f&&std::fabs(returnUV[1]-mount.actualUV[1])<.0005f;
+   if(!arrived&&geo::FindMount(*weaponSurface,returnUV[0],returnUV[1],preferred))
    {
     Placement tested=evaluate(preferred);
     if(tested.fitted)selected=std::move(tested);
    }
+   if(arrived)returning=false;
   }
+  else returning=false;
  }
  if(!selected.valid)return;
  if(!selected.fitted)
@@ -710,12 +734,15 @@ void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)
  if(level!=(map?map:"")){OC2_AccessoriesVidInit();level=map?map:"";}
  ReadSettings(r.m_clTime);diag=Diagnostics();diag.weapon=weapon;frameWeapon=0;weaponSurface=nullptr;occluders.clear();obstacleSources.clear();
  const bool left=gHUD.cl_righthand&&gHUD.cl_righthand->value<=0;
- if(motion.weapon!=weapon||motion.header!=r.m_pStudioHeader||motion.left!=left||motion.revision!=settings.revision)
+ const WeaponConfig *cfg=Find(settings,weapon);
+ diag.revision=settings.revision;if(cfg)diag.config=*cfg;
+ if(motion.weapon!=weapon||motion.header!=r.m_pStudioHeader||motion.left!=left||motion.revision!=settings.revision||
+    (cfg&&!SameCustomization(motion.config,*cfg)))
  {
   const unsigned token=motion.token+1;motion=Motion();motion.weapon=weapon;motion.header=r.m_pStudioHeader;
   motion.left=left;motion.revision=settings.revision;motion.token=token;swing=geo::SwingState();
+  if(cfg)motion.config=*cfg;
  }
- const WeaponConfig *cfg=Find(settings,weapon);
  if(!cfg||(!cfg->stattrak&&!cfg->charm)||!IEngineStudio.IsHardware())return;
  auto it=mounts.find(r.m_pStudioHeader);
  if(it==mounts.end())
