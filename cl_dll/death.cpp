@@ -24,6 +24,7 @@
 #include "draw_util.h"
 #include "strl.h"
 #include "kill_feedback.h"
+#include "accessory_client.h"
 #include "match_ui.h"
 #include "weapon_hud_layout.h"
 #include "hud_readability.h"
@@ -545,6 +546,7 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	event.victim_team = rgDeathNoticeList[i].bTeamKill ? event.killer_team : rgDeathNoticeList[i].victimTeam;
 	event.headshot = headshot != 0;
 	const bool confirmedKill = kill_feedback::OnDeath(s_KillFeedback,event);
+	OC2_AccessoryKill(weaponName,killer,victim,event.killer_team,event.victim_team);
 
 	// Find the sprite in the list
 	int spr = gHUD.GetSpriteIndex( killedwith );
