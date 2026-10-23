@@ -11,6 +11,8 @@
 #include "oc2_accessories.h"
 #include "accessory_client.h"
 #include "accessory_geometry.h"
+#include "accessory_swing_path.h"
+#include "accessory_mount_contact.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -33,6 +35,44 @@ double nextRead=-1,lastTime=-1;
 std::map<int,int> stickerTextures;
 std::string level;
 bool readError=false;
+cvar_t *accessoriesEnabled=nullptr;
+cvar_t *charmVerify=nullptr;
+struct CharmCollisionStats
+{
+ unsigned checks=0,blocked=0,solved=0,limited=0,failures=0,queries=0,segments=0,rawBlocked=0,contactOnly=0,retained=0,refits=0;
+} charmStats;
+unsigned runCharmFailures=0,runCharmBlocked=0;
+void CharmFailure()
+{
+ ++charmStats.failures;
+ if(++runCharmFailures==1)gEngfuncs.Con_Printf("oc2_charm_unsolved: run_failures=1\n");
+}
+void ResetCharmCollisionStats(){charmStats=CharmCollisionStats();}
+using PerfClock=std::chrono::steady_clock;
+struct NativePerf
+{
+ bool active=false;double clientTime=-1,cpu=0;unsigned calls=0,count=0;
+ PerfClock::time_point previous;
+ std::array<double,512> intervals{};
+} nativePerf;
+struct CpuScope
+{
+ bool active=nativePerf.active;PerfClock::time_point start;
+ CpuScope(){if(active)start=PerfClock::now();}
+ ~CpuScope(){if(active){nativePerf.cpu+=std::chrono::duration<double,std::milli>(PerfClock::now()-start).count();++nativePerf.calls;}}
+};
+void PerfReset(){nativePerf=NativePerf();nativePerf.active=true;}
+void PerfDump()
+{
+ nativePerf.active=false;
+ const unsigned count=std::min<unsigned>(nativePerf.count,unsigned(nativePerf.intervals.size()));
+ std::vector<double> times(nativePerf.intervals.begin(),nativePerf.intervals.begin()+count);std::sort(times.begin(),times.end());
+ double total=0;for(double value:times)total+=value;
+ const double mean=count?total/count:0;
+ gEngfuncs.Con_Printf("oc2accessory_perf: enabled=%d frames=%u mean_frame_ms=%.6f median_frame_ms=%.6f p95_frame_ms=%.6f fps=%.6f accessory_cpu_ms=%.6f\n",
+  int(!accessoriesEnabled||accessoriesEnabled->value!=0),count,mean,count?times[count/2]:0,count?times[std::min(count-1,unsigned(count*.95))]:0,
+  mean>0?1000/mean:0,nativePerf.count?nativePerf.cpu/nativePerf.count:0);
+}
 
 bool LoadText(const char *path,std::string &text,int maximum,bool *exists=nullptr)
 {
@@ -102,14 +142,24 @@ struct Diagnostics
  int weapon=0,drawn=0,statBone=-1,charmBone=-1,sticker=0;
  float statOffset=0,charmOffset=0,statRequired=0,charmRequired=0,pitch=0,yaw=0,minDepth=1e20f,boxMinDepth=1e20f;
  float statUV[2]{},charmUV[2]{};
+ float mountLocal[2][3]{};
  unsigned steps=0,resets=0;int triangles=0;
  int statNearIterations=0,charmNearIterations=0;
  bool statNearClamped=false,charmNearClamped=false;
  float contactGap[2]{},contactLateral[2]{};
+ float charmNeck=0;
+ int charmHostRoot=-1,charmHostBones=0;bool charmHostOnly=false;
+ int charmMagBone=-1;float charmSocketError=0;bool charmMagDetached=false;
  bool blocked[2]{},surfaceAdjusted[2]{},swingLimited=false;
  unsigned testedCandidates[2]{};
  double drawMs[2]{},refitMs[2]{},collisionMs[2]{};
  unsigned collisionPairs[2]{},containmentSamples[2]{};
+ unsigned collisionReuse[2]{},collisionFull[2]{};
+ unsigned collisionVerified[2]{},collisionMismatch[2]{};
+ unsigned sceneReused=0,sceneVerified=0,sceneMismatch=0,sceneRefreshes=0;
+ unsigned boneQueries=0,boneUnsupported=0;
+ float sceneError=0;
+ double closureMs=0,sceneBoundMs=0,sceneCoreMs=0;
  bool statEnabled=false,charmEnabled=false;
  unsigned count=0,revision=0;
  WeaponConfig config;
@@ -135,6 +185,17 @@ void Dump()
  gEngfuncs.Con_Printf("oc2accessory_cpu: draw_ms=%.4f/%.4f refit_ms=%.4f/%.4f collision_ms=%.4f/%.4f pairs=%u/%u containment=%u/%u\n",
   diag.drawMs[0],diag.drawMs[1],diag.refitMs[0],diag.refitMs[1],diag.collisionMs[0],diag.collisionMs[1],
   diag.collisionPairs[0],diag.collisionPairs[1],diag.containmentSamples[0],diag.containmentSamples[1]);
+ gEngfuncs.Con_Printf("oc2accessory_cache: reused=%u/%u full=%u/%u verified=%u/%u mismatch=%u/%u\n",diag.collisionReuse[0],diag.collisionReuse[1],diag.collisionFull[0],diag.collisionFull[1],
+  diag.collisionVerified[0],diag.collisionVerified[1],diag.collisionMismatch[0],diag.collisionMismatch[1]);
+ gEngfuncs.Con_Printf("oc2accessory_scene: reused=%u verified=%u mismatch=%u refreshes=%u error=%.7f\n",diag.sceneReused,diag.sceneVerified,diag.sceneMismatch,diag.sceneRefreshes,diag.sceneError);
+ gEngfuncs.Con_Printf("oc2accessory_bones: queries=%u unsupported=%u\n",diag.boneQueries,diag.boneUnsupported);
+ gEngfuncs.Con_Printf("oc2accessory_scene_cpu: closure_ms=%.5f bound_ms=%.5f core_ms=%.5f\n",diag.closureMs,diag.sceneBoundMs,diag.sceneCoreMs);
+ gEngfuncs.Con_Printf("oc2accessory_mount: fixed=1 collision=1 relocation=0 stat_local=%.6f/%.6f/%.6f charm_local=%.6f/%.6f/%.6f\n",
+  diag.mountLocal[0][0],diag.mountLocal[0][1],diag.mountLocal[0][2],
+  diag.mountLocal[1][0],diag.mountLocal[1][1],diag.mountLocal[1][2]);
+ gEngfuncs.Con_Printf("oc2accessory_charm_collision: enabled=1 oracle=%d checks=%u blocked=%u solved=%u limited=%u triangles=%d stat_collision=0 failures=%u queries=%u segments=%u raw_blocked=%u contact_only=%u contact_half=%.6f contact_neck_only=1 neck=%.3f retained=%u refits=%u host_only=%d host_root=%d host_bones=%d mag_bone=%d mag_detached=%d socket_error=%.6f run_failures=%u run_blocked=%u\n",
+  int(charmVerify&&charmVerify->value!=0),charmStats.checks,charmStats.blocked,charmStats.solved,charmStats.limited,
+  diag.triangles,charmStats.failures,charmStats.queries,charmStats.segments,charmStats.rawBlocked,charmStats.contactOnly,oc2_accessory::kMountContactHalf,diag.charmNeck,charmStats.retained,charmStats.refits,int(diag.charmHostOnly),diag.charmHostRoot,diag.charmHostBones,diag.charmMagBone,int(diag.charmMagDetached),diag.charmSocketError,runCharmFailures,runCharmBlocked);
 }
 void Reload() { nextRead=-1;stickerTextures.clear();ReadSettings(gEngfuncs.GetClientTime(),true); }
 }
@@ -163,6 +224,11 @@ void OC2_AccessoriesInit()
 {
  gEngfuncs.pfnAddCommand("oc2_accessory_dump",Dump);
  gEngfuncs.pfnAddCommand("oc2_accessory_reload",Reload);
+ accessoriesEnabled=gEngfuncs.pfnRegisterVariable("oc2_accessories_enabled","1",0);
+ charmVerify=gEngfuncs.pfnRegisterVariable("oc2_charm_verify","0",0);
+ gEngfuncs.pfnAddCommand("oc2_charm_collision_reset",ResetCharmCollisionStats);
+ gEngfuncs.pfnAddCommand("oc2_accessory_perf_reset",PerfReset);
+ gEngfuncs.pfnAddCommand("oc2_accessory_perf_dump",PerfDump);
 }
 
 namespace
@@ -220,13 +286,16 @@ struct Carrier { std::string bone;std::vector<std::pair<int,float>> links; };
 std::vector<Joint> joints;
 std::vector<Carrier> carriers;
 bool skinAttempted=false,skinValid=false;
+int skinVariant=-1;
 bool ReadMatrix(std::istringstream &s,Matrix &m)
 { for(auto &row:m.m)for(float &v:row)if(!(s>>v)||!std::isfinite(v))return false;return true; }
-bool LoadSkin()
+bool LoadSkin(bool longNeck)
 {
+ const int variant=longNeck?1:0;
+ if(skinVariant!=variant){skinVariant=variant;skinAttempted=skinValid=false;}
  if(skinAttempted)return skinValid;skinAttempted=true;
  std::string text,magic;int version=0,count=0;
- if(!LoadText("models/attachments/charm.skin",text,32768))return false;
+ if(!LoadText(longNeck?"models/attachments/charm_m249.skin":"models/attachments/charm.skin",text,32768))return false;
  std::istringstream input(text);
  if(!(input>>magic>>version)||magic!="OC2_ATTACHMENT_SKIN"||version!=1||!(input>>magic>>count)||magic!="joints"||count<1||count>16)return false;
  std::vector<Joint> parsed(count);
@@ -255,19 +324,18 @@ bool LoadSkin()
 
 std::map<const studiohdr_t *,geo::MountCache> mounts;
 std::map<const studiohdr_t *,geo::StudioTriangleCache> meshes;
-std::vector<geo::Triangle> occluders;
 geo::SwingState swing;
 struct Motion
 {
- double time=-1;float anchor[3]{},velocity[3]{},acceleration[3]{};
- int weapon=0;float statOffset=0,charmOffset=0;unsigned token=0,revision=0;
+ double time=-1;float anchor[3]{},velocity[3]{};
+ int weapon=0;unsigned token=0,revision=0;
  const studiohdr_t *header=nullptr;bool left=false;
- double statTime=-1,charmTime=-1;
- float statUV[2]{},charmUV[2]{};
- float statReturnUV[2]{},charmReturnUV[2]{};
- bool statReturning=false,charmReturning=false;
  WeaponConfig config;
- bool statPlaced=false,charmPlaced=false;
+ geo::Mount requested[2];
+ bool requestedResolved[2]{};
+ bool charmSafe=false,biasReady=false;
+ geo::SwingOutput safeAngles,bias,foot;
+ std::array<Matrix,MAXSTUDIOBONES> safeLocal;
 } motion;
 bool SameCustomization(const WeaponConfig &a,const WeaponConfig &b)
 {
@@ -275,77 +343,10 @@ bool SameCustomization(const WeaponConfig &a,const WeaponConfig &b)
   a.charm==b.charm&&a.charmU==b.charmU&&a.charmV==b.charmV&&a.sticker==b.sticker&&
   a.amplitude==b.amplitude&&a.length==b.length&&a.stiffness==b.stiffness&&a.damping==b.damping;
 }
-std::array<geo::MeshCollider,2> attachmentObstacles;
-bool counterColliderReady=false;
-struct ObstacleSource
-{
- const studiohdr_t *header;int body,skin;
- bool operator==(const ObstacleSource &other)const{return header==other.header&&body==other.body&&skin==other.skin;}
-};
-std::vector<ObstacleSource> obstacleSources,previousObstacleSources;
+std::map<const studiohdr_t *,std::array<Matrix,MAXSTUDIOBONES>> addonBind;
 geo::MountCache *weaponSurface=nullptr;
-std::map<const studiohdr_t *,int> colliderBones;
-geo::Frame collisionFrame;
-void SetCollisionFrame(const geo::MountCache &cache,const float (*pose)[3][4],const WeaponConfig &cfg)
-{
- auto found=colliderBones.find(cache.studio.header);
- if(found==colliderBones.end())
- {
-  std::map<int,unsigned> counts;
-  for(const auto &triangle:cache.surfaces)if(triangle.bone>=0)++counts[triangle.bone];
-  int bone=0;unsigned most=0;
-  for(const auto &entry:counts)if(entry.second>most){bone=entry.first;most=entry.second;}
-  found=colliderBones.insert(std::make_pair(cache.studio.header,bone)).first;
- }
- int bone=found->second;
- geo::Mount preferred;
- // The larger articulated mesh benefits most from aligned bounds. This also
- // handles dual pistols whose two gun bones rotate independently on inspect.
- if(geo::FindMount(cache,cfg.charm?cfg.charmU:cfg.statU,cfg.charm?cfg.charmV:cfg.statV,preferred))
-  bone=preferred.bone;
- collisionFrame=geo::Frame();
- if(bone<0||bone>=int(cache.bind.size()))return;
- const auto &bind=cache.bind[bone].m;
- const float *source[2]={cache.side.axisX,cache.side.axisY};
- float *axes[2]={collisionFrame.axisX,collisionFrame.axisY};
- for(int axis=0;axis<2;++axis)
- {
-  float local[3];
-  for(int i=0;i<3;++i)local[i]=bind[0][i]*source[axis][0]+bind[1][i]*source[axis][1]+bind[2][i]*source[axis][2];
-  Direction(pose[bone],local,axes[axis]);
- }
- Unit(collisionFrame.axisX);
- const float parallel=Dot(collisionFrame.axisX,collisionFrame.axisY);
- for(int i=0;i<3;++i)collisionFrame.axisY[i]-=parallel*collisionFrame.axisX[i];
- Unit(collisionFrame.axisY);
- for(int i=0;i<3;++i)
- {
-  collisionFrame.normal[i]=collisionFrame.axisX[(i+1)%3]*collisionFrame.axisY[(i+2)%3]-
-   collisionFrame.axisX[(i+2)%3]*collisionFrame.axisY[(i+1)%3];
-  collisionFrame.origin[i]=pose[bone][i][3];
- }
- // A common orthonormal coordinate change preserves actual distances, even
- // for mirrored viewmodels. It keeps the BVH aligned while inspecting/turning.
- if(!std::isfinite(Dot(collisionFrame.normal,collisionFrame.normal))||Dot(collisionFrame.normal,collisionFrame.normal)<.99f)
-  collisionFrame=geo::Frame();
-}
-void CollisionCoordinates(std::vector<geo::Triangle> &triangles)
-{
- const float *axes[3]={collisionFrame.axisX,collisionFrame.axisY,collisionFrame.normal};
- for(auto &triangle:triangles)
- {
-  for(auto &point:triangle.p)
-  {
-   float relative[3];for(int i=0;i<3;++i)relative[i]=point[i]-collisionFrame.origin[i];
-   for(int i=0;i<3;++i)point[i]=Dot(relative,axes[i]);
-  }
-  float normal[3];for(int i=0;i<3;++i)normal[i]=triangle.normal[i];
-  for(int i=0;i<3;++i)triangle.normal[i]=Dot(normal,axes[i]);
- }
-}
 WeaponConfig frameConfig;
 int frameWeapon=0;
-
 geo::StudioTriangleCache &Mesh(studiohdr_t *header)
 {
  auto it=meshes.find(header);
@@ -356,10 +357,158 @@ geo::StudioTriangleCache &Mesh(studiohdr_t *header)
  }
  return it->second;
 }
+// Refit the real posed gun once per render frame, then reuse its BVH for
+// angle trials. Hands and the fixed StatTrak are not collision obstacles.
+struct CharmGunScene
+{
+ const studiohdr_t *header=nullptr;int body=-1,skin=-1,hostRoot=-1;
+ std::vector<int> allowedBones;
+ geo::PoseGeometry geometry;
+ std::vector<geo::PoseSource> sources;
+ std::vector<geo::BoneMetric> metrics,retainedMetrics;
+ std::vector<geo::PoseClosure> closures;
+ geo::Frame frame;
+ geo::MeshCollider full,oracle,oracleLocal;
+ std::array<geo::MeshCollider,4> queries;
+ int footBone=-1,pendantBone=-1;
+ bool fullReady=false,oracleReady=false,canRetain=false;
+ float retainedError=0;
+} charmGun;
+void LocalTriangles(std::vector<geo::Triangle>& triangles,const geo::Frame& frame)
+{
+ const float *axes[3]={frame.axisX,frame.axisY,frame.normal};
+ for(auto& t:triangles)for(auto& p:t.p)
+ {
+  float v[3];for(int i=0;i<3;++i)v[i]=p[i]-frame.origin[i];
+  for(int i=0;i<3;++i)p[i]=Dot(v,axes[i]);
+ }
+}
+bool FullCharmGun()
+{
+ if(charmGun.fullReady)return true;
+ std::vector<geo::Triangle> gun;
+ const auto& source=charmGun.sources.front();
+ if(!geo::ReadStudioTriangles(*source.mesh,source.body,source.skin,
+  reinterpret_cast<const float (*)[3][4]>(source.matrices.data()),gun,false,true,
+  charmGun.allowedBones.empty()?nullptr:&charmGun.allowedBones))return false;
+ LocalTriangles(gun,charmGun.frame);
+ charmGun.fullReady=geo::RefitMeshCollider(gun,charmGun.full);
+ if(charmGun.fullReady)
+ {
+  charmGun.retainedMetrics=charmGun.metrics;
+  charmGun.canRetain=geo::BuildPoseClosures(charmGun.full,charmGun.sources,charmGun.closures);
+  charmGun.retainedError=0;++charmStats.refits;
+ }
+ return charmGun.fullReady;
+}
+bool CurrentCharmOracle()
+{
+ if(charmGun.oracleReady)return true;
+ std::vector<geo::Triangle> gun;const auto& source=charmGun.sources.front();
+ if(!geo::ReadStudioTriangles(*source.mesh,source.body,source.skin,
+  reinterpret_cast<const float (*)[3][4]>(source.matrices.data()),gun,false,true,
+  charmGun.allowedBones.empty()?nullptr:&charmGun.allowedBones))return false;
+ if(!geo::RefitMeshCollider(gun,charmGun.oracle))return false;
+ LocalTriangles(gun,charmGun.frame);
+ charmGun.oracleReady=geo::RefitMeshCollider(gun,charmGun.oracleLocal);
+ return charmGun.oracleReady;
+}
+bool BeginCharmGun(CStudioModelRenderer& r,const geo::Frame& frame)
+{
+ const int body=r.m_pCurrentEntity->curstate.body,skin=r.m_pCurrentEntity->curstate.skin;
+ int hostRoot=-1;const std::vector<int>* allowed=nullptr;std::vector<int> assembly;
+ diag.charmMagBone=-1;diag.charmSocketError=0;diag.charmMagDetached=false;
+ if(frameWeapon==10)
+ {
+  for(const auto& region:weaponSurface->regions)
+   if(std::find(region.weaponBones.begin(),region.weaponBones.end(),motion.requested[1].bone)!=region.weaponBones.end())
+   {hostRoot=region.rigRoot;allowed=&region.weaponBones;break;}
+  if(!allowed||allowed->empty()||hostRoot<0)return false;
+  assembly=*allowed;const int magazine=hostRoot==2?5:11;
+  float displacement=0;
+  if(geo::BoneSocketDisplacement(*weaponSurface,hostRoot,magazine,r.m_rgCachedLightTransform,displacement))
+  {
+   diag.charmMagBone=magazine;diag.charmSocketError=displacement;
+   diag.charmMagDetached=displacement>.03f;
+   if(diag.charmMagDetached)
+   {
+    // A removed magazine is a separately carried component. If it carries
+    // the charm, it owns the collider; otherwise it is not in the receiver.
+    if(motion.requested[1].bone==magazine)assembly={magazine};
+    else assembly.erase(std::remove(assembly.begin(),assembly.end(),magazine),assembly.end());
+   }
+  }
+  allowed=&assembly;
+ }
+ diag.charmHostOnly=allowed!=nullptr;diag.charmHostRoot=hostRoot;diag.charmHostBones=allowed?int(allowed->size()):0;
+ if(charmGun.header!=r.m_pStudioHeader||charmGun.body!=body||charmGun.skin!=skin||charmGun.hostRoot!=hostRoot||charmGun.allowedBones!=assembly)
+ {
+  charmGun=CharmGunScene();charmGun.header=r.m_pStudioHeader;charmGun.body=body;charmGun.skin=skin;
+  charmGun.hostRoot=hostRoot;if(allowed)charmGun.allowedBones=*allowed;
+  if(!geo::BuildPoseGeometry(weaponSurface->studio,body,skin,charmGun.geometry,false,
+   charmGun.allowedBones.empty()?nullptr:&charmGun.allowedBones))return false;
+  charmGun.sources.resize(1);
+  auto& source=charmGun.sources.front();source.mesh=&weaponSurface->studio;
+  source.geometry=&charmGun.geometry;source.body=body;source.skin=skin;
+ }
+ auto& source=charmGun.sources.front();source.matrices.resize(r.m_nCachedBones);
+ for(int i=0;i<r.m_nCachedBones;++i)MatrixCopy(r.m_rgCachedLightTransform[i],source.matrices[i].m);
+ charmGun.frame=frame;charmGun.fullReady=charmGun.oracleReady=false;
+ if(!geo::BuildPoseMetrics(charmGun.sources,frame,charmGun.metrics))return false;
+ charmGun.canRetain=charmGun.canRetain&&
+  geo::PoseClosuresUnchanged(charmGun.full,charmGun.closures,charmGun.sources,frame)&&
+  geo::PoseDisplacementBound(charmGun.retainedMetrics,charmGun.metrics,charmGun.full.triangles,charmGun.retainedError,true);
+ return charmGun.canRetain||FullCharmGun();
+}
+constexpr float kCharmCollisionGap=.0001f;
+bool CharmFree(const std::vector<geo::Triangle>& world,float gap=kCharmCollisionGap,bool local=false)
+{
+ ++charmStats.queries;
+ std::vector<geo::Triangle> triangles=world;
+ if(!local)LocalTriangles(triangles,charmGun.frame);
+ // The fixed gun connection has an explicit, tiny contact port. It is not a
+ // material/bone exemption: every triangle crossing its boundary is cut, and
+ // every outside fragment (including the pin/arm) is still collision tested.
+ // Enlarged CCD gaps also shrink the ignorable port by the full motion bound.
+ int slot=3;
+ if(!triangles.empty())
+ {
+  if(std::all_of(triangles.begin(),triangles.end(),[](const geo::Triangle& t){return t.bone==charmGun.footBone;}))slot=0;
+  else if(std::all_of(triangles.begin(),triangles.end(),[](const geo::Triangle& t){return t.bone==charmGun.pendantBone;}))slot=2;
+  else if(local)slot=1;
+ }
+ auto& query=charmGun.queries[slot];
+ const auto check=[&](float error)
+ {
+  std::vector<geo::Triangle> outside;
+  geo::TrianglesOutsideMountContact(triangles,outside,std::max(0.f,gap-kCharmCollisionGap)+error,charmGun.footBone);
+  if(outside.empty())return true;
+  if(!geo::RefitMeshCollider(outside,query,false))return false;
+  return !geo::CheckMeshCollision(charmGun.full,query,gap+error).blocked;
+ };
+ // A retained real-gun BVH is usable only with a bound for every bone and
+ // unchanged closure. Its extra separation covers the entire current gun.
+ if(!charmGun.fullReady&&charmGun.canRetain&&check(charmGun.retainedError))
+ {++charmStats.retained;return true;}
+ return FullCharmGun()&&check(0);
+}
+std::vector<unsigned> CharmGroups(const std::vector<geo::Triangle>& triangles,studiohdr_t *header)
+{
+ auto bones=reinterpret_cast<mstudiobone_t *>(reinterpret_cast<byte *>(header)+header->boneindex);
+ int foot=-1,pendant=-1;
+ for(int i=0;i<header->numbones;++i)
+ {
+  if(!strcmp(bones[i].name,"skin_08"))foot=i;
+  if(!strcmp(bones[i].name,"skin_10"))pendant=i;
+ }
+ std::vector<unsigned> groups;groups.reserve(triangles.size());
+ for(const auto& t:triangles)groups.push_back(t.bone==foot?0u:t.bone==pendant?2u:1u);
+ return groups;
+}
 unsigned ReverseDigits(unsigned n)
 { unsigned r=0;for(int i=0;i<6;++i){r=r*10+n%10;n/=10;}return r; }
 
-void CharmPose(studiohdr_t *h,const geo::SwingOutput &angles,float length,std::array<Matrix,MAXSTUDIOBONES> &pose)
+void CharmPose(studiohdr_t *h,const geo::SwingOutput &angles,float length,std::array<Matrix,MAXSTUDIOBONES> &pose,const geo::SwingOutput& foot)
 {
  std::vector<Matrix> dynamic(joints.size()),delta(joints.size());
  for(std::size_t i=0;i<joints.size();++i)
@@ -367,8 +516,9 @@ void CharmPose(studiohdr_t *h,const geo::SwingOutput &angles,float length,std::a
   const Joint &j=joints[i];Matrix around=Identity();
   if(i)
   {
-   float fraction=i==1?.2f:.4f;
-   around=Rotation(std::max(-15.f,std::min(15.f,angles.pitch*fraction)),i==1?0:std::max(-20.f,std::min(0.f,angles.yaw*.5f)));
+   if(i==1)around=Rotation(foot.pitch,foot.yaw);
+   else around=Rotation(std::max(-75.f,std::min(75.f,angles.pitch*.5f)),
+                   std::max(-90.f,std::min(90.f,angles.yaw*.5f)));
    for(int k=0;k<3;++k)
    {
     const float pivot[3]={j.bind.m[0][3],j.bind.m[1][3],j.bind.m[2][3]};
@@ -396,18 +546,15 @@ void CharmPose(studiohdr_t *h,const geo::SwingOutput &angles,float length,std::a
 
 struct Placement
 {
- geo::Mount mount;
  geo::Frame frame,anchorFrame;
  geo::Bounds bounds;
  std::array<Matrix,MAXSTUDIOBONES> local,posed;
  std::vector<geo::Triangle> triangles;
  geo::SwingState swingState;
- geo::SwingOutput angles;
- geo::CollisionResult collision;
+ geo::SwingOutput angles,foot;
  float velocity[3]{};
- float required=0,offset=0,minDepth=1e20f,boxMinDepth=1e20f;
+ float offset=.01f,minDepth=1e20f,boxMinDepth=1e20f;
  float contactGap=0,contactLateral=0;
- bool valid=false,fitted=false,limited=false;
 };
 // These samples are points on the real compiled shell/clip backing mesh, not
 // arbitrary origins or bounding boxes. Their coordinates are evaluated through
@@ -448,24 +595,25 @@ const ContactSample &ContactOnMesh(studiohdr_t *header,const std::array<Matrix,M
  return contactSamples.insert(std::make_pair(header,sample)).first->second;
 }
 void PosePlacement(CStudioModelRenderer &r,studiohdr_t *header,const std::array<Matrix,MAXSTUDIOBONES> &base,
-                   int body,bool charm,bool left,const geo::MeshCollider &obstacles,Placement &p)
+                   int body,bool charm,bool left,Placement &p,bool localReady=false)
 {
- p.local=base;p.frame=p.anchorFrame;
- if(charm)CharmPose(header,p.angles,frameConfig.length,p.local);
- else if(left)
+ p.frame=p.anchorFrame;
+ if(!localReady)p.local=base;
+ if(charm&&!localReady)CharmPose(header,p.angles,frameConfig.length,p.local,p.foot);
+ else if(!charm&&left)
  {
   auto bones=reinterpret_cast<mstudiobone_t *>(reinterpret_cast<byte *>(header)+header->boneindex);
   for(int i=0;i<header->numbones;++i)if(!strncmp(bones[i].name,"digit",5))
    for(int row=0;row<3;++row)p.local[i].m[row][0]=-p.local[i].m[row][0];
  }
- // A mounting pad sized in model units. Collision never increases this gap.
- p.required=p.offset=.01f;
+ // Fixed contact offset in model units; animation never changes the mount.
+ p.offset=.01f;
  for(int i=0;i<3;++i)p.frame.origin[i]+=p.frame.normal[i]*p.offset;
- p.minDepth=1e20f;p.boxMinDepth=1e20f;p.valid=p.fitted=false;
+ p.minDepth=1e20f;p.boxMinDepth=1e20f;
  for(int i=0;i<3;++i){p.bounds.min[i]=1e20f;p.bounds.max[i]=-1e20f;}
  Matrix world=FrameMatrix(p.frame);
  for(int i=0;i<header->numbones;++i)p.posed[i]=Product(world,p.local[i]);
- geo::ReadStudioTriangles(Mesh(header),body,0,reinterpret_cast<const float (*)[3][4]>(p.posed.data()),p.triangles);
+ geo::ReadStudioTriangles(Mesh(header),body,0,reinterpret_cast<const float (*)[3][4]>(p.posed.data()),p.triangles,false,true);
  for(const auto &triangle:p.triangles)for(const auto &point:triangle.p)
  {
   float d[3];for(int i=0;i<3;++i)d[i]=point[i]-r.m_vRenderOrigin[i];
@@ -490,28 +638,12 @@ void PosePlacement(CStudioModelRenderer &r,studiohdr_t *header,const std::array<
  p.contactGap=Dot(d,p.anchorFrame.normal);
  for(int i=0;i<3;++i)lateral[i]=d[i]-p.anchorFrame.normal[i]*p.contactGap;
  p.contactLateral=std::sqrt(Dot(lateral,lateral));
- // Bounds, near clipping and the physical contact sample above use world
- // coordinates; only the collision query uses the shared gun-aligned frame.
- CollisionCoordinates(p.triangles);
- const auto collisionStart=std::chrono::steady_clock::now();
- p.collision=geo::CheckMeshCollision(obstacles,p.triangles);
- if(charm&&counterColliderReady&&!p.collision.blocked)
- {
-  auto second=geo::CheckMeshCollision(attachmentObstacles[1],p.triangles);
-  second.trianglePairs+=p.collision.trianglePairs;second.containmentSamples+=p.collision.containmentSamples;
-  second.closedGroups+=p.collision.closedGroups;p.collision=second;
- }
- const int slot=charm?1:0;
- diag.collisionMs[slot]+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-collisionStart).count();
- diag.collisionPairs[slot]+=p.collision.trianglePairs;diag.containmentSamples[slot]+=p.collision.containmentSamples;
- p.valid=std::isfinite(p.minDepth)&&p.minDepth<1e19f;
- p.fitted=p.valid&&!p.collision.blocked&&p.minDepth>=1.10f&&
-  std::fabs(p.contactGap-.01f)<.001f&&p.contactLateral<.001f;
+ // These values are diagnostics only. They never move or suppress an addon.
 }
 Placement EvaluatePlacement(CStudioModelRenderer &r,studiohdr_t *header,const std::array<Matrix,MAXSTUDIOBONES> &base,
-                           int body,bool charm,bool left,const geo::Mount &mount,const geo::MeshCollider &obstacles)
+                           int body,bool charm,bool left,const geo::Mount &mount)
 {
- Placement p;p.mount=mount;p.local=base;p.anchorFrame=MountFrame(mount,r.m_rgCachedLightTransform[mount.bone]);p.frame=p.anchorFrame;
+ Placement p;p.local=base;p.foot=motion.foot;p.anchorFrame=MountFrame(mount,r.m_rgCachedLightTransform[mount.bone]);p.frame=p.anchorFrame;
  if(charm)
  {
   geo::SwingInput input;input.time=r.m_clTime;input.resetToken=motion.token;
@@ -523,155 +655,228 @@ Placement EvaluatePlacement(CStudioModelRenderer &r,studiohdr_t *header,const st
   const float gravity[3]={0,0,-80};input.gravity[0]=Dot(gravity,p.frame.axisX);input.gravity[1]=Dot(gravity,p.frame.axisY);input.gravity[2]=Dot(gravity,p.frame.normal);
   input.teleport=motion.time>=0&&(dt<0||dt>.25);
   geo::SwingConfig cfg;cfg.amplitude=1;cfg.maxAngle=frameConfig.amplitude;cfg.length=frameConfig.length*2.5f;cfg.stiffness=frameConfig.stiffness;cfg.damping=frameConfig.damping;
-  // Every candidate starts from the same old state. Only the final accepted
-  // position is committed, so a safety search never integrates time twice.
   p.swingState=swing;p.angles=geo::UpdateSwing(p.swingState,cfg,input);
  }
- PosePlacement(r,header,base,body,charm,left,obstacles,p);
- if(!charm||p.fitted)return p;
- const geo::SwingOutput desired=p.angles;
- Placement safe=p;safe.angles=geo::SwingOutput();
- PosePlacement(r,header,base,body,true,left,obstacles,safe);
- if(!safe.fitted)return p;
- // Stay in the connected collision-free angle interval from neutral. The
- // same already-integrated state is used for every pose trial.
- float low=0,high=1;
- for(int step=1;step<=8;++step)
+ PosePlacement(r,header,base,body,charm,left,p);
+ return p;
+}
+
+Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
+ const std::array<Matrix,MAXSTUDIOBONES>& base,int body,bool left,Placement desired)
+{
+ if(!BeginCharmGun(r,desired.anchorFrame)){CharmFailure();return desired;}
+ auto charmBones=reinterpret_cast<mstudiobone_t *>(reinterpret_cast<byte *>(header)+header->boneindex);
+ for(int i=0;i<header->numbones;++i)
  {
-  const float amount=step/8.f;
-  Placement trial=p;trial.angles.pitch=desired.pitch*amount;trial.angles.yaw=desired.yaw*amount;
-  PosePlacement(r,header,base,body,true,left,obstacles,trial);
-  if(!trial.fitted){high=amount;break;}
-  low=amount;safe=std::move(trial);
+  if(!strcmp(charmBones[i].name,"skin_08"))charmGun.footBone=i;
+  if(!strcmp(charmBones[i].name,"skin_10"))charmGun.pendantBone=i;
  }
- for(int i=0;i<5&&high-low>.001f;++i)
+ const auto pose=[&](geo::SwingOutput angles)
  {
-  const float amount=(low+high)*.5f;
-  Placement trial=p;trial.angles.pitch=desired.pitch*amount;trial.angles.yaw=desired.yaw*amount;
-  PosePlacement(r,header,base,body,true,left,obstacles,trial);
-  if(trial.fitted){low=amount;safe=std::move(trial);}else high=amount;
- }
- safe.limited=true;
- const float applied[2]={safe.angles.pitch*.0174532925199433f,safe.angles.yaw*.0174532925199433f};
- for(int i=0;i<2;++i)
+  Placement p=desired;p.angles=angles;p.foot=motion.foot;
+  PosePlacement(r,header,base,body,true,left,p);return p;
+ };
+ const auto free=[&](const Placement& p){return CharmFree(p.triangles);};
+ const auto fitFoot=[&](Placement& result)
  {
-  const float blockedDirection=safe.swingState.angle[i]-applied[i];
-  if(safe.swingState.velocity[i]*blockedDirection>0)safe.swingState.velocity[i]=0;
-  safe.swingState.angle[i]=safe.swingState.previousAngle[i]=applied[i];
+  auto bones=reinterpret_cast<mstudiobone_t *>(reinterpret_cast<byte *>(header)+header->boneindex);
+  int fixedBone=-1;for(int i=0;i<header->numbones;++i)if(!strcmp(bones[i].name,"skin_08"))fixedBone=i;
+  const auto old=motion.foot;
+  for(float footPitch:{0.f,-5.f,5.f,-10.f,10.f,-20.f,20.f,-35.f,35.f,-60.f,60.f,-75.f,75.f,-90.f,90.f,-120.f,120.f,-150.f,150.f,180.f})
+  for(float footYaw:{0.f,-15.f,15.f,-30.f,30.f,-60.f,60.f,-120.f,120.f,180.f})
+  {
+   motion.foot.pitch=footPitch;motion.foot.yaw=footYaw;
+   Placement test=pose(geo::SwingOutput());std::vector<geo::Triangle> fixed;
+   for(const auto& t:test.triangles)if(t.bone==fixedBone)fixed.push_back(t);
+   if(!CharmFree(fixed))continue;
+   for(float pitch:{0.f,-30.f,-60.f,-90.f,-120.f,-150.f,60.f,120.f})
+   {
+    for(float yaw:{0.f,-25.f,25.f,-60.f,60.f,-120.f,120.f,180.f,-180.f})
+    {
+     geo::SwingOutput angles;angles.pitch=pitch;angles.yaw=yaw;
+     test=pose(angles);if(free(test)){result=std::move(test);return true;}
+    }
+   }
+  }
+  motion.foot=old;return false;
+ };
+ // Find a fixed-root rest orientation when the hanging body already intersects
+ // at zero. The mounting joint itself remains rigid at the saved gun point.
+ if(!motion.biasReady)
+ {
+  Placement neutral=pose(geo::SwingOutput());
+  bool found=free(neutral);
+  if(!found)for(float pitch:{0.f,-15.f,-30.f,-45.f,-60.f,-90.f,-120.f,-150.f,30.f,60.f,90.f,120.f})
+  {
+   for(float yaw:{0.f,25.f,-25.f,60.f,-60.f,100.f,-100.f,180.f,-180.f})
+   {
+    geo::SwingOutput angles;angles.pitch=pitch;angles.yaw=yaw;
+    Placement test=pose(angles);if(!free(test))continue;
+    neutral=std::move(test);found=true;break;
+   }
+   if(found)break;
+  }
+  if(!found)found=fitFoot(neutral);
+  if(!found){CharmFailure();return desired;}
+  motion.bias=neutral.angles;motion.biasReady=true;
+  motion.safeLocal=neutral.local;motion.safeAngles=neutral.angles;motion.charmSafe=true;
  }
- return safe;
+ desired.angles.pitch+=motion.bias.pitch;desired.angles.yaw+=motion.bias.yaw;desired.foot=motion.foot;
+ PosePlacement(r,header,base,body,true,left,desired);
+ const bool desiredFree=free(desired);
+ Placement previous=desired;previous.local=motion.safeLocal;previous.angles=motion.safeAngles;
+ PosePlacement(r,header,base,body,true,left,previous,true);
+ bool previousFree=motion.charmSafe&&free(previous);
+ if(!previousFree)
+ {
+  // A separate gun part can move into last frame's pose. Re-establish a free
+  // orientation about this very same mount, never search another gun point.
+  bool found=false;
+  const auto seek=[&](float pitch,float yaw)
+  {
+   geo::SwingOutput angles;angles.pitch=pitch;angles.yaw=yaw;
+   Placement test=pose(angles);if(!free(test))return false;
+   previous=std::move(test);return true;
+  };
+  if(desiredFree){previous=desired;found=true;}
+  else if(seek(motion.bias.pitch,motion.bias.yaw))found=true;
+  if(!found)for(float pitch:{0.f,-15.f,-30.f,-45.f,-60.f,-90.f,-120.f,-150.f,30.f,60.f,90.f,120.f})
+  {
+   for(float yaw:{0.f,25.f,-25.f,60.f,-60.f,100.f,-100.f,180.f,-180.f})
+    if(seek(pitch,yaw)){found=true;break;}
+   if(found)break;
+  }
+  if(!found)found=fitFoot(previous);
+  if(!found){CharmFailure();return desired;}
+  desired.foot=motion.foot;
+  PosePlacement(r,header,base,body,true,left,desired);
+  previousFree=true;
+ }
+ std::vector<geo::Triangle> from=previous.triangles,to=desired.triangles;
+ LocalTriangles(from,charmGun.frame);LocalTriangles(to,charmGun.frame);
+ geo::SwingPathOptions options;options.gap=kCharmCollisionGap;options.interpolationGuard=.00005f;
+ const auto path=geo::CertifySwingPath(from,to,CharmGroups(from,header),
+   [&](const std::vector<geo::Triangle>& triangles,float gap){return CharmFree(triangles,gap,true);},options);
+ charmStats.segments+=path.certifiedSegments;
+ if(path.fraction<1)
+ {
+  ++charmStats.limited;
+  Placement accepted=desired;const float f=path.fraction;
+  for(int i=0;i<header->numbones;++i)for(int a=0;a<3;++a)for(int b=0;b<4;++b)
+   accepted.local[i].m[a][b]=previous.local[i].m[a][b]+(desired.local[i].m[a][b]-previous.local[i].m[a][b])*f;
+  accepted.angles.pitch=previous.angles.pitch+(desired.angles.pitch-previous.angles.pitch)*f;
+  accepted.angles.yaw=previous.angles.yaw+(desired.angles.yaw-previous.angles.yaw)*f;
+  PosePlacement(r,header,base,body,true,left,accepted,true);
+  desired=std::move(accepted);
+  for(int i=0;i<2;++i)
+  {
+   const float angle=(i?desired.angles.yaw-motion.bias.yaw:desired.angles.pitch-motion.bias.pitch)*.0174532925199433f;
+   desired.swingState.angle[i]=desired.swingState.previousAngle[i]=angle;
+   desired.swingState.velocity[i]=0;
+  }
+ }
+ // Rendering reposes the accepted matrices in float. Certify those resulting
+ // triangles as well; retain the already checked previous pose on rounding
+ // contact instead of publishing a pose that only passed interpolation math.
+ if(!free(desired))
+ {
+  desired=std::move(previous);++charmStats.limited;
+  for(int i=0;i<2;++i)
+  {
+   const float angle=(i?desired.angles.yaw-motion.bias.yaw:desired.angles.pitch-motion.bias.pitch)*.0174532925199433f;
+   desired.swingState.angle[i]=desired.swingState.previousAngle[i]=angle;
+   desired.swingState.velocity[i]=0;
+  }
+ }
+ if(!desiredFree)++charmStats.solved;
+ motion.safeLocal=desired.local;motion.safeAngles=desired.angles;motion.charmSafe=true;
+ return desired;
 }
 
 void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool charm)
 {
  const auto drawStart=std::chrono::steady_clock::now();
  const float u=charm?frameConfig.charmU:frameConfig.statU,v=charm?frameConfig.charmV:frameConfig.statV;
- geo::Mount mount;if(!weaponSurface||!geo::FindMount(*weaponSurface,u,v,mount)||mount.bone<0||mount.bone>=r.m_nCachedBones)return;
- model_t *model=IEngineStudio.Mod_ForName(charm?"models/attachments/oc2_sticker_charm.mdl":"models/attachments/oc2_stattrak.mdl",false);
+ geo::Mount mount=motion.requested[charm?1:0];
+ if(!weaponSurface||mount.bone<0||mount.bone>=r.m_nCachedBones)return;
+ // M249's moving ammunition box needs the longer physical mounting neck.
+ // The chosen neck is fixed for the weapon; animation never moves the root.
+ const bool longNeck=frameWeapon==20;
+ const char *charmModel=longNeck?"models/attachments/oc2_sticker_charm_m249.mdl":"models/attachments/oc2_sticker_charm.mdl";
+ model_t *model=IEngineStudio.Mod_ForName(charm?charmModel:"models/attachments/oc2_stattrak.mdl",false);
  studiohdr_t *header=model?reinterpret_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(model)):nullptr;
- std::array<Matrix,MAXSTUDIOBONES> base;
- if(!BindBones(header,base)||(charm&&!LoadSkin()))return;
+ if(!header)return;
+ auto bind=addonBind.find(header);
+ if(bind==addonBind.end())
+ {
+  std::array<Matrix,MAXSTUDIOBONES> parsed;
+  if(!BindBones(header,parsed))return;
+  bind=addonBind.insert(std::make_pair(header,parsed)).first;
+ }
+ const auto &base=bind->second;
+ if(charm&&!LoadSkin(longNeck))return;
+ if(charm)diag.charmNeck=longNeck?.6f:.2f;
  const bool left=gHUD.cl_righthand&&gHUD.cl_righthand->value<=0;
  const unsigned count=counters.values[Index(frameWeapon)];
  const int body=charm?0:static_cast<int>(left?ReverseDigits(count):count);
  const int slot=charm?1:0;
- const geo::MeshCollider &obstacles=attachmentObstacles[0];
- unsigned testedCandidates=0;
- auto evaluate=[&](const geo::Mount &candidate)
+ // Resolve the configured point once in BeginAccessories, then use exactly
+ // that bone-local mount through every pose. No avoidance search, return-UV
+ // interpolation, or near-plane fallback may change the player's placement.
+ Placement selected=EvaluatePlacement(r,header,base,body,charm,left,mount);
+ if(charm)
  {
-  ++testedCandidates;
-  return EvaluatePlacement(r,header,base,body,charm,left,candidate,obstacles);
- };
- const double previousTime=charm?motion.charmTime:motion.statTime;
- const bool previousPlaced=charm?motion.charmPlaced:motion.statPlaced;
- float *previousUV=charm?motion.charmUV:motion.statUV;
- float *returnUV=charm?motion.charmReturnUV:motion.statReturnUV;
- bool &returning=charm?motion.charmReturning:motion.statReturning;
- Placement selected=evaluate(mount);
- const bool requestedFit=selected.fitted;
- const bool nearClamped=selected.minDepth<1.10f;
- if(previousPlaced)
- {
-  const bool moving=std::fabs(previousUV[0]-mount.actualUV[0])>1e-5f||std::fabs(previousUV[1]-mount.actualUV[1])>1e-5f;
-  if(moving||!selected.fitted)
+  selected=ConstrainCharm(r,header,base,body,left,std::move(selected));
+  if(charmVerify&&charmVerify->value!=0)
   {
-   const float dt=previousTime<0?0:std::max(0.f,std::min(.1f,float(r.m_clTime-previousTime)));
-   const float release=selected.fitted?1-std::exp(-8.f*dt):0;
-   if(!returning)for(int i=0;i<2;++i)returnUV[i]=previousUV[i];
-   returning=selected.fitted;
-   // Advance a continuous request independently of the snapped draw point.
-   // Feeding actualUV back here can stick forever at a gap between parts.
-   for(int i=0;i<2;++i)returnUV[i]+=(mount.actualUV[i]-returnUV[i])*release;
-   geo::Mount preferred;
-   const bool arrived=std::fabs(returnUV[0]-mount.actualUV[0])<.0005f&&std::fabs(returnUV[1]-mount.actualUV[1])<.0005f;
-   if(!arrived&&geo::FindMount(*weaponSurface,returnUV[0],returnUV[1],preferred))
+   ++charmStats.checks;
+   const bool ready=CurrentCharmOracle();
+   geo::CollisionResult rawHit,hit;
+   if(ready)
    {
-    Placement tested=evaluate(preferred);
-    if(tested.fitted)selected=std::move(tested);
+    rawHit=geo::CheckMeshCollision(charmGun.oracle,selected.triangles,.0001f);
+    std::vector<geo::Triangle> actual=selected.triangles,outside;
+    LocalTriangles(actual,charmGun.frame);
+    geo::TrianglesOutsideMountContact(actual,outside,0,charmGun.footBone);
+    hit=geo::CheckMeshCollision(charmGun.oracleLocal,outside,.0001f);
+    if(rawHit.blocked){++charmStats.rawBlocked;if(!hit.blocked)++charmStats.contactOnly;}
    }
-   if(arrived)returning=false;
-  }
-  else returning=false;
- }
- if(!selected.valid)return;
- if(!selected.fitted)
- {
-  geo::MountViewConstraint constraint;constraint.poseMatrices=r.m_rgCachedLightTransform;
-  for(int i=0;i<3;++i){constraint.viewOrigin[i]=r.m_vRenderOrigin[i];constraint.viewForward[i]=r.m_vNormal[i];}
-  constraint.minimumOriginDepth=1.10f;
-  std::vector<geo::Mount> candidates;
-  geo::FindMountCandidates(*weaponSurface,u,v,candidates,64,&constraint);
-  for(const auto &candidate:candidates)
-  {
-   Placement tested=evaluate(candidate);
-   if(tested.fitted){selected=std::move(tested);break;}
-  }
-  if(!selected.fitted)
-  {
-   // Dense features near a blocked point must not exclude the rest of the
-   // whole-gun domain. This bounded broad search still lands on real surfaces.
-   candidates.clear();
-   for(int y=0;y<=8;++y)for(int x=0;x<=12;++x)
+   if(!ready||hit.blocked)
    {
-    geo::Mount candidate;
-    if(geo::FindMountInFront(*weaponSurface,x/12.f,y/8.f,constraint,candidate))candidates.push_back(candidate);
-   }
-   std::sort(candidates.begin(),candidates.end(),[&](const geo::Mount &a,const geo::Mount &b)
-   {
-    const float ax=a.actualUV[0]-u,ay=a.actualUV[1]-v,bx=b.actualUV[0]-u,by=b.actualUV[1]-v;
-    return ax*ax+ay*ay<bx*bx+by*by;
-   });
-   for(const auto &candidate:candidates)
-   {
-    Placement tested=evaluate(candidate);
-    if(tested.fitted){selected=std::move(tested);break;}
+    ++charmStats.blocked;++runCharmBlocked;CharmFailure();
+    static bool captured=false;
+    if(!captured&&ready&&gRenderAPI.pfnSaveFile)
+    {
+     std::string packet;
+     const auto append=[&](const std::vector<geo::Triangle>& triangles)
+     {const int count=int(triangles.size());packet.append(reinterpret_cast<const char*>(&count),sizeof(count));packet.append(reinterpret_cast<const char*>(triangles.data()),triangles.size()*sizeof(geo::Triangle));};
+     append(charmGun.oracle.triangles);append(selected.triangles);
+     const std::string filename="oc2_charm_failure_"+std::to_string(PerfClock::now().time_since_epoch().count())+".bin";
+     if(gRenderAPI.pfnSaveFile(filename.c_str(),packet.data(),int(packet.size())))
+     {
+      captured=true;
+      const int queryBone=rawHit.accessoryTriangle>=0?selected.triangles[rawHit.accessoryTriangle].bone:-2;
+      const int gunBone=rawHit.obstacleTriangle>=0?charmGun.oracle.triangles[rawHit.obstacleTriangle].bone:-2;
+      gEngfuncs.Con_Printf("charm collision capture: file=%s weapon=%d seq=%d query_triangle=%d query_bone=%d gun_triangle=%d gun_bone=%d pitch=%.6f yaw=%.6f\n",
+       filename.c_str(),frameWeapon,r.m_pCurrentEntity->curstate.sequence,rawHit.accessoryTriangle,queryBone,rawHit.obstacleTriangle,gunBone,selected.angles.pitch,selected.angles.yaw);
+     }
+    }
    }
   }
  }
- // Never float a root, scale the model or silently hide an impossible pose.
- // Such a pose remains anchored and explicitly fails the contact diagnostics.
- mount=selected.mount;
  if(charm)
  {
   swing=selected.swingState;diag.pitch=selected.angles.pitch;diag.yaw=selected.angles.yaw;
   const double dt=r.m_clTime-motion.time;
   if(dt!=0||motion.time<0){motion.time=r.m_clTime;for(int i=0;i<3;++i){motion.anchor[i]=selected.anchorFrame.origin[i];motion.velocity[i]=selected.velocity[i];}}
   diag.steps=swing.steps;diag.resets=swing.resets;
-  motion.charmPlaced=selected.fitted;diag.charmNearClamped=nearClamped;diag.charmNearIterations=int(testedCandidates);
-  diag.swingLimited=selected.limited;
  }
- else{motion.statPlaced=selected.fitted;diag.statNearClamped=nearClamped;diag.statNearIterations=int(testedCandidates);}
  diag.contactGap[slot]=selected.contactGap;diag.contactLateral[slot]=selected.contactLateral;
- diag.blocked[slot]=!selected.fitted;diag.testedCandidates[slot]=testedCandidates;
- diag.surfaceAdjusted[slot]=!requestedFit||std::fabs(mount.actualUV[0]-u)>.001f||std::fabs(mount.actualUV[1]-v)>.001f;
- for(int i=0;i<2;++i)previousUV[i]=mount.actualUV[i];
- const float required=selected.required;
- float &offset=charm?motion.charmOffset:motion.statOffset;
- double &appliedTime=charm?motion.charmTime:motion.statTime;
- appliedTime=r.m_clTime;offset=selected.offset;
+ diag.surfaceAdjusted[slot]=std::fabs(mount.actualUV[0]-u)>.001f||std::fabs(mount.actualUV[1]-v)>.001f;
+ diag.testedCandidates[slot]=1;
+ for(int i=0;i<3;++i)diag.mountLocal[slot][i]=mount.origin[i];
  diag.boxMinDepth=std::min(diag.boxMinDepth,selected.boxMinDepth);diag.minDepth=std::min(diag.minDepth,selected.minDepth);
- const auto &posed=selected.posed;const auto &addonTriangles=selected.triangles;
-
+ const auto &posed=selected.posed;
  studiohdr_t *savedHeader=r.m_pStudioHeader;model_t *savedModel=r.m_pRenderModel;
  const cl_entity_t savedEntity=*r.m_pCurrentEntity;
  mstudiobodyparts_t *savedPart=r.m_pBodyPart;mstudiomodel_t *savedSub=r.m_pSubModel;
@@ -698,14 +903,6 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
  IEngineStudio.StudioSetupLighting(&lighting);IEngineStudio.StudioSetRemapColors(r.m_nTopColor,r.m_nBottomColor);
  r.StudioRenderModel(lightdir);
  if(swapped)swapped->index=savedTexture;
- // Refit the gun/arms only once per frame. The charm separately queries this
- // much smaller counter collider, so entity groups cannot share a solid.
- if(!charm&&frameConfig.charm)
- {
-  const auto start=std::chrono::steady_clock::now();
-  counterColliderReady=geo::RefitMeshCollider(addonTriangles,attachmentObstacles[1]);
-  diag.refitMs[1]=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
- }
  *r.m_pCurrentEntity=savedEntity;r.m_pStudioHeader=savedHeader;r.m_pRenderModel=savedModel;
  r.m_pBodyPart=savedPart;r.m_pSubModel=savedSub;
  for(int i=0;i<r.m_nCachedBones;++i)
@@ -714,25 +911,35 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
  IEngineStudio.StudioSetupLighting(&lighting);IEngineStudio.StudioSetRemapColors(r.m_nTopColor,r.m_nBottomColor);IEngineStudio.SetForceFaceFlags(savedFlags);
  ++diag.drawn;
  diag.drawMs[slot]=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-drawStart).count();
- diag.triangles=int(occluders.size());
- if(charm){diag.charmBone=mount.bone;diag.charmOffset=offset;diag.charmRequired=required;for(int i=0;i<2;++i)diag.charmUV[i]=mount.actualUV[i];}
- else{diag.statBone=mount.bone;diag.statOffset=offset;diag.statRequired=required;for(int i=0;i<2;++i)diag.statUV[i]=mount.actualUV[i];}
+ diag.triangles+=int(selected.triangles.size());
+ if(charm){diag.charmBone=mount.bone;diag.charmOffset=selected.offset;diag.charmRequired=selected.offset;for(int i=0;i<2;++i)diag.charmUV[i]=mount.actualUV[i];}
+ else{diag.statBone=mount.bone;diag.statOffset=selected.offset;diag.statRequired=selected.offset;for(int i=0;i<2;++i)diag.statUV[i]=mount.actualUV[i];}
 }
 }
 
 void OC2_AccessoriesVidInit()
 {
- mounts.clear();meshes.clear();stickerTextures.clear();occluders.clear();weaponSurface=nullptr;
- contactSamples.clear();colliderBones.clear();attachmentObstacles=std::array<geo::MeshCollider,2>();
- obstacleSources.clear();previousObstacleSources.clear();counterColliderReady=false;
- skinAttempted=skinValid=false;joints.clear();carriers.clear();swing=geo::SwingState();motion=Motion();
+ ResetCharmCollisionStats();runCharmFailures=runCharmBlocked=0;
+ mounts.clear();meshes.clear();stickerTextures.clear();weaponSurface=nullptr;
+ contactSamples.clear();addonBind.clear();charmGun=CharmGunScene();
+ skinAttempted=skinValid=false;skinVariant=-1;joints.clear();carriers.clear();swing=geo::SwingState();motion=Motion();
  frameWeapon=0;diag=Diagnostics();nextRead=-1;lastTime=-1;
 }
 void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)
 {
+ CpuScope timer;
+ if(nativePerf.active)
+ {
+  const auto now=PerfClock::now();
+  if(r.m_clTime>nativePerf.clientTime&&nativePerf.clientTime>=0)
+  {
+   nativePerf.intervals[nativePerf.count%nativePerf.intervals.size()]=std::chrono::duration<double,std::milli>(now-nativePerf.previous).count();++nativePerf.count;
+  }
+  if(r.m_clTime!=nativePerf.clientTime){nativePerf.previous=now;nativePerf.clientTime=r.m_clTime;}
+ }
  const char *map=gEngfuncs.pfnGetLevelName();
  if(level!=(map?map:"")){OC2_AccessoriesVidInit();level=map?map:"";}
- ReadSettings(r.m_clTime);diag=Diagnostics();diag.weapon=weapon;frameWeapon=0;weaponSurface=nullptr;occluders.clear();obstacleSources.clear();
+ ReadSettings(r.m_clTime);diag=Diagnostics();diag.weapon=weapon;frameWeapon=0;weaponSurface=nullptr;
  const bool left=gHUD.cl_righthand&&gHUD.cl_righthand->value<=0;
  const WeaponConfig *cfg=Find(settings,weapon);
  diag.revision=settings.revision;if(cfg)diag.config=*cfg;
@@ -743,7 +950,7 @@ void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)
   motion.left=left;motion.revision=settings.revision;motion.token=token;swing=geo::SwingState();
   if(cfg)motion.config=*cfg;
  }
- if(!cfg||(!cfg->stattrak&&!cfg->charm)||!IEngineStudio.IsHardware())return;
+ if((accessoriesEnabled&&accessoriesEnabled->value==0)||!cfg||(!cfg->stattrak&&!cfg->charm)||!IEngineStudio.IsHardware())return;
  auto it=mounts.find(r.m_pStudioHeader);
  if(it==mounts.end())
  {
@@ -752,30 +959,20 @@ void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)
  }
  if(!it->second.valid)return;
  frameWeapon=weapon;frameConfig=*cfg;weaponSurface=&it->second;
- SetCollisionFrame(*weaponSurface,r.m_rgCachedLightTransform,frameConfig);
+ // The requested mounts depend only on the current customization and static
+ // model geometry. Their world frames still follow the current bone pose.
+ for(int slot=0;slot<2;++slot)if((slot?cfg->charm:cfg->stattrak)&&!motion.requestedResolved[slot])
+ {
+  motion.requestedResolved[slot]=true;
+  const float u=slot?cfg->charmU:cfg->statU,v=slot?cfg->charmV:cfg->statV;
+  geo::FindMount(*weaponSurface,u,v,motion.requested[slot]);
+ }
  diag.statEnabled=cfg->stattrak;diag.charmEnabled=cfg->charm;diag.sticker=cfg->sticker;diag.count=counters.values[Index(weapon)];
- geo::ReadStudioTriangles(weaponSurface->studio,r.m_pCurrentEntity->curstate.body,r.m_pCurrentEntity->curstate.skin,r.m_rgCachedLightTransform,occluders);
- obstacleSources.push_back({r.m_pStudioHeader,r.m_pCurrentEntity->curstate.body,r.m_pCurrentEntity->curstate.skin});
-}
-void OC2_ObserveAccessoryOccluder(CStudioModelRenderer &r)
-{
- if(!frameWeapon)return;
- geo::ReadStudioTriangles(Mesh(r.m_pStudioHeader),r.m_pCurrentEntity->curstate.body,r.m_pCurrentEntity->curstate.skin,*r.m_plighttransform,occluders,true);
- obstacleSources.push_back({r.m_pStudioHeader,r.m_pCurrentEntity->curstate.body,r.m_pCurrentEntity->curstate.skin});
 }
 void OC2_DrawAccessories(CStudioModelRenderer &r,alight_s &lighting,float *lightdir)
 {
+ CpuScope timer;
  if(!frameWeapon)return;
- if(obstacleSources!=previousObstacleSources)
- {
-  attachmentObstacles=std::array<geo::MeshCollider,2>();
-  previousObstacleSources=obstacleSources;
- }
- const auto start=std::chrono::steady_clock::now();
- CollisionCoordinates(occluders);
- if(!geo::RefitMeshCollider(occluders,attachmentObstacles[0]))return;
- diag.refitMs[0]=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
- counterColliderReady=false;
  if(frameConfig.stattrak)DrawOne(r,lighting,lightdir,false);
  if(frameConfig.charm)DrawOne(r,lighting,lightdir,true);
 }
