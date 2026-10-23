@@ -59,12 +59,44 @@ static double g_viewEventStart = -1;
 struct ViewFlowDiagnostics
 {
 	model_t *model = NULL;
-	double time = 0, start = 0;
+	double time = 0, sampleTime = 0, start = 0;
 	int sequence = 0, first = 0, changed = 0, layers = 0, snap = 0, firstEvents = 0;
 	float frame = 0, rawHand[3] = {}, blendedHand[3] = {};
 	int oldSequence[2] = {-1,-1};
 	float oldFrame[2] = {}, weight[2] = {};
 } g_viewFlow;
+
+struct ViewModelSampleClock
+{
+	model_t *model = NULL;
+	int sequence = -1;
+	double start = 0, raw = 0, sample = 0;
+	unsigned backsteps = 0, holds = 0;
+	void Observe(model_t *nextModel, const cl_entity_t *entity, double time)
+	{
+		const bool same = model == nextModel && sequence == entity->curstate.sequence &&
+			start == entity->curstate.animtime;
+		if (same && time < raw) ++backsteps;
+		// Server clock corrections may move cl.time backward within an action.
+		// Hold its sample until time catches up; real restarts and clock jumps
+		// keep their original reset behavior. Clamp time, so looping clips wrap.
+		if (!same || (entity->curstate.effects & EF_NOINTERP) || fabs(time-sample) > .5)
+			sample = time;
+		else if (time < sample) ++holds;
+		else sample = time;
+		model = nextModel; sequence = entity->curstate.sequence;
+		start = entity->curstate.animtime; raw = time;
+	}
+} g_viewSampleClock;
+
+static double ViewModelSampleTime(const CStudioModelRenderer &renderer)
+{
+	const cl_entity_t *entity = renderer.m_pCurrentEntity;
+	if (entity == gEngfuncs.GetViewModel() && renderer.m_pRenderModel == g_viewSampleClock.model &&
+		entity->curstate.sequence == g_viewSampleClock.sequence && entity->curstate.animtime == g_viewSampleClock.start)
+		return renderer.m_clTime < g_viewSampleClock.sample ? g_viewSampleClock.sample : renderer.m_clTime;
+	return renderer.m_clTime;
+}
 
 static int ViewModelReloadWeapon(model_t *model, bool &shield)
 {
@@ -171,11 +203,12 @@ static void ViewModelHandPosition(studiohdr_t *header, float pos[][3], vec4_t q[
 
 static void DumpViewModelFlow()
 {
-	gEngfuncs.Con_Printf("weaponflow: model=%s t=%.6f start=%.6f seq=%d first=%d frame=%.6f change=%d layers=%d snap=%d first_events=%d old0=%d oldframe0=%.6f weight0=%.6f old1=%d oldframe1=%.6f weight1=%.6f raw_hand=%.6f,%.6f,%.6f blended_hand=%.6f,%.6f,%.6f\n",
-		g_viewFlow.model ? g_viewFlow.model->name : "none",g_viewFlow.time,g_viewFlow.start,g_viewFlow.sequence,g_viewFlow.first,g_viewFlow.frame,
+	gEngfuncs.Con_Printf("weaponflow: model=%s t=%.6f sample_t=%.6f start=%.6f seq=%d first=%d frame=%.6f change=%d layers=%d snap=%d first_events=%d old0=%d oldframe0=%.6f weight0=%.6f old1=%d oldframe1=%.6f weight1=%.6f raw_hand=%.6f,%.6f,%.6f blended_hand=%.6f,%.6f,%.6f clock_backsteps=%u clock_holds=%u\n",
+		g_viewFlow.model ? g_viewFlow.model->name : "none",g_viewFlow.time,g_viewFlow.sampleTime,g_viewFlow.start,g_viewFlow.sequence,g_viewFlow.first,g_viewFlow.frame,
 		g_viewFlow.changed,g_viewFlow.layers,g_viewFlow.snap,g_viewFlow.firstEvents,g_viewFlow.oldSequence[0],g_viewFlow.oldFrame[0],g_viewFlow.weight[0],
 		g_viewFlow.oldSequence[1],g_viewFlow.oldFrame[1],g_viewFlow.weight[1],
-		g_viewFlow.rawHand[0],g_viewFlow.rawHand[1],g_viewFlow.rawHand[2],g_viewFlow.blendedHand[0],g_viewFlow.blendedHand[1],g_viewFlow.blendedHand[2]);
+		g_viewFlow.rawHand[0],g_viewFlow.rawHand[1],g_viewFlow.rawHand[2],g_viewFlow.blendedHand[0],g_viewFlow.blendedHand[1],g_viewFlow.blendedHand[2],
+		g_viewSampleClock.backsteps,g_viewSampleClock.holds);
 }
 
 static model_t *g_lastArmsWeapon;
@@ -371,6 +404,7 @@ void CStudioModelRenderer::Init(void)
 	gEngfuncs.pfnAddCommand("oc2_viewmodel_dump", DumpOC2ViewModel);
 	gEngfuncs.pfnAddCommand("weapon_flow_dump", DumpViewModelFlow);
 	g_viewTransitions.Clear();
+	g_viewSampleClock=ViewModelSampleClock();
 	g_reloadEvents=ReloadEventClock();
 	g_viewFirstEvents = false;
 	g_viewEventModel = NULL; g_viewEventSequence = -1; g_viewEventStart = -1;
@@ -861,13 +895,14 @@ void CStudioModelRenderer::StudioFxTransform(cl_entity_t *ent, float transform[3
 float CStudioModelRenderer::StudioEstimateFrame(mstudioseqdesc_t *pseqdesc)
 {
 	double dfdt, f;
+	const double sampleTime = ViewModelSampleTime(*this);
 
 	if (m_fDoInterp)
 	{
-		if (m_clTime < m_pCurrentEntity->curstate.animtime)
+		if (sampleTime < m_pCurrentEntity->curstate.animtime)
 			dfdt = 0;
 		else
-			dfdt = (m_clTime - m_pCurrentEntity->curstate.animtime) * m_pCurrentEntity->curstate.framerate * pseqdesc->fps;
+			dfdt = (sampleTime - m_pCurrentEntity->curstate.animtime) * m_pCurrentEntity->curstate.framerate * pseqdesc->fps;
 	}
 	else
 		dfdt = 0;
@@ -881,7 +916,7 @@ float CStudioModelRenderer::StudioEstimateFrame(mstudioseqdesc_t *pseqdesc)
 	if (m_pCurrentEntity==gEngfuncs.GetViewModel())
 	{
 		const float mapped=ViewModelReloadFrame(m_pCurrentEntity->model,m_pStudioHeader,m_pCurrentEntity->curstate.sequence,
-			m_clTime-m_pCurrentEntity->curstate.animtime);
+			sampleTime-m_pCurrentEntity->curstate.animtime);
 		if (mapped>=0) f=mapped;
 	}
 
@@ -989,11 +1024,12 @@ void CStudioModelRenderer::StudioSetupBones(void)
 		// Source tracks sequence restarts explicitly, advances departing cycles,
 		// and clears history when the model changes. First-person viewents never
 		// pass through GoldSrc network-entity CL_UpdateLatchedVars.
+		const double sampleTime = ViewModelSampleTime(*this);
 		oc2_viewmodel::Layer current;
 		current.sequence=m_pCurrentEntity->curstate.sequence; current.frame=f;
 		current.frames=pseqdesc->numframes; current.fps=pseqdesc->fps;
 		current.rate=m_pCurrentEntity->curstate.framerate; current.loop=(pseqdesc->flags & STUDIO_LOOPING) != 0;
-		current.sampleTime=m_clTime; current.startTime=m_pCurrentEntity->curstate.animtime;
+		current.sampleTime=sampleTime; current.startTime=m_pCurrentEntity->curstate.animtime;
 		current.blend0=m_pCurrentEntity->curstate.blending[0]; current.blend1=m_pCurrentEntity->curstate.blending[1];
 		// Source's STUDIO_SNAP clears transitions for immediate action clips.
 		// The converted v10 resources omit this metadata: map their fire/knife
@@ -1009,7 +1045,7 @@ void CStudioModelRenderer::StudioSetupBones(void)
 			g_viewFirstEvents=true; g_viewEventModel=m_pRenderModel;
 			g_viewEventSequence=current.sequence; g_viewEventStart=current.startTime;
 		}
-		g_viewFlow.model=m_pRenderModel; g_viewFlow.time=m_clTime; g_viewFlow.start=current.startTime;
+		g_viewFlow.model=m_pRenderModel; g_viewFlow.time=m_clTime; g_viewFlow.sampleTime=sampleTime; g_viewFlow.start=current.startTime;
 		g_viewFlow.sequence=current.sequence; g_viewFlow.frame=f; g_viewFlow.changed=changed; g_viewFlow.snap=snap;
 		g_viewFlow.first=ViewModelFirstFrame(m_pRenderModel,m_pStudioHeader,current.sequence);
 		g_viewFlow.layers=g_viewTransitions.Count();
@@ -1020,9 +1056,9 @@ void CStudioModelRenderer::StudioSetupBones(void)
 			g_viewFlow.oldSequence[layer]=-1; g_viewFlow.oldFrame[layer]=g_viewFlow.weight[layer]=0;
 			if (layer >= g_viewTransitions.Count()) continue;
 			const oc2_viewmodel::Layer &old=g_viewTransitions.Previous(layer);
-			float oldFrame=ViewModelReloadFrame(m_pRenderModel,m_pStudioHeader,old.sequence,m_clTime-old.startTime);
-			if (oldFrame<0) oldFrame=g_viewTransitions.PreviousFrame(layer,m_clTime);
-			const float weight=g_viewTransitions.Weight(layer,m_clTime);
+			float oldFrame=ViewModelReloadFrame(m_pRenderModel,m_pStudioHeader,old.sequence,sampleTime-old.startTime);
+			if (oldFrame<0) oldFrame=g_viewTransitions.PreviousFrame(layer,sampleTime);
+			const float weight=g_viewTransitions.Weight(layer,sampleTime);
 			g_viewFlow.oldSequence[layer]=old.sequence; g_viewFlow.oldFrame[layer]=oldFrame; g_viewFlow.weight[layer]=weight;
 			if (old.sequence < 0 || old.sequence >= m_pStudioHeader->numseq) continue;
 			StudioSampleSequence(old.sequence,oldFrame,old.blend0,old.blend1,oldPos,oldQ);
@@ -1282,7 +1318,8 @@ static void DrawOC2EquipmentArms(CStudioModelRenderer &renderer, alight_t &light
 		// StudioSaveBones already cached the animated weapon. Never replace
 		// that cache between glove and sleeve; both follow that same pose.
 		renderer.StudioMergeBones(model);
-		OC2_ObserveAccessoryOccluder(renderer);
+		// Hands share the weapon/addon depth buffer. Like CS:GO viewmodel
+		// addons, their normal occlusion must not relocate weapon cosmetics.
 		IEngineStudio.StudioSetupLighting(&lighting);
 		IEngineStudio.StudioSetRemapColors(renderer.m_nTopColor, renderer.m_nBottomColor);
 		renderer.StudioRenderModel(lightdir);
@@ -1382,6 +1419,7 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 			// engine studio events, so bolt/sleeve sounds stay on the same clock.
 			m_pCurrentEntity->curstate.frame=first*256.0f/(desc.numframes-1);
 		}
+		g_viewSampleClock.Observe(m_pRenderModel,m_pCurrentEntity,m_clTime);
 	}
 
 	if (m_pCurrentEntity->curstate.movetype == MOVETYPE_FOLLOW)
@@ -1400,7 +1438,7 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 			g_viewFlow.firstEvents=g_viewFirstEvents;
 			m_pCurrentEntity->latched.sequencetime=g_viewFirstEvents ? m_pCurrentEntity->curstate.animtime : -1.0f;
 		}
-		if (!bIsViewModel || !ViewModelReloadEvents(m_pCurrentEntity,m_pStudioHeader,m_clTime))
+		if (!bIsViewModel || !ViewModelReloadEvents(m_pCurrentEntity,m_pStudioHeader,ViewModelSampleTime(*this)))
 			IEngineStudio.StudioClientEvents();
 		if (bIsViewModel) { m_pCurrentEntity->latched.sequencetime=savedSequenceTime; g_viewFirstEvents=false; }
 

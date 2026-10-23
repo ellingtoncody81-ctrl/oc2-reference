@@ -78,7 +78,14 @@ bool real(const StudioTriangleCache& c,const StudioTriangle& t,int skin)
     return !t.decal&&!t.chrome&&!t.placeholder&&material(c,skin,t.material,flags,name)&&
         !(flags&STUDIO_NF_CHROME)&&!contains(name,"decal_")&&!placeholder(name);
 }
-Triangle posed(const StudioTriangle& t,const float (*matrices)[3][4])
+bool allowedTriangle(const StudioTriangle& triangle,const std::vector<int>* allowedBones)
+{
+    if(!allowedBones||allowedBones->empty())return true;
+    for(const auto& corner:triangle.corner)
+        if(std::find(allowedBones->begin(),allowedBones->end(),corner.bone)!=allowedBones->end())return true;
+    return false;
+}
+Triangle posed(const StudioTriangle& t,const float (*matrices)[3][4],bool positionsOnly=false)
 {
     Triangle out;V normal;
     out.bone=t.corner[0].bone;
@@ -86,10 +93,10 @@ Triangle posed(const StudioTriangle& t,const float (*matrices)[3][4])
     {
         const StudioCorner& c=t.corner[j];
         point(matrices[c.bone],V(c.p)).store(out.p[j]);
-        normal=normal+point(matrices[c.normalBone],V(c.normal),false);
+        if(!positionsOnly)normal=normal+point(matrices[c.normalBone],V(c.normal),false);
         if(c.bone!=out.bone)out.bone=-1;
     }
-    normal.unit().store(out.normal);return out;
+    if(!positionsOnly)normal.unit().store(out.normal);return out;
 }
 bool buildBind(const studiohdr_t* h,std::vector<BindMatrix>& out)
 {
@@ -120,6 +127,16 @@ bool buildBind(const studiohdr_t* h,std::vector<BindMatrix>& out)
             done[i]=true;--remaining;
         }
     return remaining==0;
+}
+bool armBone(const mstudiobone_t& bone)
+{
+    const std::string name=lower(bone.name,sizeof(bone.name));
+    return contains(name,"bip01")&&(contains(name,"hand")||contains(name,"finger")||contains(name,"foretwist")||contains(name,"arm"));
+}
+int weaponRoot(const mstudiobone_t* bones,int bone)
+{
+    while(bones[bone].parent>=0&&!armBone(bones[bones[bone].parent]))bone=bones[bone].parent;
+    return bone;
 }
 V project(const Frame& f,V p)
 {
@@ -240,6 +257,12 @@ bool DecodeStudioTriangles(const studiohdr_t* h,StudioTriangleCache& out)
             const float (*normals)[3]=at<float[3]>(h,model.normindex,model.numnorms);
             const unsigned char* nb=at<unsigned char>(h,model.norminfoindex,model.numnorms);
             if(!meshes||!vertices||!vb||!normals||!nb)return false;
+            const int positionBase=int(result.positions.size());
+            if(result.positions.size()+size_t(model.numverts)>1000000)return false;
+            for(int vertex=0;vertex<model.numverts;++vertex)
+            {
+                StudioPosition position;position.bone=vb[vertex];std::copy(vertices[vertex],vertices[vertex]+3,position.p);result.positions.push_back(position);
+            }
             const std::string modelName=lower(model.name,sizeof(model.name));
             for(int me=0;me<model.nummesh;++me)
             {
@@ -259,11 +282,13 @@ bool DecodeStudioTriangles(const studiohdr_t* h,StudioTriangleCache& out)
                     int n=std::abs(count);if(n<3||n>65535)return false;
                     const short* points=at<short>(h,cursor,n*4);if(!points)return false;
                     std::vector<StudioCorner> corners(n);
+                    std::vector<int> positionIndices(n);
                     for(int i=0;i<n;++i)
                     {
                         int v=points[i*4],no=points[i*4+1];
                         if(v<0||v>=model.numverts||no<0||no>=model.numnorms||vb[v]>=h->numbones||nb[no]>=h->numbones)return false;
                         StudioCorner& c=corners[i];c.bone=vb[v];c.normalBone=nb[no];
+                        positionIndices[i]=positionBase+v;
                         std::copy(vertices[v],vertices[v]+3,c.p);std::copy(normals[no],normals[no]+3,c.normal);
                         if(!V(c.p).finite()||!V(c.normal).finite())return false;
                     }
@@ -273,6 +298,7 @@ bool DecodeStudioTriangles(const studiohdr_t* h,StudioTriangleCache& out)
                         int a=count<0?0:(i%2?i-1:i-2),b=count<0?i-1:(i%2?i-2:i-1);
                         t.corner[0]=corners[a];t.corner[1]=corners[b];t.corner[2]=corners[i];
                         result.triangles.push_back(t);++decoded;
+                        result.positionIndices.push_back({positionIndices[a],positionIndices[b],positionIndices[i]});
                         if(result.triangles.size()>1000000)return false;
                     }
                     cursor+=n*8;
@@ -285,34 +311,73 @@ bool DecodeStudioTriangles(const studiohdr_t* h,StudioTriangleCache& out)
 }
 
 bool ReadStudioTriangles(const StudioTriangleCache& c,int body,int skin,const float (*poseMatrices)[3][4],
-                         std::vector<Triangle>& out,bool append)
+                          std::vector<Triangle>& out,bool append,bool positionsOnly,const std::vector<int>* allowedBones)
 {
     if(!append)out.clear();
     if(!c.header||!poseMatrices)return false;
-    int group=0;for(const Triangle& t:out)group=std::max(group,t.group+1);
-    for(const StudioTriangle& t:c.triangles)
-        if(sameActive(c,t,body)&&(skin==0?t.skin0Real:real(c,t,skin)))
+    skin=skin>=0&&skin<c.header->numskinfamilies?skin:0;
+    if(skin!=0&&c.materialSkin!=skin)
+    {
+        c.realMaterials.assign(c.header->numskinref,0);
+        for(int ref=0;ref<c.header->numskinref;++ref)
         {
-            Triangle p=posed(t,poseMatrices);p.group=group+t.part;out.push_back(p);
+            int flags;std::string name;
+            c.realMaterials[ref]=material(c,skin,ref,flags,name)&&!(flags&STUDIO_NF_CHROME)&&
+                !contains(name,"decal_")&&!placeholder(name);
         }
+        c.materialSkin=skin;
+    }
+    int group=0;for(const Triangle& t:out)group=std::max(group,t.group+1);
+    if(positionsOnly)
+    {
+        c.posedPositions.resize(c.positions.size());
+        if(++c.poseGeneration==0){c.poseGeneration=1;for(auto& position:c.posedPositions)position.generation=0;}
+    }
+    for(size_t index=0;index<c.triangles.size();++index)
+    {
+        const StudioTriangle& t=c.triangles[index];
+        if(sameActive(c,t,body)&&allowedTriangle(t,allowedBones)&&(skin==0?t.skin0Real:
+           !t.decal&&!t.chrome&&!t.placeholder&&t.material>=0&&t.material<int(c.realMaterials.size())&&c.realMaterials[t.material]))
+        {
+            Triangle p;
+            if(positionsOnly)
+            {
+                p.bone=t.corner[0].bone;
+                for(int j=0;j<3;++j)
+                {
+                    const int id=c.positionIndices[index][j];auto& cached=c.posedPositions[id];
+                    if(cached.generation!=c.poseGeneration)
+                    {
+                        const auto& raw=c.positions[id];point(poseMatrices[raw.bone],V(raw.p)).store(cached.p);cached.generation=c.poseGeneration;
+                    }
+                    std::copy(cached.p,cached.p+3,p.p[j]);if(t.corner[j].bone!=p.bone)p.bone=-1;
+                }
+            }
+            else p=posed(t,poseMatrices);
+            p.group=group+t.part;out.push_back(p);
+        }
+    }
     return true;
 }
 bool ReadStudioTriangles(const studiohdr_t* h,int body,int skin,const float (*poseMatrices)[3][4],
-                         std::vector<Triangle>& out,bool append)
+                         std::vector<Triangle>& out,bool append,const std::vector<int>* allowedBones)
 {
     StudioTriangleCache cache;
-    return DecodeStudioTriangles(h,cache)&&ReadStudioTriangles(cache,body,skin,poseMatrices,out,append);
+    return DecodeStudioTriangles(h,cache)&&ReadStudioTriangles(cache,body,skin,poseMatrices,out,append,false,allowedBones);
 }
 
-bool BuildMountCache(const studiohdr_t* h,MountCache& out)
+static bool BuildMountRegion(const studiohdr_t* h,MountCache& out,int root)
 {
     out=MountCache();
     if(!DecodeStudioTriangles(h,out.studio)||!buildBind(h,out.bind))return false;
+    out.rigRoot=root;
+    const auto* sourceBones=at<mstudiobone_t>(h,h->boneindex,h->numbones);
+    if(!sourceBones)return false;
     const float (*matrices)[3][4]=&out.bind[0].m;
     std::vector<Triangle> decals;std::set<int> bones;V normal;
     V seed;
     for(const StudioTriangle& t:out.studio.triangles)
-        if(t.decal&&sameActive(out.studio,t,0))
+        if(t.decal&&sameActive(out.studio,t,0)&&weaponRoot(sourceBones,t.corner[0].bone)==root)
         {
             Triangle tri=posed(t,matrices);if(tri.bone<0)continue;
             V a(tri.p[0]),b(tri.p[1]),c(tri.p[2]),n(tri.normal);
@@ -332,7 +397,6 @@ bool BuildMountCache(const studiohdr_t* h,MountCache& out)
     out.minUV[0]=out.minUV[1]=std::numeric_limits<float>::infinity();
     out.maxUV[0]=out.maxUV[1]=-std::numeric_limits<float>::infinity();
     out.originalDecalBones.assign(bones.begin(),bones.end());
-    const mstudiobone_t* sourceBones=at<mstudiobone_t>(h,h->boneindex,h->numbones);
     const mstudiobodyparts_t* sourceParts=at<mstudiobodyparts_t>(h,h->bodypartindex,h->numbodyparts);
     std::set<int> weaponBones;
     for(const StudioTriangle& raw:out.studio.triangles)
@@ -351,6 +415,8 @@ bool BuildMountCache(const studiohdr_t* h,MountCache& out)
             arm|=contains(name,"bip01")&&(contains(name,"hand")||contains(name,"finger")||contains(name,"foretwist")||contains(name,"arm"));
         }
         if(arm)continue;
+        bool belongs=true;for(const auto& corner:raw.corner)belongs=belongs&&weaponRoot(sourceBones,corner.bone)==root;
+        if(!belongs)continue;
         Triangle t=posed(raw,matrices);
         V gn=(V(t.p[1])-V(t.p[0])).cross(V(t.p[2])-V(t.p[0]));
         if(gn.length2()<1e-24)continue;
@@ -364,7 +430,6 @@ bool BuildMountCache(const studiohdr_t* h,MountCache& out)
         // A rigid anchor cannot follow a face whose corners deform on different
         // bones. Such seams still contribute to the whole-gun domain; holes
         // and deforming seams snap to the nearest real rigid surface instead.
-        if(t.bone<0)continue;
         gn=gn.unit();if(gn.dot(V(t.normal))<0)gn=gn*-1;
         if(gn.dot(n)<kMinimumSideFacing)continue;
         Triangle surface=t;gn.store(surface.normal);out.surfaces.push_back(surface);
@@ -392,17 +457,105 @@ bool BuildMountCache(const studiohdr_t* h,MountCache& out)
     return out.valid;
 }
 
+bool BuildMountCache(const studiohdr_t* h,MountCache& out)
+{
+    out=MountCache();StudioTriangleCache decoded;
+    if(!DecodeStudioTriangles(h,decoded))return false;
+    const auto* bones=at<mstudiobone_t>(h,h->boneindex,h->numbones);if(!bones)return false;
+    std::set<int> roots;
+    for(const auto& triangle:decoded.triangles)if(triangle.decal&&sameActive(decoded,triangle,0))
+        roots.insert(weaponRoot(bones,triangle.corner[0].bone));
+    if(roots.empty())return false;
+    if(roots.size()==1)return BuildMountRegion(h,out,*roots.begin());
+    std::vector<MountCache> regions;
+    for(int root:roots){MountCache region;if(BuildMountRegion(h,region,root))regions.push_back(std::move(region));}
+    if(regions.empty())return false;
+    out=regions.front();
+    out.regions=std::move(regions);
+    // Preserve all real body components for callers choosing a collision frame.
+    for(size_t i=1;i<out.regions.size();++i)
+    {
+        const auto& region=out.regions[i];out.surfaces.insert(out.surfaces.end(),region.surfaces.begin(),region.surfaces.end());
+        out.weaponBones.insert(out.weaponBones.end(),region.weaponBones.begin(),region.weaponBones.end());
+    }
+    return true;
+}
+
+bool BoneSocketDisplacement(const MountCache& c,int receiver,int part,
+                            const float (*poseMatrices)[3][4],float& maxDistance)
+{
+    maxDistance=0;
+    if(!c.studio.header||!poseMatrices||receiver<0||part<0||
+       size_t(receiver)>=c.bind.size()||size_t(part)>=c.bind.size())return false;
+    const auto relative=[](const float parent[3][4],const float child[3][4],double out[3][4])
+    {
+        const V rows[3]={V(parent[0]),V(parent[1]),V(parent[2])};
+        const double determinant=rows[0].dot(rows[1].cross(rows[2]));
+        if(!std::isfinite(determinant)||std::abs(determinant)<1e-12)return false;
+        const V columns[3]={rows[1].cross(rows[2])*(1/determinant),
+                            rows[2].cross(rows[0])*(1/determinant),
+                            rows[0].cross(rows[1])*(1/determinant)};
+        for(int column=0;column<4;++column)
+        {
+            V value(child[0][column],child[1][column],child[2][column]);
+            if(column==3)value=value-V(parent[0][3],parent[1][3],parent[2][3]);
+            const V local=columns[0]*value.x+columns[1]*value.y+columns[2]*value.z;
+            if(!local.finite())return false;
+            out[0][column]=local.x;out[1][column]=local.y;out[2][column]=local.z;
+        }
+        return true;
+    };
+    double current[3][4],bind[3][4];
+    if(!relative(poseMatrices[receiver],poseMatrices[part],current)||
+       !relative(c.bind[receiver].m,c.bind[part].m,bind))return false;
+    double maximum2=0;bool found=false;
+    for(const auto& position:c.studio.positions)if(position.bone==part)
+    {
+        double distance2=0;
+        for(int row=0;row<3;++row)
+        {
+            double delta=current[row][3]-bind[row][3];
+            for(int axis=0;axis<3;++axis)delta+=(current[row][axis]-bind[row][axis])*position.p[axis];
+            distance2+=delta*delta;
+        }
+        if(!std::isfinite(distance2))return false;
+        maximum2=std::max(maximum2,distance2);found=true;
+    }
+    maxDistance=float(std::sqrt(maximum2));
+    return found&&std::isfinite(maxDistance);
+}
+
+int MountDomainAt(const MountCache& c,float u,float v)
+{
+    if(!c.valid||!std::isfinite(u)||!std::isfinite(v))return 0;
+    if(!c.regions.empty())
+    {
+        const int region=std::min(int(c.regions.size())-1,int(clamp(u,0,1)*c.regions.size()));
+        return MountDomainAt(c.regions[region],float(clamp(u,0,1)*c.regions.size()-region),v);
+    }
+    const V q(c.minUV[0]+clamp(u,0,1)*(c.maxUV[0]-c.minUV[0]),c.minUV[1]+clamp(v,0,1)*(c.maxUV[1]-c.minUV[1]),0);
+    const Triangle* t;V p;double depth;
+    if(!frontAt(c,q,t,p,depth))return 0;
+    return t->bone>=0?1:0;
+}
+
 static bool FindMountImpl(const MountCache& c,float u,float v,Mount& out,const MountViewConstraint* view)
 {
     out=Mount();
     if(!c.valid||!std::isfinite(u)||!std::isfinite(v))return false;
+    if(!c.regions.empty())
+    {
+        const int index=std::min(int(c.regions.size())-1,int(clamp(u,0,1)*c.regions.size()));
+        if(!FindMountImpl(c.regions[index],float(clamp(u,0,1)*c.regions.size()-index),v,out,view))return false;
+        out.requestedUV[0]=u;out.actualUV[0]=(out.actualUV[0]+index)/float(c.regions.size());return true;
+    }
     u=float(clamp(u,0,1));v=float(clamp(v,0,1));
     V query(c.minUV[0]+u*(c.maxUV[0]-c.minUV[0]),c.minUV[1]+v*(c.maxUV[1]-c.minUV[1]),0);
     double bestDistance=std::numeric_limits<double>::infinity(),bestDepth=-std::numeric_limits<double>::infinity();
     const Triangle* best=nullptr;V bestPoint,bestProjection;
     for(const Triangle& t:c.surfaces)
     {
-        if(!sideFacing(c,t))continue;
+        if(t.bone<0||!sideFacing(c,t))continue;
         V p[3]={project(c.side,V(t.p[0])),project(c.side,V(t.p[1])),project(c.side,V(t.p[2]))};
         double denominator=cross2(p[1]-p[0],p[2]-p[0]);
         if(std::abs(denominator)<1e-16)continue;
@@ -438,15 +591,21 @@ static bool FindMountImpl(const MountCache& c,float u,float v,Mount& out,const M
             }
             b=cross2(q-p[0],p[2]-p[0])/denominator;d=cross2(p[1]-p[0],q-p[0])/denominator;
         }
+        // Validate the UV that the caller will actually retain after float
+        // rounding at a triangle boundary.
+        const float actualU=float((q.x-c.minUV[0])/(c.maxUV[0]-c.minUV[0]));
+        const float actualV=float((q.y-c.minUV[1])/(c.maxUV[1]-c.minUV[1]));
+        q.x=c.minUV[0]+double(actualU)*(c.maxUV[0]-c.minUV[0]);
+        q.y=c.minUV[1]+double(actualV)*(c.maxUV[1]-c.minUV[1]);
         double distance=(q.x-query.x)*(q.x-query.x)+(q.y-query.y)*(q.y-query.y);
         if(distance<bestDistance-1e-14||(std::abs(distance-bestDistance)<=1e-14&&q.z>bestDepth))
         {
             const Triangle* selected=&t;V selectedPoint=V(t.p[0])*(1-b-d)+V(t.p[1])*b+V(t.p[2])*d;double selectedDepth=q.z;
+            // Moving parts retain their actual bone. A deforming seam cannot
+            // carry a rigid anchor or expose a hidden layer beneath it.
+            if(!frontAt(c,q,selected,selectedPoint,selectedDepth)||selected->bone<0)continue;
             if(view)
             {
-                // A safe hidden layer must never replace the actual frontmost
-                // gun surface at this UV. Recheck the original full envelope.
-                if(!frontAt(c,q,selected,selectedPoint,selectedDepth))continue;
                 V local=inverse(c.bind[selected->bone].m,selectedPoint);
                 double actual=(point(view->poseMatrices[selected->bone],local)-V(view->viewOrigin)).dot(V(view->viewForward));
                 if(actual+1e-5<view->minimumOriginDepth)continue;
@@ -480,6 +639,13 @@ bool FindMountCandidates(const MountCache& c,float u,float v,std::vector<Mount>&
     if(!c.valid||!std::isfinite(u)||!std::isfinite(v)||!maximumCandidates||
        (view&&(!view->poseMatrices||!V(view->viewOrigin).finite()||!V(view->viewForward).finite()||
                !std::isfinite(view->minimumOriginDepth))))return false;
+    if(!c.regions.empty())
+    {
+        const int index=std::min(int(c.regions.size())-1,int(clamp(u,0,1)*c.regions.size()));
+        if(!FindMountCandidates(c.regions[index],float(clamp(u,0,1)*c.regions.size()-index),v,out,maximumCandidates,view))return false;
+        for(auto& mount:out){mount.requestedUV[0]=u;mount.actualUV[0]=(mount.actualUV[0]+index)/float(c.regions.size());}
+        return true;
+    }
     u=float(clamp(u,0,1));v=float(clamp(v,0,1));
     const double width=c.maxUV[0]-c.minUV[0],height=c.maxUV[1]-c.minUV[1];
     V query(c.minUV[0]+u*width,c.minUV[1]+v*height,0);
@@ -492,7 +658,7 @@ bool FindMountCandidates(const MountCache& c,float u,float v,std::vector<Mount>&
     };
     for(const Triangle& t:c.surfaces)
     {
-        if(!sideFacing(c,t))continue;
+        if(t.bone<0||!sideFacing(c,t))continue;
         V p[3]={project(c.side,V(t.p[0])),project(c.side,V(t.p[1])),project(c.side,V(t.p[2]))};
         double den=cross2(p[1]-p[0],p[2]-p[0]);if(std::abs(den)<1e-16)continue;
         V legal[16]={p[0],p[1],p[2]};int count=clipRectangle(legal,3,c.minUV[0],c.maxUV[0],c.minUV[1],c.maxUV[1]);
@@ -526,10 +692,17 @@ bool FindMountCandidates(const MountCache& c,float u,float v,std::vector<Mount>&
         if(a.q.y!=b.q.y)return a.q.y<b.q.y;
         return a.q.z>b.q.z;
     });
-    std::set<std::pair<int,int>> visited;
+    std::set<std::pair<int,int>> visited,occupied;
     for(const Candidate& candidate:candidates)
     {
-        const V q=candidate.q;
+        V q=candidate.q;
+        const float actualU=float(clamp((q.x-c.minUV[0])/width,0,1));
+        const float actualV=float(clamp((q.y-c.minUV[1])/height,0,1));
+        const auto cell=std::make_pair(std::min(31,int(actualU*32)),std::min(31,int(actualV*32)));
+        // A short fallback list must cover the receiver, rather than filling
+        // all entries with adjacent vertices of one dense detail.
+        if(maximumCandidates<=128&&occupied.count(cell))continue;
+        q.x=c.minUV[0]+double(actualU)*width;q.y=c.minUV[1]+double(actualV)*height;
         const int ux=int(std::llround((q.x-c.minUV[0])/width*1000000));
         const int vy=int(std::llround((q.y-c.minUV[1])/height*1000000));
         if(!visited.insert(std::make_pair(ux,vy)).second)continue;
@@ -545,9 +718,9 @@ bool FindMountCandidates(const MountCache& c,float u,float v,std::vector<Mount>&
         inverse(c.bind[t->bone].m,y,false).unit().store(mount.axisY);
         inverse(c.bind[t->bone].m,n,false).unit().store(mount.normal);
         mount.requestedUV[0]=u;mount.requestedUV[1]=v;
-        mount.actualUV[0]=float(clamp((q.x-c.minUV[0])/width,0,1));
-        mount.actualUV[1]=float(clamp((q.y-c.minUV[1])/height,0,1));
+        mount.actualUV[0]=actualU;mount.actualUV[1]=actualV;
         mount.snapDistance=float(std::hypot(q.x-query.x,q.y-query.y));out.push_back(mount);
+        occupied.insert(cell);
         if(out.size()>=maximumCandidates)break;
     }
     return !out.empty();
@@ -594,6 +767,7 @@ float ComputeOutwardClearance(const Frame& frame,const Bounds& bounds,const std:
 
 namespace
 {
+std::uint64_t colliderSerial=0;
 Bounds emptyBounds()
 {
     Bounds b;for(int i=0;i<3;++i){b.min[i]=std::numeric_limits<float>::infinity();b.max[i]=-b.min[i];}return b;
@@ -614,7 +788,7 @@ bool overlap(const Bounds& a,const Bounds& b,double gap)
 int collisionNode(MeshCollider& c,int first,int count)
 {
     const int index=int(c.nodes.size());c.nodes.push_back(CollisionNode());
-    Bounds bounds=emptyBounds();for(int i=first;i<first+count;++i)extend(bounds,triangleBounds(c.triangles[c.order[i]]));
+    Bounds bounds=emptyBounds();for(int i=first;i<first+count;++i)extend(bounds,c.triangleBounds[c.order[i]]);
     c.nodes[index].bounds=bounds;
     if(count<=8){c.nodes[index].first=first;c.nodes[index].count=count;return index;}
     int axis=0;for(int i=1;i<3;++i)if(bounds.max[i]-bounds.min[i]>bounds.max[axis]-bounds.min[axis])axis=i;
@@ -635,6 +809,7 @@ void collisionGroups(MeshCollider& c)
     std::map<int,std::map<Edge,std::vector<Ref>>> edges;
     std::map<int,int> groupIndex;
     c.groups.clear();c.closedEdges.clear();
+    c.triangleGroups.resize(c.triangles.size());
     for(size_t index=0;index<c.triangles.size();++index)
     {
         const Triangle& t=c.triangles[index];
@@ -642,7 +817,8 @@ void collisionGroups(MeshCollider& c)
         {
             groupIndex[t.group]=int(c.groups.size());CollisionGroup g;g.id=t.group;g.bounds=emptyBounds();c.groups.push_back(g);
         }
-        extend(c.groups[groupIndex[t.group]].bounds,triangleBounds(t));
+        c.triangleGroups[index]=groupIndex[t.group];
+        extend(c.groups[c.triangleGroups[index]].bounds,c.triangleBounds[index]);
         if((V(t.p[1])-V(t.p[0])).cross(V(t.p[2])-V(t.p[0])).length2()<1e-24)continue;
         for(int j=0;j<3;++j)
         {
@@ -699,12 +875,13 @@ bool segmentTriangle(V a,V b,const Triangle& t)
 // finite triangles cannot contact. Error bounds make uncertain/thin cases
 // fall through to the complete distance test instead of treating roundoff as
 // a separating plane. Inputs are float positions, arithmetic here is double.
-bool planeSeparates(const Triangle& a,const Triangle& b,double gap)
+CollisionPlane makeCollisionPlane(const Triangle& a)
 {
+    CollisionPlane plane;std::copy(a.p[0],a.p[0]+3,plane.origin);
     const V origin(a.p[0]),u=V(a.p[1])-origin,v=V(a.p[2])-origin,n=u.cross(v);
     const double normal[3]={n.x,n.y,n.z},edgeU[3]={u.x,u.y,u.z},edgeV[3]={v.x,v.y,v.z};
     const double eps=std::numeric_limits<double>::epsilon();
-    const double length=std::sqrt(n.length2());if(length<=1e-20||!std::isfinite(length))return false;
+    const double length=std::sqrt(n.length2());if(length<=1e-20||!std::isfinite(length))return plane;
     double errorU[3],errorV[3],errorN[3];
     for(int i=0;i<3;++i)
     {
@@ -720,15 +897,23 @@ bool planeSeparates(const Triangle& a,const Triangle& b,double gap)
                std::abs(edgeU[k])*errorV[j]+std::abs(edgeV[j])*errorU[k]+errorU[k]*errorV[j]);
         normalError+=errorN[i];
     }
-    const double threshold=std::max(gap,1e-10)*(length+normalError+8*eps*length);
+    std::copy(normal,normal+3,plane.normal);std::copy(errorN,errorN+3,plane.errorN);
+    plane.marginLength=length+normalError+8*eps*length;plane.valid=true;return plane;
+}
+bool planeSeparates(const CollisionPlane& plane,const Triangle& b,double gap)
+{
+    if(!plane.valid)return false;
+    const auto& normal=plane.normal;const auto& errorN=plane.errorN;
+    const double eps=std::numeric_limits<double>::epsilon();
+    const double threshold=std::max(gap,1e-10)*plane.marginLength;
     bool above=true,below=true;
     for(int corner=0;corner<3;++corner)
     {
         double distance=0,error=0;
         for(int i=0;i<3;++i)
         {
-            const double relative=double(b.p[corner][i])-a.p[0][i];
-            const double relativeError=eps*(std::abs(double(b.p[corner][i]))+std::abs(double(a.p[0][i])));
+            const double relative=double(b.p[corner][i])-plane.origin[i];
+            const double relativeError=eps*(std::abs(double(b.p[corner][i]))+std::abs(double(plane.origin[i])));
             const double term=relative*normal[i];distance+=term;
             error+=8*eps*std::abs(term)+std::abs(normal[i])*relativeError+
                    std::abs(relative)*errorN[i]+relativeError*errorN[i];
@@ -837,32 +1022,37 @@ bool insideGroup(const MeshCollider& c,V p,int group)
 }
 }
 
-bool BuildMeshCollider(const std::vector<Triangle>& triangles,MeshCollider& out)
+bool BuildMeshCollider(const std::vector<Triangle>& triangles,MeshCollider& out,bool closedGroups)
 {
-    out=MeshCollider();
+    out=MeshCollider();out.surfaceOnly=!closedGroups;
     for(const Triangle& t:triangles)for(int j=0;j<3;++j)if(!V(t.p[j]).finite())return false;
-    out.triangles=triangles;out.order.resize(triangles.size());
+    out.triangles=triangles;out.order.resize(triangles.size());out.planes.resize(triangles.size());
+    out.triangleBounds.reserve(triangles.size());for(const auto& t:triangles)out.triangleBounds.push_back(triangleBounds(t));
     for(size_t i=0;i<triangles.size();++i)out.order[i]=int(i);
-    if(!triangles.empty()){out.nodes.reserve(triangles.size()*2);collisionNode(out,0,int(triangles.size()));collisionGroups(out);}
-    return true;
+    if(!triangles.empty()){out.nodes.reserve(triangles.size()*2);collisionNode(out,0,int(triangles.size()));if(closedGroups)collisionGroups(out);}
+    out.geometrySerial=++colliderSerial;return true;
 }
-bool RefitMeshCollider(const std::vector<Triangle>& triangles,MeshCollider& c)
+bool RefitMeshCollider(const std::vector<Triangle>& triangles,MeshCollider& c,bool closedGroups)
 {
-    if(triangles.size()!=c.triangles.size()||(!triangles.empty()&&c.nodes.empty()))return BuildMeshCollider(triangles,c);
+    if(c.surfaceOnly!=!closedGroups||triangles.size()!=c.triangles.size()||(!triangles.empty()&&c.nodes.empty()))return BuildMeshCollider(triangles,c,closedGroups);
     for(size_t i=0;i<triangles.size();++i)
     {
-        if(triangles[i].group!=c.triangles[i].group)return BuildMeshCollider(triangles,c);
+        if(triangles[i].group!=c.triangles[i].group)return BuildMeshCollider(triangles,c,closedGroups);
         for(int j=0;j<3;++j)if(!V(triangles[i].p[j]).finite())return false;
     }
     c.triangles=triangles;
+    if(++c.planeEpoch==0){c.planeEpoch=1;for(auto& plane:c.planes)plane.epoch=0;}
+    for(size_t i=0;i<triangles.size();++i)c.triangleBounds[i]=triangleBounds(triangles[i]);
     for(int index=int(c.nodes.size())-1;index>=0;--index)
     {
-        CollisionNode& node=c.nodes[index];node.bounds=emptyBounds();
-        if(node.count)for(int i=node.first;i<node.first+node.count;++i)extend(node.bounds,triangleBounds(c.triangles[c.order[i]]));
-        else{extend(node.bounds,c.nodes[node.left].bounds);extend(node.bounds,c.nodes[node.right].bounds);}
+        CollisionNode& node=c.nodes[index];Bounds rebuilt=emptyBounds();
+        if(node.count)for(int i=node.first;i<node.first+node.count;++i)extend(rebuilt,c.triangleBounds[c.order[i]]);
+        else{extend(rebuilt,c.nodes[node.left].bounds);extend(rebuilt,c.nodes[node.right].bounds);}
+        node.bounds=rebuilt;
     }
+    if(!closedGroups){c.geometrySerial=++colliderSerial;return true;}
     for(CollisionGroup& g:c.groups){g.bounds=emptyBounds();g.closed=g.topologyClosed;}
-    for(const Triangle& t:c.triangles)for(CollisionGroup& g:c.groups)if(g.id==t.group){extend(g.bounds,triangleBounds(t));break;}
+    for(size_t i=0;i<c.triangles.size();++i)extend(c.groups[c.triangleGroups[i]].bounds,c.triangleBounds[i]);
     for(const CollisionEdgePair& edge:c.closedEdges)
     {
         CollisionGroup& group=c.groups[edge.group];if(!group.closed)continue;
@@ -873,7 +1063,28 @@ bool RefitMeshCollider(const std::vector<Triangle>& triangles,MeshCollider& c)
             if((V(a.p[ai])-V(b.p[bi])).length2()>1e-12)group.closed=false;
         }
     }
-    return true;
+    c.geometrySerial=++colliderSerial;return true;
+}
+namespace
+{
+CollisionResult finishCollision(const MeshCollider& c,const std::vector<Triangle>& accessory,CollisionResult result)
+{
+    // A pendant, chain and mounting foot can be disconnected mesh components.
+    // Global extrema can miss a small component wholly inside a closed shell.
+    // Test their actual vertices; open obstacle groups claim no interior.
+    if(!result.closedGroups)return result;
+    for(const CollisionGroup& group:c.groups)if(group.closed)
+    for(const Triangle& triangle:accessory)for(const auto& sample:triangle.p)
+    {
+        const V p(sample);
+        const double q[3]={p.x,p.y,p.z};bool contained=true;
+        for(int i=0;i<3;++i)contained&=q[i]>group.bounds.min[i]&&q[i]<group.bounds.max[i];
+        if(!contained)continue;
+        ++result.containmentSamples;
+        if(insideGroup(c,p,group.id)){result.blocked=result.contained=true;result.containingGroup=group.id;return result;}
+    }
+    return result;
+}
 }
 CollisionResult CheckMeshCollision(const MeshCollider& c,const std::vector<Triangle>& accessory,float minimumSeparation)
 {
@@ -886,16 +1097,20 @@ CollisionResult CheckMeshCollision(const MeshCollider& c,const std::vector<Trian
     {
         const Triangle& t=accessory[index];
         for(int j=0;j<3;++j)if(!V(t.p[j]).finite()){result.blocked=true;result.accessoryTriangle=int(index);return result;}
-        const Bounds bounds=triangleBounds(t);stack.clear();stack.push_back(0);
+        const Bounds bounds=triangleBounds(t);CollisionPlane queryPlane;bool planeReady=false;stack.clear();stack.push_back(0);
         while(!stack.empty())
         {
             const CollisionNode& node=c.nodes[stack.back()];stack.pop_back();if(!overlap(bounds,node.bounds,gap))continue;
             if(node.count)for(int i=node.first;i<node.first+node.count;++i)
             {
                 const int obstacle=c.order[i];const Triangle& other=c.triangles[obstacle];
-                if(!overlap(bounds,triangleBounds(other),gap))continue;
+                if(!overlap(bounds,c.triangleBounds[obstacle],gap))continue;
                 ++result.trianglePairs;
-                if(planeSeparates(t,other,gap)||planeSeparates(other,t,gap)){++result.planeSeparatedPairs;continue;}
+                if(!planeReady){queryPlane=makeCollisionPlane(t);planeReady=true;}
+                if(planeSeparates(queryPlane,other,gap)){++result.planeSeparatedPairs;continue;}
+                auto& obstaclePlane=c.planes[obstacle];
+                if(obstaclePlane.epoch!=c.planeEpoch){obstaclePlane=makeCollisionPlane(other);obstaclePlane.epoch=c.planeEpoch;}
+                if(planeSeparates(obstaclePlane,t,gap)){++result.planeSeparatedPairs;continue;}
                 if(additionalAxisSeparates(t,other,gap)){++result.axisSeparatedPairs;continue;}
                 ++result.distancePairs;const double distance=triangleDistance2(t,other);
                 if(distance<=std::max(1e-20,gap*gap))
@@ -907,29 +1122,505 @@ CollisionResult CheckMeshCollision(const MeshCollider& c,const std::vector<Trian
             else{stack.push_back(node.left);stack.push_back(node.right);}
         }
     }
-    // Test actual mesh vertices, never an empty AABB center. The first vertex
-    // plus the six real extrema cover wholly contained accessories and common
-    // disconnected clip/pendant pieces; open obstacle groups claim no interior.
-    V samples[7];for(V& p:samples)p=V(accessory[0].p[0]);
-    for(const Triangle& t:accessory)for(int j=0;j<3;++j)
+    return finishCollision(c,accessory,result);
+}
+
+CollisionResult CheckMeshCollision(const MeshCollider& c,const MeshCollider& query,float minimumSeparation)
+{
+    CollisionResult result;for(const auto& group:c.groups)if(group.closed)++result.closedGroups;
+    if(c.nodes.empty()||query.nodes.empty())return result;
+    const double gap=std::isfinite(minimumSeparation)?std::max(0.0,double(minimumSeparation)):.0001;
+    auto contact=[&](int obstacle,int index)
     {
-        const V p(t.p[j]);const double q[3]={p.x,p.y,p.z};
-        for(int axis=0;axis<3;++axis)
+        if(!overlap(query.triangleBounds[index],c.triangleBounds[obstacle],gap))return false;
+        const auto& t=query.triangles[index];const auto& other=c.triangles[obstacle];++result.trianglePairs;
+        auto& queryPlane=query.planes[index];if(queryPlane.epoch!=query.planeEpoch){queryPlane=makeCollisionPlane(t);queryPlane.epoch=query.planeEpoch;}
+        if(planeSeparates(queryPlane,other,gap)){++result.planeSeparatedPairs;return false;}
+        auto& obstaclePlane=c.planes[obstacle];if(obstaclePlane.epoch!=c.planeEpoch){obstaclePlane=makeCollisionPlane(other);obstaclePlane.epoch=c.planeEpoch;}
+        if(planeSeparates(obstaclePlane,t,gap)){++result.planeSeparatedPairs;return false;}
+        if(additionalAxisSeparates(t,other,gap)){++result.axisSeparatedPairs;return false;}
+        ++result.distancePairs;const double distance=triangleDistance2(t,other);
+        if(!(distance<=std::max(1e-20,gap*gap)))return false;
+        result.blocked=result.surfaceContact=true;result.accessoryTriangle=index;result.obstacleTriangle=obstacle;
+        result.distance=float(std::sqrt(std::max(0.0,distance)));
+        query.contactObstacle=obstacle;query.contactAccessory=index;return true;
+    };
+    if(query.contactObstacle>=0&&size_t(query.contactObstacle)<c.triangles.size()&&
+       query.contactAccessory>=0&&size_t(query.contactAccessory)<query.triangles.size()&&
+       contact(query.contactObstacle,query.contactAccessory))return result;
+    std::vector<std::pair<int,int>> stack;stack.reserve(64);stack.push_back({0,0});
+    while(!stack.empty())
+    {
+        const auto pair=stack.back();stack.pop_back();const auto& a=c.nodes[pair.first];const auto& b=query.nodes[pair.second];
+        if(!overlap(a.bounds,b.bounds,gap))continue;
+        if(a.count&&b.count)
         {
-            const double lo[3]={samples[1+axis*2].x,samples[1+axis*2].y,samples[1+axis*2].z};
-            const double hi[3]={samples[2+axis*2].x,samples[2+axis*2].y,samples[2+axis*2].z};
-            if(q[axis]<lo[axis])samples[1+axis*2]=p;if(q[axis]>hi[axis])samples[2+axis*2]=p;
+            for(int j=b.first;j<b.first+b.count;++j)for(int i=a.first;i<a.first+a.count;++i)
+            {
+                const int index=query.order[j],obstacle=c.order[i];
+                if(contact(obstacle,index))return result;
+            }
+        }
+        else
+        {
+            auto area=[](const Bounds& bounds){const double x=double(bounds.max[0])-bounds.min[0],y=double(bounds.max[1])-bounds.min[1],z=double(bounds.max[2])-bounds.min[2];return x*y+y*z+z*x;};
+            if(!a.count&&(b.count||area(a.bounds)>=area(b.bounds)))
+            {stack.push_back({a.left,pair.second});stack.push_back({a.right,pair.second});}
+            else{stack.push_back({pair.first,b.left});stack.push_back({pair.first,b.right});}
         }
     }
-    for(const CollisionGroup& group:c.groups)if(group.closed)for(V p:samples)
+    return finishCollision(c,query.triangles,result);
+}
+
+bool ReuseMeshCollision(const MeshCollider& c,const std::vector<Triangle>& addon,const CollisionMemo& memo,CollisionResult& result,float minimumSeparation,const std::vector<int>* uniqueCorners)
+{
+    const auto& old=memo.obstacles;
+    const bool unchanged=memo.owner==&c&&c.geometrySerial!=0&&memo.geometrySerial==c.geometrySerial;
+    if(!memo.valid||!std::isfinite(memo.separation)||!std::isfinite(minimumSeparation)||minimumSeparation<0||memo.separation<=minimumSeparation||addon.empty()||addon.size()!=memo.accessory.size()||(!unchanged&&(c.triangles.size()!=old.triangles.size()||
+       c.nodes.size()!=old.nodes.size()||c.groups.size()!=old.groups.size()||c.order!=old.order)))return false;
+    if(!unchanged)for(size_t i=0;i<c.groups.size();++i)
+        if(c.groups[i].id!=old.groups[i].id||c.groups[i].closed!=old.groups[i].closed)return false;
+    if(!unchanged)for(size_t i=0;i<c.triangles.size();++i)if(c.triangles[i].group!=old.triangles[i].group)return false;
+    const double queryBudget=double(memo.separation)-minimumSeparation-.00001;
+    if(queryBudget<=0)return false;
+    double motion2=0;Bounds swept=memo.bounds;
+    auto inspect=[&](int index)
     {
-        const double q[3]={p.x,p.y,p.z};bool contained=true;
-        for(int i=0;i<3;++i)contained&=q[i]>group.bounds.min[i]&&q[i]<group.bounds.max[i];
-        if(!contained)continue;
-        ++result.containmentSamples;
-        if(insideGroup(c,p,group.id)){result.blocked=result.contained=true;result.containingGroup=group.id;return result;}
+        const size_t i=size_t(index)/3;const int j=index%3;
+        if(index<0||i>=addon.size())return false;
+        const V point(addon[i].p[j]);if(!point.finite())return false;
+        motion2=std::max(motion2,(point-V(memo.accessory[i].p[j])).length2());
+        if(motion2>=queryBudget*queryBudget)return false;
+        if(!unchanged)for(int axis=0;axis<3;++axis)
+        {swept.min[axis]=std::min(swept.min[axis],addon[i].p[j][axis]);swept.max[axis]=std::max(swept.max[axis],addon[i].p[j][axis]);}
+        return true;
+    };
+    if(uniqueCorners)
+    {
+        if(uniqueCorners->empty())return false;
+        for(int index:*uniqueCorners)if(!inspect(index))return false;
     }
-    return result;
+    else for(size_t i=0;i<addon.size();++i)for(int j=0;j<3;++j)if(!inspect(int(i*3)+j))return false;
+    if(unchanged)
+    {result=CollisionResult();for(const auto& group:c.groups)if(group.closed)++result.closedGroups;return true;}
+    // .00001 absorbs roundoff in displacement/bounds; the original certified
+    // .001 gap minus both Hausdorff displacement bounds still exceeds .0001.
+    const double remaining=double(memo.separation)-minimumSeparation-.00001-std::sqrt(motion2);
+    if(remaining<=0)return false;
+    std::vector<int> stack;if(!c.nodes.empty())stack.push_back(0);
+    while(!stack.empty())
+    {
+        const int index=stack.back();stack.pop_back();
+        const CollisionNode& node=c.nodes[index];const CollisionNode& before=old.nodes[index];
+        if(node.count!=before.count||node.first!=before.first||node.left!=before.left||node.right!=before.right)return false;
+        Bounds envelope=node.bounds;extend(envelope,before.bounds);
+        // The union AABB contains the entire linear sweep of this subtree.
+        // A disjoint subtree cannot cross the accessory, even if a distant arm
+        // moves much farther than the local clearance budget.
+        if(!overlap(envelope,swept,minimumSeparation+.00001))continue;
+        if(node.count)for(int i=node.first;i<node.first+node.count;++i)
+        {
+            const int triangle=c.order[i];
+            for(int j=0;j<3;++j)
+                if((V(c.triangles[triangle].p[j])-V(old.triangles[triangle].p[j])).length2()>=remaining*remaining)return false;
+        }
+        else{stack.push_back(node.left);stack.push_back(node.right);}
+    }
+    result=CollisionResult();for(const auto& group:c.groups)if(group.closed)++result.closedGroups;
+    return true;
+}
+void RememberMeshCollision(const MeshCollider& c,const std::vector<Triangle>& addon,CollisionMemo& memo,float separation)
+{
+    memo.obstacles=c;memo.accessory=addon;memo.bounds=emptyBounds();
+    for(const auto& triangle:addon)extend(memo.bounds,triangleBounds(triangle));
+    memo.owner=&c;memo.geometrySerial=c.geometrySerial;
+    memo.separation=separation;memo.valid=!addon.empty()&&std::isfinite(separation)&&separation>0;
+}
+
+bool BuildPoseGeometry(const StudioTriangleCache& mesh,int body,int skin,PoseGeometry& out,bool collectCorners,const std::vector<int>* allowedBones)
+{
+    out=PoseGeometry();if(!mesh.header)return false;
+    std::map<int,Bounds> bounds;std::set<std::pair<int,int>> links;std::vector<bool> seen;if(collectCorners)seen.resize(mesh.positions.size());
+    for(size_t i=0;i<mesh.triangles.size();++i)
+    {
+        const auto& t=mesh.triangles[i];if(!sameActive(mesh,t,body)||!real(mesh,t,skin)||!allowedTriangle(t,allowedBones))continue;
+        out.triangles.push_back(int(i));
+        for(int a=0;a<3;++a)for(int b=a+1;b<3;++b)
+        {
+            const int x=t.corner[a].bone,y=t.corner[b].bone;if(x!=y)links.insert({std::min(x,y),std::max(x,y)});
+        }
+        if(collectCorners)for(int j=0;j<3;++j)
+        {
+            int id=mesh.positionIndices[i][j];if(!seen[id]){seen[id]=true;out.uniqueCorners.push_back(int(out.triangles.size()-1)*3+j);}
+        }
+        for(const auto& corner:t.corner)
+        {
+            auto found=bounds.find(corner.bone);
+            if(found==bounds.end())found=bounds.insert({corner.bone,emptyBounds()}).first;
+            for(int a=0;a<3;++a){found->second.min[a]=std::min(found->second.min[a],corner.p[a]);found->second.max[a]=std::max(found->second.max[a],corner.p[a]);}
+        }
+    }
+    std::map<int,int> indices;
+    for(const auto& item:bounds){indices[item.first]=int(out.bones.size());out.bones.push_back({item.first,item.second});}
+    for(const auto& pair:links)out.links.push_back({indices[pair.first],indices[pair.second]});return true;
+}
+bool BuildPoseMetrics(const std::vector<PoseSource>& sources,const Frame& frame,std::vector<BoneMetric>& out)
+{
+    out.clear();const float* axes[3]={frame.axisX,frame.axisY,frame.normal};
+    const double eps=std::numeric_limits<float>::epsilon()/2.0,gamma=5*eps/(1-5*eps);
+    for(const auto& source:sources)
+    {
+        if(!source.geometry)return false;
+        const size_t first=out.size();
+        for(const auto& bone:source.geometry->bones)
+        {
+            if(bone.bone<0||size_t(bone.bone)>=source.matrices.size())return false;
+            const auto& m=source.matrices[bone.bone].m;BoneMetric metric;metric.local=bone.local;
+            double worldError[3],relative[3],subError[3];
+            for(int row=0;row<3;++row)
+            {
+                double lo=m[row][3],hi=lo,absolute=std::abs(lo);
+                for(int a=0;a<3;++a)
+                {
+                    const double x=double(m[row][a])*bone.local.min[a],y=double(m[row][a])*bone.local.max[a];
+                    lo+=std::min(x,y);hi+=std::max(x,y);absolute+=std::max(std::abs(x),std::abs(y));
+                }
+                worldError[row]=eps/(1-eps)*std::max(std::abs(lo),std::abs(hi))+32*std::numeric_limits<double>::epsilon()*absolute+1e-37;
+                relative[row]=std::max(std::abs(lo-frame.origin[row]),std::abs(hi-frame.origin[row]))+worldError[row];
+                subError[row]=eps/(1-eps)*relative[row]+1e-37;
+            }
+            for(int row=0;row<3;++row)
+            {
+                double projection=0;
+                for(int a=0;a<3;++a)
+                {
+                    for(int k=0;k<3;++k)metric.matrix[row][a]+=double(axes[row][k])*m[k][a];
+                    metric.matrix[row][3]+=double(axes[row][a])*(double(m[a][3])-frame.origin[a]);
+                    metric.rounding[row]+=std::abs(double(axes[row][a]))*(worldError[a]+subError[a]);
+                    projection+=std::abs(double(axes[row][a]))*(relative[a]+subError[a]);
+                }
+                metric.rounding[row]+=gamma*projection+1e-7;
+                double lo=metric.matrix[row][3],hi=lo;
+                for(int a=0;a<3;++a)
+                {
+                    double x=metric.matrix[row][a]*bone.local.min[a],y=metric.matrix[row][a]*bone.local.max[a];
+                    lo+=std::min(x,y);hi+=std::max(x,y);
+                }
+                metric.bounds.min[row]=std::nextafter(float(lo-metric.rounding[row]),-std::numeric_limits<float>::infinity());
+                metric.bounds.max[row]=std::nextafter(float(hi+metric.rounding[row]),std::numeric_limits<float>::infinity());
+                if(!std::isfinite(metric.bounds.min[row])||!std::isfinite(metric.bounds.max[row]))return false;
+            }
+            out.push_back(metric);
+        }
+        // A mixed-bone triangle can span the query while every individual
+        // bone's vertex box is far away. Each incident bone must therefore use
+        // the full triangle envelope for relevance, not just its own corners.
+        std::vector<Bounds> original;for(size_t i=first;i<out.size();++i)original.push_back(out[i].bounds);
+        for(const auto& pair:source.geometry->links)
+        {
+            extend(out[first+pair.first].bounds,original[pair.second]);
+            extend(out[first+pair.second].bounds,original[pair.first]);
+        }
+    }
+    return true;
+}
+bool PoseDisplacementBound(const std::vector<BoneMetric>& old,const std::vector<BoneMetric>& current,const std::vector<Triangle>& query,float& error,bool allBones)
+{
+    error=0;if(old.size()!=current.size()||query.empty())return false;
+    Bounds box=emptyBounds();for(const auto& t:query)extend(box,triangleBounds(t));
+    double maximum=0;
+    for(size_t i=0;i<old.size();++i)
+    {
+        Bounds sweep=old[i].bounds;extend(sweep,current[i].bounds);
+        if(!allBones&&!overlap(sweep,box,.00011))continue;
+        double distance2=0;
+        for(int row=0;row<3;++row)
+        {
+            double lo=current[i].matrix[row][3]-old[i].matrix[row][3],hi=lo;
+            for(int a=0;a<3;++a)
+            {
+                const double delta=current[i].matrix[row][a]-old[i].matrix[row][a];
+                const double x=delta*old[i].local.min[a],y=delta*old[i].local.max[a];lo+=std::min(x,y);hi+=std::max(x,y);
+            }
+            const double bound=std::max(std::abs(lo),std::abs(hi))+old[i].rounding[row]+current[i].rounding[row];distance2+=bound*bound;
+        }
+        maximum=std::max(maximum,std::sqrt(distance2));if(maximum>.003)return false;
+    }
+    error=std::nextafter(float(maximum+.00001),std::numeric_limits<float>::infinity());return true;
+}
+bool BuildPoseClosures(const MeshCollider& collider,const std::vector<PoseSource>& sources,std::vector<PoseClosure>& out)
+{
+    out.clear();std::vector<std::pair<int,const StudioTriangle*>> raw;
+    for(size_t source=0;source<sources.size();++source)
+    {
+        if(!sources[source].mesh||!sources[source].geometry)return false;
+        for(int index:sources[source].geometry->triangles)raw.push_back({int(source),&sources[source].mesh->triangles[index]});
+    }
+    if(raw.size()!=collider.triangles.size())return false;
+    for(const auto& edge:collider.closedEdges)for(int i=0;i<2;++i)
+    {
+        const auto& a=raw[edge.triangleA];const auto& b=raw[edge.triangleB];
+        const auto& ac=a.second->corner[(edge.cornerA+i)%3];const auto& bc=b.second->corner[(edge.cornerB+(edge.reverse?1-i:i))%3];
+        if(a.first==b.first&&ac.bone==bc.bone&&!std::memcmp(ac.p,bc.p,sizeof(ac.p)))continue;
+        PoseClosure check;check.group=edge.group;check.a.source=a.first;check.b.source=b.first;check.a.bone=ac.bone;check.b.bone=bc.bone;
+        std::copy(ac.p,ac.p+3,check.a.p);std::copy(bc.p,bc.p+3,check.b.p);out.push_back(check);
+    }
+    return true;
+}
+bool PoseClosuresUnchanged(const MeshCollider& collider,const std::vector<PoseClosure>& closures,const std::vector<PoseSource>& sources,const Frame& frame)
+{
+    std::vector<bool> closed;for(const auto& group:collider.groups)closed.push_back(group.topologyClosed);
+    auto position=[&](const ClosurePoint& input)
+    {
+        float world[3],relative[3],local[3];point(sources[input.source].matrices[input.bone].m,V(input.p)).store(world);
+        for(int a=0;a<3;++a)relative[a]=world[a]-frame.origin[a];
+        const float* axes[3]={frame.axisX,frame.axisY,frame.normal};
+        for(int row=0;row<3;++row)local[row]=relative[0]*axes[row][0]+relative[1]*axes[row][1]+relative[2]*axes[row][2];
+        return V(local);
+    };
+    for(const auto& edge:closures)if(closed[edge.group]&&(position(edge.a)-position(edge.b)).length2()>1e-12)closed[edge.group]=false;
+    for(size_t i=0;i<closed.size();++i)if(closed[i]!=collider.groups[i].closed)return false;return true;
+}
+
+bool BuildBoneScene(const std::vector<PoseSource>& sources,const MeshCollider& reference,BoneScene& out)
+{
+    out=BoneScene();if(reference.surfaceOnly)return false;
+    std::map<int,int> groupIndices;
+    for(const auto& group:reference.groups)
+    {
+        groupIndices[group.id]=int(out.groups.size());BoneSceneGroup g;
+        g.id=group.id;g.topologyClosed=group.topologyClosed;g.rigid=-2;out.groups.push_back(g);
+    }
+    size_t original=0;int firstMetric=0;
+    for(size_t sourceIndex=0;sourceIndex<sources.size();++sourceIndex)
+    {
+        const auto& source=sources[sourceIndex];if(!source.mesh||!source.geometry)return false;
+        BoneSceneSource stored;stored.mesh=source.mesh;stored.geometry=source.geometry;stored.body=source.body;stored.skin=source.skin;
+        stored.firstMetric=firstMetric;stored.firstTriangle=int(original);out.sources.push_back(stored);
+        std::map<int,int> metricIndices,rigidIndices;
+        for(size_t b=0;b<source.geometry->bones.size();++b)metricIndices[source.geometry->bones[b].bone]=firstMetric+int(b);
+        for(int rawIndex:source.geometry->triangles)
+        {
+            if(original>=reference.triangles.size()||rawIndex<0||size_t(rawIndex)>=source.mesh->triangles.size())return false;
+            const auto& raw=source.mesh->triangles[rawIndex];const auto& posedTriangle=reference.triangles[original];
+            const auto groupIt=groupIndices.find(posedTriangle.group);if(groupIt==groupIndices.end())return false;
+            auto& group=out.groups[groupIt->second];int bone=raw.corner[0].bone;
+            for(const auto& corner:raw.corner)
+            {
+                const auto metric=metricIndices.find(corner.bone);if(metric==metricIndices.end())return false;
+                group.metrics.push_back(metric->second);if(corner.bone!=raw.corner[0].bone)bone=-1;
+            }
+            if(bone<0)
+            {
+                out.mixed.push_back({int(sourceIndex),rawIndex,int(original)});group.rigid=-1;
+            }
+            else
+            {
+                auto found=rigidIndices.find(bone);
+                if(found==rigidIndices.end())
+                {
+                    const int index=int(out.rigid.size());BoneSceneRigid rigid;
+                    rigid.source=int(sourceIndex);rigid.bone=bone;rigid.metric=metricIndices[bone];
+                    out.rigid.push_back(std::move(rigid));found=rigidIndices.insert({bone,index}).first;
+                }
+                auto& rigid=out.rigid[found->second];Triangle local;local.bone=bone;local.group=posedTriangle.group;
+                for(int j=0;j<3;++j)std::copy(raw.corner[j].p,raw.corner[j].p+3,local.p[j]);
+                rigid.collider.triangles.push_back(local);rigid.originalTriangles.push_back(int(original));
+                if(group.rigid==-2)group.rigid=found->second;else if(group.rigid!=found->second)group.rigid=-1;
+            }
+            ++original;
+        }
+        firstMetric+=int(source.geometry->bones.size());
+    }
+    if(original!=reference.triangles.size())return false;
+    for(auto& group:out.groups)
+    {
+        std::sort(group.metrics.begin(),group.metrics.end());group.metrics.erase(std::unique(group.metrics.begin(),group.metrics.end()),group.metrics.end());
+        group.unsupported=group.topologyClosed&&group.rigid<0;
+    }
+    for(size_t index=0;index<out.rigid.size();++index)
+    {
+        auto& rigid=out.rigid[index];const auto triangles=std::move(rigid.collider.triangles);
+        if(!BuildMeshCollider(triangles,rigid.collider))return false;
+        for(auto& localGroup:rigid.collider.groups)
+        {
+            auto& group=out.groups[groupIndices[localGroup.id]];
+            const bool allowed=group.topologyClosed&&group.rigid==int(index);
+            if(allowed&&!localGroup.topologyClosed)group.unsupported=true;
+            localGroup.closed=localGroup.topologyClosed=allowed&&localGroup.topologyClosed;
+        }
+    }
+    out.valid=true;return true;
+}
+
+namespace
+{
+// Exact inverse of the near-rigid matrix, with a norm bound from A^T A.
+// This handles reflection and avoids assuming float bone axes are perfect.
+bool boneInverse(const BoneMetric& metric,double inverseMatrix[3][4],double& inverseNorm)
+{
+    const auto& a=metric.matrix;double defect=0;
+    for(int i=0;i<3;++i)
+    {
+        double row=0;
+        for(int j=0;j<3;++j){double v=0;for(int k=0;k<3;++k)v+=a[k][i]*a[k][j];row+=std::abs(v-(i==j?1:0));}
+        defect=std::max(defect,row);
+    }
+    if(!std::isfinite(defect)||defect>1e-4)return false;
+    const V r0(a[0][0],a[0][1],a[0][2]),r1(a[1][0],a[1][1],a[1][2]),r2(a[2][0],a[2][1],a[2][2]);
+    const double determinant=r0.dot(r1.cross(r2));if(!std::isfinite(determinant)||std::abs(determinant)<.99)return false;
+    const V columns[3]={r1.cross(r2)*(1/determinant),r2.cross(r0)*(1/determinant),r0.cross(r1)*(1/determinant)};
+    for(int c=0;c<3;++c){inverseMatrix[0][c]=columns[c].x;inverseMatrix[1][c]=columns[c].y;inverseMatrix[2][c]=columns[c].z;}
+    for(int r=0;r<3;++r){inverseMatrix[r][3]=0;for(int c=0;c<3;++c)inverseMatrix[r][3]-=inverseMatrix[r][c]*a[c][3];}
+    inverseNorm=1/std::sqrt(1-defect)+1e-12;return true;
+}
+V boneQueryPoint(const double inverseMatrix[3][4],V input,double& error)
+{
+    const double p[3]={input.x,input.y,input.z};double output[3],error2=0;
+    for(int r=0;r<3;++r)
+    {
+        double value=inverseMatrix[r][3],absolute=std::abs(value);
+        for(int c=0;c<3;++c){const double term=inverseMatrix[r][c]*p[c];value+=term;absolute+=std::abs(term);}
+        output[r]=float(value);
+        const double rounding=std::abs(output[r]-value)+128*std::numeric_limits<double>::epsilon()*(absolute+std::abs(value)+1);
+        error2+=rounding*rounding;
+    }
+    error=std::max(error,std::sqrt(error2));return V(output[0],output[1],output[2]);
+}
+void addBoneCounts(CollisionResult& total,const CollisionResult& item)
+{
+    total.trianglePairs+=item.trianglePairs;total.containmentSamples+=item.containmentSamples;
+    total.closedGroups+=item.closedGroups;total.planeSeparatedPairs+=item.planeSeparatedPairs;
+    total.axisSeparatedPairs+=item.axisSeparatedPairs;total.distancePairs+=item.distancePairs;
+}
+}
+bool CheckBoneScene(const BoneScene& scene,const std::vector<PoseSource>& sources,
+                    const std::vector<BoneMetric>& metrics,const Frame& frame,
+                    const MeshCollider& query,CollisionResult& result,float gap)
+{
+    result=CollisionResult();if(!scene.valid||scene.sources.size()!=sources.size()||!std::isfinite(gap)||gap<0)return false;
+    size_t metricCount=0;
+    for(size_t i=0;i<sources.size();++i)
+    {
+        const auto& source=sources[i];const auto& stored=scene.sources[i];
+        if(source.mesh!=stored.mesh||source.geometry!=stored.geometry||source.body!=stored.body||source.skin!=stored.skin||!source.geometry)return false;
+        metricCount+=source.geometry->bones.size();
+    }
+    if(metricCount!=metrics.size())return false;
+    if(query.nodes.empty())return true;
+    auto scratch=std::find_if(scene.localQueries.begin(),scene.localQueries.end(),[&](const auto& item){return item.first==&query;});
+    if(scratch==scene.localQueries.end())
+    {
+        scene.localQueries.push_back({&query,MeshCollider()});scratch=scene.localQueries.end()-1;
+        scene.rigidMemos.emplace_back(scene.rigid.size());scene.certifyCooldown.emplace_back(scene.rigid.size(),0);
+    }
+    const size_t slot=size_t(scratch-scene.localQueries.begin());
+    auto& localQuery=scratch->second;
+    const Bounds& queryBounds=query.nodes[0].bounds;
+    for(const auto& group:scene.groups)if(group.unsupported)
+    {
+        Bounds bounds=emptyBounds();for(int metric:group.metrics)extend(bounds,metrics[metric].bounds);
+        // A closed shell can contain the query while all of its faces/bones
+        // are distant. Use the entire group envelope, never face proximity.
+        if(overlap(bounds,queryBounds,gap))return false;
+    }
+    float samples[7][3];for(auto& p:samples)std::copy(query.triangles[0].p[0],query.triangles[0].p[0]+3,p);
+    for(const auto& t:query.triangles)for(const auto& p:t.p)for(int a=0;a<3;++a)
+    {
+        if(p[a]<samples[1+a*2][a])std::copy(p,p+3,samples[1+a*2]);
+        if(p[a]>samples[2+a*2][a])std::copy(p,p+3,samples[2+a*2]);
+    }
+    for(size_t rigidIndex=0;rigidIndex<scene.rigid.size();++rigidIndex)
+    {
+        const auto& rigid=scene.rigid[rigidIndex];
+        const auto& metric=metrics[rigid.metric];if(!overlap(metric.bounds,queryBounds,gap))continue;
+        double inverseMatrix[3][4],inverseNorm;if(!boneInverse(metric,inverseMatrix,inverseNorm))return false;
+        double error=0;scene.transformed=query.triangles;
+        for(auto& triangle:scene.transformed)for(auto& p:triangle.p)boneQueryPoint(inverseMatrix,V(p),error).store(p);
+        double rounding2=0;for(double e:metric.rounding)rounding2+=e*e;
+        const float localGap=std::nextafter(float(inverseNorm*(gap+std::sqrt(rounding2))+error+1e-7),std::numeric_limits<float>::infinity());
+        if(!std::isfinite(localGap))return false;
+        auto& memo=scene.rigidMemos[slot][rigidIndex];auto& cooldown=scene.certifyCooldown[slot][rigidIndex];
+        if(cooldown)--cooldown;
+        CollisionResult hit;
+        // The obstacle is permanently bone-local. Reuse still measures every
+        // current accessory vertex; only its proved clearance can skip work.
+        const bool reused=ReuseMeshCollision(rigid.collider,scene.transformed,memo,hit,localGap);
+        if(!reused)
+        {
+            if(!RefitMeshCollider(scene.transformed,localQuery,false))return false;
+            hit=CheckMeshCollision(rigid.collider,localQuery,localGap);
+        }
+        // Preserve the original collision-frame extrema, too. Rotating the
+        // query changes which vertices are extremal, especially on multi-part
+        // pendants; local extrema alone cannot replace those original samples.
+        if(!hit.blocked)for(const auto& group:rigid.collider.groups)if(group.closed)for(const auto& sample:samples)
+        {
+            const V p=boneQueryPoint(inverseMatrix,V(sample),error);const double q[3]={p.x,p.y,p.z};bool inBounds=true;
+            for(int a=0;a<3;++a)inBounds=inBounds&&q[a]>group.bounds.min[a]&&q[a]<group.bounds.max[a];
+            if(inBounds){++hit.containmentSamples;if(insideGroup(rigid.collider,p,group.id)){hit.blocked=hit.contained=true;hit.containingGroup=group.id;break;}}
+        }
+        if(!reused&&!hit.blocked&&!cooldown)
+        {
+            cooldown=16;
+            for(float extra:{.002f,.0005f})
+            {
+                const float certified=std::nextafter(localGap+extra,std::numeric_limits<float>::infinity());
+                const auto check=CheckMeshCollision(rigid.collider,localQuery,certified);
+                hit.trianglePairs+=check.trianglePairs;hit.containmentSamples+=check.containmentSamples;
+                hit.planeSeparatedPairs+=check.planeSeparatedPairs;hit.axisSeparatedPairs+=check.axisSeparatedPairs;hit.distancePairs+=check.distancePairs;
+                if(check.blocked)continue;
+                // Same owner/serial makes the old obstacle snapshot unnecessary.
+                // Store only the local addon vertices, their bounds and margin.
+                memo.accessory=scene.transformed;memo.bounds=emptyBounds();
+                for(const auto& triangle:scene.transformed)extend(memo.bounds,triangleBounds(triangle));
+                memo.owner=&rigid.collider;memo.geometrySerial=rigid.collider.geometrySerial;
+                memo.separation=certified;memo.valid=true;break;
+            }
+        }
+        addBoneCounts(result,hit);
+        if(hit.blocked)
+        {
+            const auto counts=result;result=hit;
+            result.trianglePairs=counts.trianglePairs;result.containmentSamples=counts.containmentSamples;
+            result.closedGroups=counts.closedGroups;result.planeSeparatedPairs=counts.planeSeparatedPairs;
+            result.axisSeparatedPairs=counts.axisSeparatedPairs;result.distancePairs=counts.distancePairs;
+            if(hit.obstacleTriangle>=0)result.obstacleTriangle=rigid.originalTriangles[hit.obstacleTriangle];
+            return true;
+        }
+    }
+    scene.mixedTriangles.clear();std::vector<int> mixedOriginal;
+    const float* axes[3]={frame.axisX,frame.axisY,frame.normal};
+    for(const auto& mixed:scene.mixed)
+    {
+        const auto& source=sources[mixed[0]];const auto& stored=scene.sources[mixed[0]];const auto& raw=source.mesh->triangles[mixed[1]];
+        bool relevant=false;
+        for(const auto& corner:raw.corner)
+            for(size_t b=0;b<source.geometry->bones.size();++b)if(source.geometry->bones[b].bone==corner.bone)
+                relevant=relevant||overlap(metrics[stored.firstMetric+b].bounds,queryBounds,gap);
+        if(!relevant)continue;
+        Triangle triangle;triangle.bone=-1;triangle.group=raw.part;
+        for(int j=0;j<3;++j)
+        {
+            const auto& corner=raw.corner[j];if(corner.bone<0||size_t(corner.bone)>=source.matrices.size())return false;
+            float world[3],relative[3];point(source.matrices[corner.bone].m,V(corner.p)).store(world);
+            for(int a=0;a<3;++a)relative[a]=world[a]-frame.origin[a];
+            for(int a=0;a<3;++a)triangle.p[j][a]=relative[0]*axes[a][0]+relative[1]*axes[a][1]+relative[2]*axes[a][2];
+        }
+        scene.mixedTriangles.push_back(triangle);mixedOriginal.push_back(mixed[2]);
+    }
+    if(!scene.mixedTriangles.empty())
+    {
+        if(!RefitMeshCollider(scene.mixedTriangles,scene.mixedCollider,false))return false;
+        auto hit=CheckMeshCollision(scene.mixedCollider,query,gap);addBoneCounts(result,hit);
+        if(hit.blocked)
+        {
+            const auto counts=result;result=hit;result.trianglePairs=counts.trianglePairs;
+            result.planeSeparatedPairs=counts.planeSeparatedPairs;result.axisSeparatedPairs=counts.axisSeparatedPairs;result.distancePairs=counts.distancePairs;
+            if(hit.obstacleTriangle>=0)result.obstacleTriangle=mixedOriginal[hit.obstacleTriangle];
+        }
+    }
+    return true;
 }
 
 void ResetSwing(SwingState& state,const SwingInput& input)

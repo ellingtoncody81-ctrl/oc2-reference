@@ -1,148 +1,82 @@
-# OC2 · 我的工作（精简参考仓）
+# CS16Client [![Build Status](https://github.com/Velaron/cs16-client/actions/workflows/build.yml/badge.svg)](https://github.com/Velaron/cs16-client/actions) <img align="right" width="128" height="128" src="https://github.com/Velaron/cs16-client/raw/main/android/app/src/main/ic_launcher-playstore.png" alt="CS16Client" />
+Reverse-engineered Counter Strike 1.6 client, designed for mobile platforms and other officially non-supported platforms.
 
-**Private** · 只包含 `ellingtoncody81-ctrl` 自己的提交与改动，**上游历史已剥离**。
+## Donate
+[![Boosty.to](https://img.shields.io/badge/Boosty-F15F2C?logo=boosty&logoColor=fff&style=for-the-badge)](https://boosty.to/velaron)
 
-上游三个 GoldSrc 项目的完整历史本身就是公开的，留在本仓没有意义，只会把体积撑到 100 MB 以上。
-本仓把每个仓重写成一条**只含自有提交**的链，且每棵目录树**只保留你实际改过的文件**。
+[Support me](https://boosty.to/velaron) on Boosty.to, if you like my work and would like to support further development goals, like reverse-engineering other great mods.
 
-## 分支
+Important contributors:
+* [a1batross](https://github.com/a1batross), initial project creator and maintainer.
+* [jeefo](https://github.com/jeefo), the creator of [YaPB](https://github.com/yapb/yapb).
+* The people behind [ReGameDLL_CS](https://github.com/rehlds/ReGameDLL_CS) project.
+* [Vladislav4KZ](https://github.com/Vladislav4KZ), bug-tester and maintainer.
+* [SNMetamorph](https://github.com/SNMetamorph), author of the PSVita port.
+* [Alprnn357](https://github.com/Alprnn357), touch menus maintainer.
+* [wh1tesh1t](https://github.com/wh1tesh1t), [pwd491](https://github.com/pwd491), [Elinsrc](https://github.com/Elinsrc), [xiaodo1337](https://github.com/xiaodo1337), [nekonomicon](https://github.com/nekonomicon), [lewa-j](https://github.com/lewa-j) and others for minor contributions.
 
-| 分支 | 自有提交 | 树内文件 | 上游基点 |
-|---|---:|---:|---|
-| `cs16-client` | 35 | 135 | `main` @ `c1604b60` |
-| `xash3d-fwgs` | 8 | 15 | `master` @ `51353ff8` |
-| `regamedll` | 7 | 54 | `master` @ `4dddce6a` |
-| `mainui` | 5 | 11 | `master` @ `69246616` |
-| `cssdk` | 2 | 2 | `master` @ `a09ee092` |
+## Download
+You can download a build at the `Releases` section, or use these links for common platforms:
+* [Android](https://github.com/Velaron/cs16-client/releases/download/continuous/CS16Client-Android.apk)
+* [Linux](https://github.com/Velaron/cs16-client/releases/download/continuous/CS16Client-Linux-i386.tar.gz)
+* [Windows](https://github.com/Velaron/cs16-client/releases/download/continuous/CS16Client-Windows-X86.zip)
+* [PS Vita](https://github.com/Velaron/cs16-client/releases/download/continuous/CS16Client-PSVita.zip)
+* [macOS (arm64)](https://github.com/Velaron/cs16-client/releases/download/continuous/CS16Client-macOS-arm64.zip) - not tested
+* [macOS (x86_64)](https://github.com/Velaron/cs16-client/releases/download/continuous/CS16Client-macOS-x86_64.zip) - not tested
 
-## 提交对照（原提交 → 精简提交）
+[Other platforms...](https://github.com/Velaron/cs16-client/releases/tag/continuous)
 
-每个仓的提交按原顺序一一对应，作者、日期、提交信息原样保留。
+## Installation
+To run CS16Client you need the [latest developer build of Xash3D FWGS](https://github.com/FWGS/xash3d-fwgs/releases/tag/continuous).
+You have to own the [game on Steam](https://store.steampowered.com/app/10/CounterStrike//) and copy `valve` and `cstrike` folders into your Xash3D FWGS directory.
+After that, just install the APK and run.
 
-<details><summary><b>cs16-client</b>（35 条）</summary>
+## Configuration (CVars)
+| CVar                     | Default       | Min | Max | Description                                                                                 |
+|--------------------------|---------------|-----|-----|---------------------------------------------------------------------------------------------|
+| hud_color                | "255 160 0"   | -   | -   | HUD color in RGB.                                                                           |
+| cl_quakeguns             | 0             | 0   | 1   | Draw centered weapons.                                                                      |
+| cl_weaponlag             | 0             | 0.0 | -   | Enable weapon lag/sway.                                                                     |
+| xhair_additive           | 0             | 0   | 1   | Makes the crosshair additive.                                                               |
+| xhair_color              | "0 255 0 255" | -   | -   | Crosshair's color (RGBA).                                                                   |
+| xhair_dot                | 0             | 0   | 1   | Enables crosshair dot.                                                                      |
+| xhair_dynamic_move       | 1             | 0   | 1   | Jumping, crouching and moving will affect the dynamic crosshair (like cl_dynamiccrosshair). |
+| xhair_dynamic_scale      | 0             | 0   | -   | Scale of the dynamic crosshair movement.                                                    |
+| xhair_gap_useweaponvalue | 0             | 0   | 1   | Makes the crosshair gap scale depend on the active weapon.                                  |
+| xhair_enable             | 0             | 0   | 1   | Enables enhanced crosshair.                                                                 |
+| xhair_gap                | 0             | 0   | 15  | Space between crosshair's lines.                                                            |
+| xhair_pad                | 0             | 0   | -   | Border around crosshair.                                                                    |
+| xhair_size               | 4             | 0   | -   | Crosshair size.                                                                             |
+| xhair_t                  | 0             | 0   | 1   | Enables T-shaped crosshair.                                                                 |
+| xhair_thick              | 0             | 0   | -   | Crosshair thickness.                                                                        |
 
-| 原提交 | 精简提交 | 日期 | 说明 |
-|---|---|---|---|
-| `7bc5cd02` | `19fb6a62` | 2026-10-11 | chore(oc2): pin regamedll fix, ignore build_regamedll |
-| `d03f08a8` | `1e271092` | 2026-10-11 | feat(radar): add CHudRadarModern (CS:GO radar) reconstructed from the apk |
-| `e6741163` | `e132fc2f` | 2026-10-11 | radar: anchor overview on the player, unify blip transform |
-| `3890e983` | `2999d644` | 2026-10-11 | radar: fix anchor double-count, bind white for the disc, clip tiles to the circle |
-| `1929d464` | `f5141c5f` | 2026-10-11 | radar: turn the map with the view, navy plate, self marker |
-| `5f13e2ea` | `4373736b` | 2026-10-11 | radar: the overview origin is the image's centre-x / top edge, not its corner |
-| `25e420bd` | `2351a445` | 2026-10-11 | radar: rewrite the mapping in tile space, per the finished reverse engineering |
-| `43509950` | `4f938f84` | 2026-10-11 | radar: fix the tile mapping - axes are not crossed, X sign was flipped |
-| `6355f36e` | `e1498a36` | 2026-10-11 | radar: expose the residual tile offset, make the centre marker unconditional |
-| `52ebdca2` | `c2209cde` | 2026-10-11 | radar: derive the world->overview mapping from the map bounds |
-| `4706f5af` | `684a6330` | 2026-10-11 | radar: point the self arrow the way the player faces on the rotated grid |
-| `c8ac62b5` | `aa950a3b` | 2026-10-11 | radar: blip origins, radar zoom and the invisible self arrow |
-| `485936c1` | `4ebfb3d7` | 2026-10-11 | radar: derive the self arrow from the grid basis |
-| `5f7d3454` | `7258d0a1` | 2026-10-11 | radar: the tile column takes world y, the tile row takes world x |
-| `dbd6aaab` | `d8f199a9` | 2026-10-12 | radar: rotate the map by yaw+90, feed the self arrow tile-space facing |
-| `252d653b` | `7755e8bf` | 2026-10-12 | radar: drop blips outside the circle, teammates blue and enemies yellow |
-| `0bdbc74e` | `fa379779` | 2026-10-12 | radar: take the blip team from the entity state, enemies red |
-| `b43cdc11` | `4e33fb7d` | 2026-10-12 | radar: get the team over the one channel that actually reaches the client |
-| `e8a35dea` | `b767b6ed` | 2026-10-12 | radar: fix ROTATED overview mapping and derive the self arrow from it |
-| `724bf2cc` | `9f517cb2` | 2026-10-13 | radar: gate enemy blips behind a real line-of-sight test |
-| `7c39b109` | `72eacd7f` | 2026-10-13 | radar: acceptance build - circular frame and blurred backdrop |
-| `335ac61f` | `3261c5b9` | 2026-10-13 | hud: CS:GO view bob behind cl_bobstyle 2 |
-| `ae97463c` | `ceb61fc2` | 2026-10-13 | viewmodel: CS:GO view bob instead of the GoldClient fork |
-| `6223daf3` | `4227ddf9` | 2026-10-13 | viewmodel: stop the bob stuttering on ramps and stairs |
-| `5d1147d3` | `f40e518f` | 2026-10-13 | viewmodel: CS:GO weapon sway, and stop the lateral bob vanishing on pistols |
-| `e4d55f23` | `d7a3219b` | 2026-10-14 | fix(hud): restore viewmodel effects and smooth downhill camera |
-| `f38d9c30` | `c9cf17cd` | 2026-10-14 | fix(input): honor fast switch for wheel weapon selection |
-| `67bae185` | `cf0e126f` | 2026-10-14 | docs: keep project notes in the canonical md directory |
-| `e155f107` | `d242398d` | 2026-10-15 | feat(ui): integrate avatars, match HUD and purchase menu |
-| `b8335f51` | `381778b3` | 2026-10-16 | feat(equipment): complete weapons, sights and HUD feedback |
-| `20726a48` | `c110f6de` | 2026-10-18 | Complete module 3 HUD, aiming and weapon flow fixes |
-| `08128beb` | `ee95172d` | 2026-10-19 | Finish model ADS polish and Source-style viewmodel controls |
-| `56e4e9ea` | `ef105a17` | 2026-10-19 | Stabilize viewmodel motion, reload playback and muzzle effects |
-| `22e4db38` | `65f20c63` | 2026-10-21 | feat(inventory): attach counters and sticker charms to weapon surfaces |
-| `107065f2` | `7555b210` | 2026-10-21 | fix(inventory): refresh saved accessory placement without stale anchors |
-
-</details>
-
-<details><summary><b>xash3d-fwgs</b>（8 条）</summary>
-
-| 原提交 | 精简提交 | 日期 | 说明 |
-|---|---|---|---|
-| `d1ae2d10` | `672055c8` | 2026-10-11 | feat(radar): engine-side CS:GO radar background blur API |
-| `086af360` | `c389b48a` | 2026-10-11 | radar: export the BSP world-model bounds to the client |
-| `7f9a50d4` | `05e2aeea` | 2026-10-12 | engine: let a windowed listen server actually honour maxplayers and '+' commands |
-| `cdd3008e` | `6c1713c5` | 2026-10-12 | radar: get the team over the one channel that actually reaches the client |
-| `dc96a658` | `2330c293` | 2026-10-13 | radar: capture the blur backdrop before the HUD is composited |
-| `5b539e6b` | `8c991d13` | 2026-10-15 | fix(ui): expose session identity and isolate preview mirroring |
-| `671ce415` | `c1a1633e` | 2026-10-16 | fix(render): unify viewmodel handedness and preserve menu wheel input |
-| `27fc012d` | `f210dc2f` | 2026-10-19 | Support independent viewmodel FOV projection |
-
-</details>
-
-<details><summary><b>regamedll</b>（7 条）</summary>
-
-| 原提交 | 精简提交 | 日期 | 说明 |
-|---|---|---|---|
-| `fb788629` | `678bbab1` | 2026-10-11 | fix(server): disable file consistency check for offline play |
-| `732bcdbf` | `c60f8ee4` | 2026-10-12 | radar: get the team over the one channel that actually reaches the client |
-| `11788f75` | `c6c94f88` | 2026-10-15 | feat(hud): synchronize round resets and purchase eligibility |
-| `b5ae1a60` | `d68b5707` | 2026-10-16 | feat(equipment): complete modern purchases and weapon presentation |
-| `df514a61` | `3821fcab` | 2026-10-18 | Complete module 3 weapon parameters and reload timing |
-| `dae5668c` | `847268d5` | 2026-10-19 | Fix weapon aim speed, reload feedback and round ammo stock |
-| `77c20813` | `68722673` | 2026-10-19 | Fix purchase animation triggers and per-round Glock feedback |
-
-</details>
-
-<details><summary><b>mainui</b>（5 条）</summary>
-
-| 原提交 | 精简提交 | 日期 | 说明 |
-|---|---|---|---|
-| `85f2d3ca` | `70148cf4` | 2026-10-15 | feat(ui): add five-column buy menu and player previews |
-| `431e420b` | `d7025c89` | 2026-10-16 | feat(buy-menu): add continuous scrolling and modern equipment cards |
-| `6105c923` | `8a0b5294` | 2026-10-18 | Refine OC2 buy menu scrolling and character proportions |
-| `d666fb65` | `f5b39189` | 2026-10-21 | feat(inventory): add modern frontend and weapon accessory editor |
-| `931b29b1` | `a170c100` | 2026-10-21 | fix(inventory): activate edited weapon accessories when saving presets |
-
-</details>
-
-<details><summary><b>cssdk</b>（2 条）</summary>
-
-| 原提交 | 精简提交 | 日期 | 说明 |
-|---|---|---|---|
-| `248cc8d2` | `d592a565` | 2026-10-16 | feat(equipment): extend shared weapon and inventory definitions |
-| `e98a85c4` | `b888ab3b` | 2026-10-18 | Align OC2 weapon limits with CS:GO equipment |
-
-</details>
-
-## 与上游的关系
-
-本仓的提交链**不含上游历史**，所以：
-
-- 它是**参考/审阅**用的，不是可直接编译的工作树
-- 要把改动应用回上游，用原仓的提交号（对照表左列）：
-
-```powershell
-git -C <上游仓> cherry-pick <原提交号>
-# 或一次性取全部自有提交
-git -C <上游仓> cherry-pick $(git -C <上游仓> rev-list --reverse <基点>..<原分支>)
+## Building
+Clone the source code:
+```shell
+git clone https://github.com/Velaron/cs16-client --recursive
 ```
 
-- 上游仓库地址：
-  - `cs16-client` → <https://github.com/Velaron/cs16-client>
-  - `xash3d-fwgs` → <https://github.com/FWGS/xash3d-fwgs>
-  - `regamedll` → <https://github.com/Velaron/ReGameDLL_CS>
-  - `mainui` → <https://github.com/Velaron/mainui_cpp>
-  - `cssdk` → <https://github.com/s1lentq/CSSDK>
+### Using CMakePresets.json
+```shell
+cmake --preset <preset-name>
+cmake --build build
+cmake --install build --prefix <path-to-your-installation>
+```
 
-## 精简方式
-
-1. 提交链：只保留作者为 `ellingtoncody81-ctrl <ellingtoncody81@gmail.com>` 的提交，按原拓扑顺序重写为链式
-2. 目录树：每个提交的树只保留**你自己改动过的路径**（逐提交累积），上游原封不动的文件全部剔除
-3. 体积：原 `oc2-reference`（含上游全历史）112.4 MB → 本版 **763 KB**
-
-## 未包含
-
-- 上游第三方项目的代码与历史（公开可取，见上）
-- `D:\xashcs2` 下的 MD 文档、模型、测试证据 —— 本就不在任何 Git 仓内
-- 工作区未提交的在改内容（精简仓基于已提交状态构建）
-
-## 版权
-
-`cl_dll/` 等路径下的第三方 GoldSrc 源码版权归各自作者所有，许可证遵循各上游仓库原状。
+### Windows
+```shell
+cmake -A Win32 -S . -B build
+cmake --build build --config Release
+cmake --install build --prefix <path-to-your-installation>
+```
+### Linux and macOS
+```shell
+cmake -S . -B build
+cmake --build build --config Release
+cmake --install build --prefix <path-to-your-installation>
+```
+### Android
+```shell
+cd android
+./gradlew assembleRelease
+```
