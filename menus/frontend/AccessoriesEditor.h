@@ -6,22 +6,109 @@
 #include "YesNoMessageBox.h"
 #include "keydefs.h"
 #include "../../../../common/oc2_accessories.h"
+#include "../../../../common/oc2_accessory_domains.h"
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 
-// Coordinates are an editable side-surface parameter, not a new sticker slot.
-// The client fits the chosen position onto the supported weapon receiver.
+// The preview and both attachments share one model-unit projection. The saved
+// UV still describes the whole sticker-facing gun, including moving parts.
 class CMenuAccessoryPad : public CMenuBaseItem
 {
 public:
-    float *u=nullptr,*v=nullptr;bool dragging=false;int weapon=0;
+    struct Bounds {float x0=0,y0=0,x1=0,y1=0;};
+    struct Region {float u0=0,v0=0,u1=1,v1=1,sx=1,sy=1;};
+    struct Preview {int count=0;Region regions[2];};
+    struct Attachment {std::string file;Bounds bounds;};
+    struct Pane {Point p;Size z;float scale=1;Region region;};
+    float *u=nullptr,*v=nullptr;bool dragging=false;int weapon=0,selected=0;
+    oc2_accessories::WeaponConfig *draft=nullptr;
+    unsigned count=0;std::string sticker;
+    const oc2_accessory_domains::Domains *domains=nullptr;
+    CEventCallback onSelected;
+    bool previewValid=false;
+    bool LoadPreview(const char *text)
+    {
+        previewValid=false;
+        if(!text)return false;
+        std::istringstream input(text);std::string magic,tag;int version=0,total=0;
+        if(!(input>>magic>>version)||magic!="OC2_EDITOR_PREVIEWS"||version!=1)return false;
+        std::array<Preview,24> next{};Attachment models[2];Bounds stamp;std::string frame;
+        Bounds digits[6];std::string digitFiles[6];bool stampSeen=false,digitSeen[6]={};
+        while(input>>tag)
+        {
+            if(tag=="weapon")
+            {
+                int id=0,n=0;if(!(input>>id>>n)||n<1||n>2)return false;
+                const int index=oc2_accessories::Index(id);if(index<0||next[index].count)return false;
+                next[index].count=n;++total;
+                for(int i=0;i<n;++i)
+                {
+                    Region &r=next[index].regions[i];
+                    if(!(input>>r.u0>>r.v0>>r.u1>>r.v1>>r.sx>>r.sy)||
+                        !oc2_accessories::Range(r.u0,0,1)||!oc2_accessories::Range(r.v0,0,1)||
+                        !oc2_accessories::Range(r.u1,0,1)||!oc2_accessories::Range(r.v1,0,1)||
+                        r.u1<=r.u0||r.v1<=r.v0||!oc2_accessories::Range(r.sx,.01f,1000)||
+                        !oc2_accessories::Range(r.sy,.01f,1000))return false;
+                }
+            }
+            else if(tag=="attachment")
+            {
+                std::string kind;if(!(input>>kind))return false;
+                const int i=kind=="stattrak"?0:kind=="charm"?1:-1;
+                if(i<0||!(input>>models[i].file)||!ReadBounds(input,models[i].bounds)||!SafeImage(models[i].file))return false;
+            }
+            else if(tag=="stamp")
+            {
+                std::string kind;if(!(input>>kind)||kind!="charm"||!ReadBounds(input,stamp))return false;
+                stampSeen=true;
+            }
+            else if(tag=="frame")
+            {
+                std::string kind;if(!(input>>kind>>frame)||kind!="charm"||!SafeImage(frame))return false;
+            }
+            else if(tag=="digit")
+            {
+                int i=-1;if(!(input>>i)||i<0||i>5||!(input>>digitFiles[i])||
+                    !ReadBounds(input,digits[i]))return false;
+                // The only substitution is the selected decimal digit.
+                if(digitFiles[i]!="attachment_digit_%d.tga")return false;
+                digitSeen[i]=true;
+            }
+            else return false;
+        }
+        if(total!=24||models[0].file.empty()||models[1].file.empty()||!stampSeen||frame.empty())return false;
+        for(int i=0;i<6;++i)if(!digitSeen[i])return false;
+        m_previews=next;m_models[0]=models[0];m_models[1]=models[1];m_stamp=stamp;m_frame=frame;
+        for(int i=0;i<6;++i){m_digits[i]=digits[i];m_digitFiles[i]=digitFiles[i];}
+        previewValid=true;return true;
+    }
+    bool SetPosition(float x,float y)
+    {
+        if(!u||!v)return false;
+        x=Q_max(0.f,Q_min(1.f,x));y=Q_max(0.f,Q_min(1.f,y));
+        SnapToSurface(x,y);
+        if(*u!=x||*v!=y){*u=x;*v=y;_Event(QM_CHANGED);}
+        return true;
+    }
     bool KeyDown(int key) override
     {
         if(!u||!v)return false;
         if(UI::Key::IsLeftMouse(key))
         {
             if(!UI_CursorInRect(GetRenderPosition(),GetRenderSize()))return false;
-            dragging=true;MovePointer();return true;
+            // Keep the grabbed point under the cursor, rather than jumping the
+            // attachment's pivot to whichever part of its body was clicked.
+            const int other=1-selected;
+            int hit=HitAttachment(selected)?selected:HitAttachment(other)?other:-1;
+            if(hit>=0)
+            {
+                selected=hit;if(onSelected)onSelected(this);
+                const Point anchor=Anchor(selected);
+                m_grab=Point(uiStatic.cursorX-anchor.x,uiStatic.cursorY-anchor.y);
+            }
+            else m_grab=Point(0,0);
+            dragging=true;if(hit<0)MovePointer();return true;
         }
         float du=0,dv=0;
         if(UI::Key::IsLeftArrow(key))du=-.01f;
@@ -29,7 +116,7 @@ public:
         else if(key==K_UPARROW)dv=.01f;
         else if(key==K_DOWNARROW)dv=-.01f;
         else return false;
-        Set(*u+du,*v+dv);return true;
+        SetPosition(*u+du,*v+dv);return true;
     }
     bool KeyUp(int key) override
     {
@@ -46,33 +133,157 @@ public:
             UI_FillRect(p.x+z.w*i/4,p.y,1,z.h,PackRGBA(72,97,116,100));
             UI_FillRect(p.x,p.y+z.h*i/4,z.w,1,PackRGBA(72,97,116,100));
         }
-        char preview[96];
-        std::snprintf(preview,sizeof(preview),"gfx/inventory/previews/weapon_%d.tga",weapon);
-        const HIMAGE image=EngFuncs::PIC_Load(preview);
-        if(image){EngFuncs::PIC_Set(image,255,255,255,255);EngFuncs::PIC_DrawTrans(p,z);}
-        else
+        if(!previewValid)return;
+        char file[96];std::snprintf(file,sizeof(file),"gfx/inventory/previews/weapon_%d.tga",weapon);
+        const HIMAGE image=EngFuncs::PIC_Load(file);Pane panes[2];const int n=Panes(panes);
+        for(int i=0;image&&i<n;++i)
         {
-            UI_FillRect(p.x+z.w/8,p.y+z.h*2/5,z.w*5/8,z.h/5,PackRGBA(126,145,156,120));
-            UI_FillRect(p.x+z.w*3/4,p.y+z.h*9/20,z.w/5,z.h/14,PackRGBA(126,145,156,120));
-            UI_FillRect(p.x+z.w*3/8,p.y+z.h*3/5,z.w/12,z.h/5,PackRGBA(126,145,156,120));
+            const Region &r=panes[i].region;wrect_t crop;
+            crop.left=int(r.u0*EngFuncs::PIC_Width(image));crop.right=int(r.u1*EngFuncs::PIC_Width(image));
+            crop.top=int(r.v0*EngFuncs::PIC_Height(image));crop.bottom=int(r.v1*EngFuncs::PIC_Height(image));
+            EngFuncs::PIC_Set(image,255,255,255,255);EngFuncs::PIC_DrawTrans(panes[i].p,panes[i].z,&crop);
         }
-        if(u&&v)
+        DrawAttachment(1-selected);DrawAttachment(selected);
+    }
+    void Dump()
+    {
+        Pane panes[2];const int n=Panes(panes);
+        for(int i=0;i<n;++i)
         {
-            const int x=p.x+int(*u*(z.w-1)),y=p.y+int((1-*v)*(z.h-1));
-            UI_FillRect(x-7,y-7,15,15,PackRGBA(228,195,119,255));
-            UI_FillRect(x-2,y-2,5,5,PackRGBA(20,29,38,255));
+            const Pane &p=panes[i];const Region &r=p.region;
+            Con_Printf("accessory_preview_pane: index=%d loaded=%d x=%d y=%d w=%d h=%d span_x=%.6f span_y=%.6f scale=%.6f u0=%.6f v0=%.6f u1=%.6f v1=%.6f\n",
+                i,int(previewValid),p.p.x,p.p.y,p.z.w,p.z.h,r.sx,r.sy,p.scale,r.u0,r.v0,r.u1,r.v1);
+        }
+        for(int i=0;i<2&&draft;++i)
+        {
+            const Point anchor=Anchor(i);const Box b=AttachmentBox(i);const Bounds &world=m_models[i].bounds;
+            Con_Printf("accessory_preview_attachment: kind=%s selected=%d enabled=%d x=%d y=%d w=%d h=%d pivot_x=%d pivot_y=%d model_w=%.6f model_h=%.6f length=%.6f sticker=%d pattern=%s\n",
+                i?"charm":"stattrak",int(selected==i),int(i?draft->charm:draft->stattrak),b.p.x,b.p.y,b.z.w,b.z.h,
+                anchor.x,anchor.y,world.x1-world.x0,world.y1-world.y0,i?draft->length:1.f,draft->sticker,
+                sticker.empty()?"none":sticker.c_str());
         }
     }
 private:
-    void Set(float x,float y)
+    struct Box {Point p;Size z;};
+    std::array<Preview,24> m_previews{};Attachment m_models[2];Bounds m_stamp,m_digits[6];
+    std::string m_frame,m_digitFiles[6];Point m_grab;
+    static bool SafeImage(const std::string &s)
+    {return !s.empty()&&s.size()<81&&s.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")==std::string::npos&&s.find("..") == std::string::npos;}
+    static bool ReadBounds(std::istringstream &s,Bounds &b)
     {
-        x=Q_max(0.f,Q_min(1.f,x));y=Q_max(0.f,Q_min(1.f,y));
-        if(*u!=x||*v!=y){*u=x;*v=y;_Event(QM_CHANGED);}
+        return bool(s>>b.x0>>b.y0>>b.x1>>b.y1)&&oc2_accessories::Range(b.x0,-100,100)&&
+            oc2_accessories::Range(b.y0,-100,100)&&oc2_accessories::Range(b.x1,-100,100)&&
+            oc2_accessories::Range(b.y1,-100,100)&&b.x1>b.x0&&b.y1>b.y0;
+    }
+    int Panes(Pane (&panes)[2])const
+    {
+        const int index=oc2_accessories::Index(weapon);if(!previewValid||index<0)return 0;
+        const Preview &preview=m_previews[index];const Point p=GetRenderPosition();const Size z=GetRenderSize();
+        const float border=3.1f,gap=Q_max(8.f,8.f*uiStatic.scaleX);float width=0,height=0;
+        for(int i=0;i<preview.count;++i){width+=preview.regions[i].sx+2*border;height=Q_max(height,preview.regions[i].sy+2*border);}
+        const float scale=Q_min((z.w-gap*(preview.count-1))/width,z.h/height);
+        float x=p.x+(z.w-width*scale-gap*(preview.count-1))*.5f;
+        for(int i=0;i<preview.count;++i)
+        {
+            Pane &pane=panes[i];pane.region=preview.regions[i];pane.scale=scale;
+            pane.z=Size(Q_max(1,int(pane.region.sx*scale)),Q_max(1,int(pane.region.sy*scale)));
+            pane.p=Point(int(x+border*scale),p.y+(z.h-pane.z.h)/2);
+            x+=(pane.region.sx+2*border)*scale+gap;
+        }
+        return preview.count;
+    }
+    int RegionFor(float x)const
+    {
+        const int index=oc2_accessories::Index(weapon);if(!previewValid||index<0)return 0;
+        const Preview &preview=m_previews[index];
+        for(int i=0;i<preview.count;++i)if(x>=preview.regions[i].u0&&x<preview.regions[i].u1)return i;
+        return x<preview.regions[0].u0?0:preview.count-1;
+    }
+    void SnapToSurface(float &x,float &y)const
+    {
+        const int index=oc2_accessories::Index(weapon);
+        if(!domains||!domains->valid||index<0)return;
+        const std::string &grid=domains->cells[index];
+        const int gx=Q_min(127,int(x*128)),gy=Q_min(63,int((1-y)*64));
+        if(grid[gy*128+gx]!='0')return;
+        Pane panes[2];const int n=Panes(panes),region=RegionFor(x);
+        const Region r=n?panes[region].region:Region();float best=std::numeric_limits<float>::max(),bx=x,by=y;
+        for(int cy=0;cy<64;++cy)for(int cx=0;cx<128;++cx)
+        {
+            if(grid[cy*128+cx]=='0')continue;
+            const float px=(cx+.5f)/128,py=1-(cy+.5f)/64;
+            if(n&&RegionFor(px)!=region)continue;
+            const float dx=(px-x)*r.sx/(r.u1-r.u0),dy=(py-y)*r.sy/(r.v1-r.v0),d=dx*dx+dy*dy;
+            if(d<best){best=d;bx=px;by=py;}
+        }
+        x=bx;y=by;
+    }
+    void Position(int i,float &x,float &y)const
+    {x=draft?(i?draft->charmU:draft->statU):.5f;y=draft?(i?draft->charmV:draft->statV):.5f;SnapToSurface(x,y);}
+    Point Anchor(int i)const
+    {
+        float x,y;Position(i,x,y);Pane panes[2];const int n=Panes(panes);
+        if(!n)return GetRenderPosition();const Pane &p=panes[RegionFor(x)];const Region &r=p.region;
+        return Point(p.p.x+int((x-r.u0)/(r.u1-r.u0)*p.z.w),p.p.y+int((1-y-r.v0)/(r.v1-r.v0)*p.z.h));
+    }
+    Box WorldBox(int i,const Bounds &bounds)const
+    {
+        float x,y;Position(i,x,y);Pane panes[2];const int n=Panes(panes);const Point pivot=Anchor(i);
+        const float scale=(n?panes[RegionFor(x)].scale:1)*(i&&draft?draft->length:1);
+        const int left=int(std::floor(pivot.x+bounds.x0*scale)),top=int(std::floor(pivot.y-bounds.y1*scale));
+        const int right=int(std::ceil(pivot.x+bounds.x1*scale)),bottom=int(std::ceil(pivot.y-bounds.y0*scale));
+        return {Point(left,top),Size(Q_max(1,right-left),Q_max(1,bottom-top))};
+    }
+    Box AttachmentBox(int i)const{return WorldBox(i,m_models[i].bounds);}
+    bool HitAttachment(int i)const
+    {
+        if(!previewValid)return false;const Box b=AttachmentBox(i);const int tolerance=3;
+        return UI_CursorInRect(Point(b.p.x-tolerance,b.p.y-tolerance),Size(b.z.w+2*tolerance,b.z.h+2*tolerance));
+    }
+    static void DrawImage(const std::string &file,const Box &b,int alpha,bool completePath=false)
+    {
+        const std::string path=completePath?file:std::string("gfx/inventory/previews/")+file;
+        const HIMAGE image=EngFuncs::PIC_Load(path.c_str());if(!image)return;
+        EngFuncs::PIC_Set(image,255,255,255,alpha);EngFuncs::PIC_DrawTrans(b.p,b.z);
+    }
+    void DrawAttachment(int i)
+    {
+        if(!draft)return;const Box b=AttachmentBox(i);const int alpha=(i?draft->charm:draft->stattrak)?255:145;
+        DrawImage(m_models[i].file,b,alpha);
+        if(i)
+        {
+            if(!sticker.empty())DrawImage(sticker,WorldBox(i,m_stamp),alpha,true);
+            DrawImage(m_frame,b,alpha);
+        }
+        else
+        {
+            char text[7];std::snprintf(text,sizeof(text),"%06u",Q_min(999999u,count));
+            for(int d=0;d<6;++d)
+            {
+                char file[96];std::snprintf(file,sizeof(file),m_digitFiles[d].c_str(),text[d]-'0');
+                DrawImage(file,WorldBox(0,m_digits[d]),alpha);
+            }
+        }
+        if(i==selected)
+        {
+            const int x=b.p.x-2,y=b.p.y-2,w=b.z.w+4,h=b.z.h+4;const unsigned ink=PackRGBA(224,194,119,220);
+            UI_FillRect(x,y,w,1,ink);UI_FillRect(x,y+h-1,w,1,ink);UI_FillRect(x,y,1,h,ink);UI_FillRect(x+w-1,y,1,h,ink);
+        }
     }
     void MovePointer()
     {
-        const Point p=GetRenderPosition();const Size z=GetRenderSize();
-        Set(float(uiStatic.cursorX-p.x)/Q_max(1,z.w-1),1-float(uiStatic.cursorY-p.y)/Q_max(1,z.h-1));
+        Pane panes[2];const int n=Panes(panes);if(!n)return;
+        const float x=float(uiStatic.cursorX-m_grab.x),y=float(uiStatic.cursorY-m_grab.y);
+        int best=0;float distance=std::numeric_limits<float>::max();
+        for(int i=0;i<n;++i)
+        {
+            const Pane &p=panes[i];const float dx=Q_max(float(p.p.x)-x,Q_max(0.f,x-p.p.x-p.z.w));
+            const float dy=Q_max(float(p.p.y)-y,Q_max(0.f,y-p.p.y-p.z.h)),d=dx*dx+dy*dy;
+            if(d<distance){distance=d;best=i;}
+        }
+        const Pane &p=panes[best];const Region &r=p.region;
+        const float pu=Q_max(0.f,Q_min(1.f,(x-p.p.x)/p.z.w)),pv=Q_max(0.f,Q_min(1.f,(y-p.p.y)/p.z.h));
+        SetPosition(r.u0+pu*(r.u1-r.u0),1-r.v0-pv*(r.v1-r.v0));
     }
 };
 
@@ -105,8 +316,9 @@ public:
         Text(48,30,w-96,44,oc2_accessories::Name(m_weapon),32,Ink(),true);
         Text(48,78,w-96,22,"LOCAL WEAPON CUSTOMIZATION   /   shared by both teams",15,Muted());
         Text(48,194,left,22,m_tab?"CHARM POSITION":"STATTRAK POSITION",16,Accent(),true);
-        Text(48,490,left,24,"Drag or use arrows. Positions auto-fit.",13,Muted());
-        Text(48,516,left,22,"Editing turns it ON; you can switch it OFF.",12,Muted());
+        Text(48,490,left,24,"Drag an attachment. Arrows and sliders also move it.",13,Muted());
+        Text(48,516,left,22,m_weapon==10?"Both inner gun sides are editable. Editing turns it ON.":
+            "Editing turns it ON; you can switch it OFF.",12,Muted());
         char value[160];
         std::snprintf(value,sizeof(value),"Horizontal %.0f%%",100*(m_tab?m_draft.charmU:m_draft.statU));
         Text(48,543,left,24,value,15,Ink());
@@ -145,7 +357,7 @@ public:
         }
         Text(200,700,Q_max(100,w-840),36,m_message.c_str(),14,m_error?PackRGBA(246,133,119,255):Muted());
         if(m_dirty)Text(w-440,75,392,22,"Unsaved changes",14,Accent(),false,QM_RIGHT);
-        CMenuFramework::Draw();
+        UpdatePreview();CMenuFramework::Draw();
         // Sliders can change during Draw; reflect the live pad after it paints.
         if(m_pad.dragging)SyncPositionSliders();
     }
@@ -162,6 +374,10 @@ public:
             m_count,int(m_countsValid),m_revision,int(m_error),int(m_resetDialog.IsVisible()),int(m_discardDialog.IsVisible()),
             filenameHex,m_importStatus,unsigned(m_catalog.size()));
         Con_Printf("%s",line);
+        Con_Printf("accessory_regions: loaded=%d stat_allowed=%d charm_allowed=%d dual_sides=%d\n",
+            int(m_domains.valid),int(oc2_accessory_domains::Allowed(m_domains,m_weapon,m_draft.statU,m_draft.statV)),
+            int(oc2_accessory_domains::Allowed(m_domains,m_weapon,m_draft.charmU,m_draft.charmV)),int(m_weapon==10));
+        UpdatePreview();m_pad.Dump();
         for(int i=0;i<ItemCount();++i)
         {
             CMenuBaseItem *item=GetItemByIndex(i);
@@ -209,6 +425,11 @@ private:
     void Message(const std::string &value,bool error=false){m_message=value;m_error=error;}
     void ReloadData()
     {
+        m_domains=oc2_accessory_domains::Domains();
+        std::string regionText,regionError;
+        if(Read(oc2_accessory_domains::kPath,regionText))oc2_accessory_domains::Parse(regionText.c_str(),m_domains,regionError);
+        std::string previewText;
+        m_pad.LoadPreview(Read("gfx/inventory/previews/editor_previews.dat",previewText)?previewText.c_str():nullptr);
         oc2_accessories::Config config=oc2_accessories::DefaultConfig();
         std::string text,error;bool valid=true;
         if(Read(oc2_accessories::kConfigPath,text))valid=oc2_accessories::ParseConfig(text.c_str(),config,error);
@@ -276,6 +497,7 @@ private:
         m_filename.SetNameAndStatus("",nullptr,"accessory_filename");m_filename.iMaxLength=80;m_filename.bAllowColorstrings=false;
         AddItem(m_filename);m_pad.SetNameAndStatus("",nullptr,"accessory_pad");AddItem(m_pad);
         m_pad.onChanged=VoidCb(&CMenuAccessoriesEditor::PositionEdited);
+        m_pad.onSelected=VoidCb(&CMenuAccessoriesEditor::PreviewSelected);
         static const char *tags[6]={"accessory_u","accessory_v","accessory_amplitude","accessory_length","accessory_stiffness","accessory_damping"};
         const float lo[6]={0,0,0,.5f,20,2},hi[6]={100,100,25,1.5f,160,30},step[6]={1,1,1,.05f,5,1};
         for(int i=0;i<6;++i)
@@ -323,11 +545,20 @@ private:
         Message(charm?"Charm ON. Apply to save.":"StatTrak ON. Apply to save.");
     }
     void PositionEdited(){EditedAttachment(m_tab!=0);SyncPositionSliders();}
+    void PreviewSelected(){m_tab=m_pad.selected;Sync();}
+    void UpdatePreview()
+    {
+        m_pad.draft=&m_draft;m_pad.count=m_count;m_pad.selected=m_tab;
+        const oc2_accessories::Sticker *sticker=SelectedSticker();
+        m_pad.sticker=sticker?std::string(oc2_accessories::kStickerDirectory)+sticker->file:std::string();
+    }
     void Sync()
     {
         SyncEnableLabels();
         m_statTab.colorBase=m_tab?Ink():Accent();m_charmTab.colorBase=m_tab?Accent():Ink();
         m_pad.u=m_tab?&m_draft.charmU:&m_draft.statU;m_pad.v=m_tab?&m_draft.charmV:&m_draft.statV;m_pad.weapon=m_weapon;
+        m_pad.domains=&m_domains;
+        UpdatePreview();
         m_reset.SetVisibility(!m_tab);m_prevSticker.SetVisibility(m_tab);m_nextSticker.SetVisibility(m_tab);
         m_filename.SetVisibility(m_tab);m_import.SetVisibility(m_tab);
         for(int i=2;i<6;++i)m_sliders[i].SetVisibility(m_tab);
@@ -338,11 +569,15 @@ private:
     {
         for(int i=0;i<6;++i)if(item==&m_sliders[i])
         {
-            float *const values[6]={m_tab?&m_draft.charmU:&m_draft.statU,
-                m_tab?&m_draft.charmV:&m_draft.statV,&m_draft.amplitude,&m_draft.length,
-                &m_draft.stiffness,&m_draft.damping};
-            const float value=m_sliders[i].GetCurrentValue()*(i<2?.01f:1.f);
-            if(*values[i]!=value){*values[i]=value;EditedAttachment(i<2?m_tab!=0:true);}
+            if(i<2)
+            {
+                const float u=m_tab?m_draft.charmU:m_draft.statU,v=m_tab?m_draft.charmV:m_draft.statV;
+                const float value=m_sliders[i].GetCurrentValue()*.01f;
+                m_pad.SetPosition(i==0?value:u,i==1?value:v);SyncPositionSliders();return;
+            }
+            float *const values[4]={&m_draft.amplitude,&m_draft.length,&m_draft.stiffness,&m_draft.damping};
+            const float value=m_sliders[i].GetCurrentValue();
+            if(*values[i-2]!=value){*values[i-2]=value;EditedAttachment(true);}
             return;
         }
     }
@@ -393,8 +628,11 @@ private:
     {
         const auto defaults=oc2_accessories::DefaultConfig();
         const auto *value=oc2_accessories::Find(defaults,m_weapon);if(!value)return;
+        oc2_accessories::WeaponConfig next=*value;
+        oc2_accessory_domains::NearestAllowed(m_domains,m_weapon,next.statU,next.statV);
+        oc2_accessory_domains::NearestAllowed(m_domains,m_weapon,next.charmU,next.charmV);
         const int sticker=m_draft.sticker;
-        m_draft=*value;m_draft.stattrak=true;m_draft.charm=true;m_draft.sticker=sticker;
+        m_draft=next;m_draft.stattrak=true;m_draft.charm=true;m_draft.sticker=sticker;
         m_pad.dragging=false;m_dirty=true;Sync();Message("Defaults: both ON. Apply to save.");
     }
     void Revert(){m_pad.dragging=false;ReloadData();Sync();}
@@ -428,6 +666,7 @@ private:
     const char *m_importStatus="idle";
     oc2_accessories::WeaponConfig m_draft;
     oc2_accessories::Catalog m_catalog;
+    oc2_accessory_domains::Domains m_domains;
     CMenuAction m_statTab,m_charmTab,m_statToggle,m_charmToggle,m_apply,m_revert,m_defaults,m_back,m_reset;
     CMenuAction m_prevSticker,m_nextSticker,m_import;
     CMenuSlider m_sliders[6];CMenuField m_filename;CMenuAccessoryPad m_pad;
