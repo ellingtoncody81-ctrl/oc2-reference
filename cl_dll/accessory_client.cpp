@@ -10,6 +10,7 @@
 #include "render_api.h"
 #include "oc2_accessories.h"
 #include "accessory_client.h"
+#include "skin_inventory_client.h"
 #include "accessory_geometry.h"
 #include "accessory_swing_path.h"
 #include "accessory_mount_contact.h"
@@ -895,7 +896,8 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
  int savedTexture=0;mstudiotexture_t *swapped=nullptr;
  if(charm)
  {
-  const int texture=StickerTexture(frameConfig.sticker);
+  int texture=0;bool hide=false;
+  if(!OC2_InventoryCharmOverride(frameWeapon,texture,hide))texture=StickerTexture(frameConfig.sticker);
   auto textures=reinterpret_cast<mstudiotexture_t *>(reinterpret_cast<byte *>(header)+header->textureindex);
   for(int i=0;texture&&i<header->numtextures;++i)if(!strcmp(textures[i].name,"charm_sticker.bmp"))
    {swapped=&textures[i];savedTexture=swapped->index;swapped->index=texture;break;}
@@ -941,7 +943,13 @@ void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)
  if(level!=(map?map:"")){OC2_AccessoriesVidInit();level=map?map:"";}
  ReadSettings(r.m_clTime);diag=Diagnostics();diag.weapon=weapon;frameWeapon=0;weaponSurface=nullptr;
  const bool left=gHUD.cl_righthand&&gHUD.cl_righthand->value<=0;
+ WeaponConfig effective;
  const WeaponConfig *cfg=Find(settings,weapon);
+ const int charmSelection=OC2_InventoryCharmSelection(weapon);
+ if(cfg&&charmSelection)
+ {
+  effective=*cfg;effective.charm=charmSelection>0;cfg=&effective;
+ }
  diag.revision=settings.revision;if(cfg)diag.config=*cfg;
  if(motion.weapon!=weapon||motion.header!=r.m_pStudioHeader||motion.left!=left||motion.revision!=settings.revision||
     (cfg&&!SameCustomization(motion.config,*cfg)))

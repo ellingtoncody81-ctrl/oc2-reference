@@ -22,6 +22,7 @@
 
 #include "hud.h"
 #include "accessory_client.h"
+#include "skin_inventory_client.h"
 #include "match_ui.h"
 #include "match_status.h"
 #include "buy_menu_state.h"
@@ -287,6 +288,7 @@ void CHud :: Init( void )
 {
 	SetGameType(); // call it first, so we will know gamedir at very early stage
 	OC2_AccessoriesInit();
+	OC2_InventoryInit();
 
 	HOOK_COMMAND_FUNC( "special", __CmdFunc_InputCommandSpecial, );
 	HOOK_COMMAND_FUNC( "gunsmoke", __CmdFunc_GunSmoke, );
@@ -538,6 +540,7 @@ void CHud :: VidInit( void )
 {
 	V_ResetViewModelEffects();
 	OC2_AccessoriesVidInit();
+	OC2_InventoryVidInit();
 	static bool firstinit = true;
 	m_scrinfo.iSize = sizeof( m_scrinfo );
 	GetScreenInfo( &m_scrinfo );

@@ -42,6 +42,7 @@
 
 #include "com_weapons.h"
 #include "viewmodel_transition.h"
+#include "skin_inventory_client.h"
 #include "wpn_shared/oc2_presentation.h"
 #include "wpn_shared/oc2_reload.h"
 #include "view_ads.h"
@@ -1379,6 +1380,7 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 		return result;
 	}
 
+	OC2_InventoryModelScope inventoryModel(m_pCurrentEntity);
 	m_pRenderModel = m_pCurrentEntity->model;
 	m_pStudioHeader = (studiohdr_t *)IEngineStudio.Mod_Extradata(m_pRenderModel);
 
@@ -1465,7 +1467,10 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 
 		IEngineStudio.StudioSetRemapColors(m_nTopColor, m_nBottomColor);
 
-		StudioRenderModel(dir);
+		{
+			OC2_InventoryMaterialScope inventoryMaterials(*this);
+			StudioRenderModel(dir);
+		}
 		if (bIsViewModel)
 		{
 			bool shield;

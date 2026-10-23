@@ -7,6 +7,7 @@
 #include "keydefs.h"
 #include "../../../../common/oc2_accessories.h"
 #include "../../../../common/oc2_accessory_domains.h"
+#include "SkinInventory.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -336,7 +337,7 @@ public:
         }
         else
         {
-            Text(right,194,w-right-48,22,"CHARM STICKER",15,Accent(),true);
+            Text(right,194,w-right-48,22,m_patternOverride<0?"CHARM UNEQUIPPED IN SKINS":m_patternOverride?"SKIN PATTERN OVERRIDE ACTIVE":"CHARM STICKER",15,Accent(),true);
             const oc2_accessories::Sticker *sticker=SelectedSticker();
             if(sticker)
             {
@@ -346,7 +347,7 @@ public:
                 Text(right+108,230,w-right-156,42,sticker->name.c_str(),18,Ink(),true);
             }
             Text(right,323,w-right-48,24,"Import image filename",13,Muted());
-            Text(right,397,w-right-48,24,"PNG, TGA or BMP. No folders or commands.",12,Muted());
+            if(!m_patternOverride)Text(right,397,w-right-48,24,"PNG, TGA or BMP. No folders or commands.",12,Muted());
             static const char *names[4]={"Swing amplitude (degrees)","Length","Stiffness","Damping"};
             const float values[4]={m_draft.amplitude,m_draft.length,m_draft.stiffness,m_draft.damping};
             for(int i=0;i<4;++i)
@@ -374,6 +375,7 @@ public:
             m_count,int(m_countsValid),m_revision,int(m_error),int(m_resetDialog.IsVisible()),int(m_discardDialog.IsVisible()),
             filenameHex,m_importStatus,unsigned(m_catalog.size()));
         Con_Printf("%s",line);
+        Con_Printf("accessory_pattern_source: override=%d source=%s\n",m_patternOverride,m_patternOverride<0?"unequipped":m_patternOverride?"skin_loadout":"accessories");
         Con_Printf("accessory_regions: loaded=%d stat_allowed=%d charm_allowed=%d dual_sides=%d\n",
             int(m_domains.valid),int(oc2_accessory_domains::Allowed(m_domains,m_weapon,m_draft.statU,m_draft.statV)),
             int(oc2_accessory_domains::Allowed(m_domains,m_weapon,m_draft.charmU,m_draft.charmV)),int(m_weapon==10));
@@ -444,6 +446,8 @@ private:
         if(Read(oc2_accessories::kCatalogPath,text))m_catalogValid=oc2_accessories::ParseCatalog(text.c_str(),m_catalog,error);
         else if(EngFuncs::FileExists(oc2_accessories::kCatalogPath,true))m_catalogValid=false;
         ScanStickers();
+        oc2_inventory::Config loadout;std::string loadoutError;
+        m_patternOverride=oc2_local_inventory::LoadConfig(loadout,loadoutError)?oc2_inventory::Find(loadout,m_weapon)->charm:0;
         Message(!valid||!m_catalogValid?"Invalid saved file. Restore it before saving.":
             !m_countsValid?"Counter file unavailable or invalid. It was left unchanged.":"Saved settings loaded.",
             !valid||!m_catalogValid||!m_countsValid);
@@ -494,6 +498,7 @@ private:
         Button(m_prevSticker,"< PREVIOUS","accessory_sticker_previous");m_prevSticker.onReleased=VoidCb(&CMenuAccessoriesEditor::PreviousSticker);
         Button(m_nextSticker,"NEXT >","accessory_sticker_next");m_nextSticker.onReleased=VoidCb(&CMenuAccessoriesEditor::NextSticker);
         Button(m_import,"ADD IMAGE","accessory_import");m_import.onReleased=VoidCb(&CMenuAccessoriesEditor::ImportSticker);
+        Button(m_useAccessoryPattern,"USE ACCESSORIES SETTING","accessory_use_pattern");m_useAccessoryPattern.onReleased=VoidCb(&CMenuAccessoriesEditor::UseAccessoryPattern);
         m_filename.SetNameAndStatus("",nullptr,"accessory_filename");m_filename.iMaxLength=80;m_filename.bAllowColorstrings=false;
         AddItem(m_filename);m_pad.SetNameAndStatus("",nullptr,"accessory_pad");AddItem(m_pad);
         m_pad.onChanged=VoidCb(&CMenuAccessoriesEditor::PositionEdited);
@@ -523,6 +528,7 @@ private:
         m_prevSticker.SetRect(right+108,278,(rw-120)/2,42);
         m_nextSticker.SetRect(right+114+(rw-120)/2,278,(rw-120)/2,42);
         m_filename.SetRect(right,363,rw-142,30);m_import.SetRect(w-178,357,130,38);
+        m_useAccessoryPattern.SetRect(right,397,rw,28);
         for(int i=0;i<4;++i)m_sliders[i+2].SetRect(right,466+i*56,rw,20);
         m_back.SetRect(48,700,128,36);m_revert.SetRect(w-410,700,140,36);m_apply.SetRect(w-250,700,202,36);
         m_defaults.SetRect(w-620,700,190,36);
@@ -561,6 +567,7 @@ private:
         UpdatePreview();
         m_reset.SetVisibility(!m_tab);m_prevSticker.SetVisibility(m_tab);m_nextSticker.SetVisibility(m_tab);
         m_filename.SetVisibility(m_tab);m_import.SetVisibility(m_tab);
+        m_useAccessoryPattern.SetVisibility(m_tab&&m_patternOverride!=0);
         for(int i=2;i<6;++i)m_sliders[i].SetVisibility(m_tab);
         SyncPositionSliders();m_sliders[2].SetCurrentValue(m_draft.amplitude);m_sliders[3].SetCurrentValue(m_draft.length);
         m_sliders[4].SetCurrentValue(m_draft.stiffness);m_sliders[5].SetCurrentValue(m_draft.damping);
@@ -605,6 +612,16 @@ private:
         for(const auto &s:m_catalog)if(s.file==file)m_draft.sticker=s.id;
         m_importStatus="registered";EditedAttachment(true);Message("Image added; Charm ON. Apply to save.");
     }
+    void UseAccessoryPattern()
+    {
+        oc2_inventory::Config latest;oc2_inventory::Catalog catalog;std::string error;
+        if(!oc2_local_inventory::LoadConfig(latest,error)||!oc2_local_inventory::LoadCatalog(catalog,error)||
+            !oc2_inventory::ValidateConfig(latest,catalog,error)){Message(error,true);return;}
+        auto *state=oc2_inventory::Find(latest,m_weapon);if(!state)return;
+        state->charm=0;latest.revision=latest.revision==std::numeric_limits<unsigned>::max()?1:latest.revision+1;
+        if(!oc2_local_inventory::SaveConfig(latest)){Message("Could not restore the Accessories pattern setting.",true);return;}
+        m_patternOverride=0;Sync();Message("Accessories pattern restored. Apply saves the draft below.");
+    }
     void Apply()
     {
         if(!m_configValid||!m_catalogValid||!oc2_accessories::Valid(m_draft))
@@ -623,6 +640,7 @@ private:
         m_revision=latest.revision;m_dirty=false;m_catalogDirty=false;
         char status[96];std::snprintf(status,sizeof(status),"Saved: StatTrak %s / Charm %s.",
             m_draft.stattrak?"ON":"OFF",m_draft.charm?"ON":"OFF");Message(status);
+        if(m_patternOverride)Message("Saved. Skin pattern override remains; use USE ACCESSORIES SETTING to restore it.");
     }
     void UseDefaults()
     {
@@ -660,7 +678,7 @@ private:
             {Message("Counter could not be saved.",true);return;}
         m_count=0;m_countsValid=true;Message("This weapon's saved counter was reset.");
     }
-    int m_weapon=1,m_tab=0;unsigned m_count=0,m_revision=1;
+    int m_weapon=1,m_tab=0,m_patternOverride=0;unsigned m_count=0,m_revision=1;
     bool m_dirty=false,m_error=false,m_configValid=true,m_countsValid=true,m_catalogValid=true,m_catalogDirty=false;
     std::string m_message;
     const char *m_importStatus="idle";
@@ -668,7 +686,7 @@ private:
     oc2_accessories::Catalog m_catalog;
     oc2_accessory_domains::Domains m_domains;
     CMenuAction m_statTab,m_charmTab,m_statToggle,m_charmToggle,m_apply,m_revert,m_defaults,m_back,m_reset;
-    CMenuAction m_prevSticker,m_nextSticker,m_import;
+    CMenuAction m_prevSticker,m_nextSticker,m_import,m_useAccessoryPattern;
     CMenuSlider m_sliders[6];CMenuField m_filename;CMenuAccessoryPad m_pad;
     CMenuYesNoMessageBox m_resetDialog,m_discardDialog;
 };

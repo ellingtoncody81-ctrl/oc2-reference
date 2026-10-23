@@ -7,6 +7,32 @@
 // Evidence generator: tools/weapon_presentation/generate_timing.py.
 namespace oc2_presentation
 {
+// Trusted cosmetic timing from the deployed knife models; combat stats are unchanged.
+inline float KnifeDuration(int definition, int animation, float fallback)
+{
+    if (animation != 3 && animation != 8) return fallback;
+    int drawFrames=31, inspectFrames=187; float drawFPS=30.0f;
+    switch(definition)
+    {
+    case 0: case 42: case 503: case 505: case 506: case 508: case 509:
+    case 517: case 519: case 520: break;
+    case 500: drawFrames=36; break;
+    case 507: inspectFrames=146; break;
+    case 512: drawFrames=30; inspectFrames=177; break;
+    case 514: drawFrames=33; inspectFrames=186; break;
+    case 515: drawFrames=24; drawFPS=23.0f; inspectFrames=124; break;
+    case 516: inspectFrames=177; break;
+    case 518: inspectFrames=250; break;
+    case 521: inspectFrames=149; break;
+    case 522: inspectFrames=119; break;
+    case 523: inspectFrames=146; break;
+    case 525: inspectFrames=185; break;
+    default: return fallback;
+    }
+    const float seconds=animation==3?(drawFrames-1)/drawFPS:(inspectFrames-1)/30.0f;
+    return ceilf(seconds*1000.0f)/1000.0f;
+}
+
 enum { InspectImpulse = 180, Draw = 1, Inspect = 2, Silencer = 3 };
 struct Sequence { int weapon, animation, frames; float fps; int kind; bool incendiary; };
 inline const Sequence *Find(int weapon, int animation, bool incendiary = false)

@@ -55,6 +55,7 @@
 #include "ammohistory.h"
 #include "../../dlls/wpn_shared/oc2_gunshot.h"
 #include "../weapon_fire_feedback.h"
+#include "../skin_inventory_client.h"
 #ifndef min
 #define min(a,b)  (((a) < (b)) ? (a) : (b))
 #endif
@@ -346,6 +347,8 @@ BOOL CBasePlayerWeapon :: DefaultReload( int iClipSize, int iAnim, float fDelay,
 
 float CBasePlayerWeapon::AnimationDuration(int animation, float fallback) const
 {
+	if (m_iId == WEAPON_KNIFE && m_pPlayer && !m_pPlayer->HasShield())
+		return OC2_InventoryKnifeDuration(animation,oc2_presentation::KnifeDuration(OC2_InventoryKnifeDefinition(),animation,fallback));
 	return oc2_presentation::Duration(m_iId,animation,(m_iWeaponState & (1 << 6)) != 0,
 		m_pPlayer && m_pPlayer->HasShield(),fallback);
 }

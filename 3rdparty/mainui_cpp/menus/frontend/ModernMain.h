@@ -5,6 +5,7 @@
 #include "FrontendLayout.h"
 #include "InventoryModel.h"
 #include "AccessoriesEditor.h"
+#include "SkinEditor.h"
 #include "keydefs.h"
 #include <cstdio>
 #include <cstring>
@@ -27,6 +28,7 @@ public:
         CMenuFramework::Show();
         m_inventory.RequestRefresh();
         m_inventory.Tick();
+        ReloadLocalInventory();
         RefreshContents();
         SetCursorToItem(m_navPlay);
     }
@@ -52,6 +54,7 @@ public:
     void Draw() override
     {
         if(CL_IsActive())return;
+        if(m_reloadOnReturn&&WindowStack()->Current()==this){m_reloadOnReturn=false;ReloadLocalInventory();RefreshContents();}
         // Restrained dark glass on the existing game background, with a solid
         // header/footer and readable content surfaces at both target sizes.
         UI_FillRect(0,0,ScreenWidth,ScreenHeight,PackRGBA(9,14,20,234));
@@ -99,7 +102,11 @@ public:
         }
         DumpItem("exit_yes",m_quitDialog.yes,m_quitDialog.IsVisible());
         DumpItem("exit_no",m_quitDialog.no,m_quitDialog.IsVisible());
-        Con_Printf("frontend_customization: weapons=24 page=%d filter=%d source=local_configuration\n",m_localPage,m_localFilter);
+        Con_Printf("frontend_customization: weapons=24 knives=%u catalog=%u catalog_valid=%d config_valid=%d equipped_knife=%d page=%d filter=%d source=local_configuration\n",
+            unsigned(LocalKnifeCount()),unsigned(m_localCatalog.size()),int(m_catalogValid),int(m_localValid),m_localConfig.knife,m_localPage,m_localFilter);
+        for(int i=0;i<8;++i)if(m_cardIds[i])Con_Printf("frontend_local_card: index=%d key=%d weapon=%d knife=%d definition=%d\n",
+            i,m_cardIds[i],m_cardIds[i]>0?m_cardIds[i]:29,int(m_cardIds[i]<0),m_cardIds[i]<0?-m_cardIds[i]-1:oc2_inventory::Definition(m_cardIds[i]));
+        m_skins.Dump();
         m_accessories.Dump();
     }
 
@@ -108,6 +115,19 @@ public:
         if(CL_IsActive()||oc2_accessories::Index(weapon)<0)return;
         if(!IsVisible())Show();
         m_accessories.Open(weapon);
+    }
+
+    void OpenSkin(int weapon)
+    {
+        if(CL_IsActive()||oc2_accessories::Index(weapon)<0)return;
+        if(!IsVisible())Show();m_reloadOnReturn=true;m_skins.OpenWeapon(weapon);
+    }
+    void OpenKnife(int definition)
+    {
+        if(CL_IsActive()||definition<0)return;
+        if(!IsVisible())Show();ReloadLocalInventory();
+        if(definition&&!oc2_inventory::FindKnifeEntry(m_localCatalog,definition))return;
+        m_reloadOnReturn=true;m_skins.OpenKnife(definition);
     }
 
     void DebugPage(const char *name)
@@ -201,9 +221,11 @@ private:
         Button(m_filters[0],"ALL","filter_all");
         Button(m_filters[1],"PISTOLS","filter_weapons");
         Button(m_filters[2],"OTHER GUNS","filter_equipment");
+        Button(m_filters[3],"KNIVES","filter_knives");
         m_filters[0].onReleased=VoidCb(&CMenuModernMain::FilterAll);
         m_filters[1].onReleased=VoidCb(&CMenuModernMain::FilterWeapons);
         m_filters[2].onReleased=VoidCb(&CMenuModernMain::FilterEquipment);
+        m_filters[3].onReleased=VoidCb(&CMenuModernMain::FilterKnives);
         Button(m_previous,"PREVIOUS","inventory_previous");
         Button(m_next,"NEXT","inventory_next");
         m_previous.onReleased=VoidCb(&CMenuModernMain::PreviousPage);
@@ -222,6 +244,7 @@ private:
         m_quitDialog.yes.szTag="exit_yes";
         m_quitDialog.no.szTag="exit_no";
         m_accessories.Link(this);
+        m_skins.Link(this);m_skins.SetAccessories(&m_accessories);
     }
     void _VidInit() override
     {
@@ -231,7 +254,7 @@ private:
         Place(m_local,m_layout.local);Place(m_internet,m_layout.internet);Place(m_lan,m_layout.lan);
         Place(m_multiplayer,m_layout.multiplayer);Place(m_player,m_layout.player);
         Place(m_refresh,m_layout.refresh);Place(m_previous,m_layout.previous);Place(m_next,m_layout.next);
-        for(int i=0;i<3;++i)Place(m_filters[i],m_layout.filters[i]);
+        for(int i=0;i<4;++i)Place(m_filters[i],m_layout.filters[i]);
         for(int i=0;i<8;++i)Place(m_cards[i],m_layout.cards[i]);
         m_inventory.SetPage(m_inventory.Page().page,m_layout.pageSize);
         RefreshContents();
@@ -252,7 +275,7 @@ private:
     void OpenInventory(){SetPage(Inventory);}
     void OpenLoadout(){SetPage(Loadout);}
     void QuitDialog(){m_quitDialog.Show();m_quitDialog.SetCursorToItem(m_quitDialog.no);}
-    void RefreshInventory(){RefreshContents();}
+    void RefreshInventory(){ReloadLocalInventory();RefreshContents();}
     void Filter(oc2_frontend::InventoryCategory category)
     {
         m_localFilter=category==oc2_frontend::InventoryCategory::All?0:
@@ -262,6 +285,7 @@ private:
     void FilterAll(){Filter(oc2_frontend::InventoryCategory::All);}
     void FilterWeapons(){Filter(oc2_frontend::InventoryCategory::Weapons);}
     void FilterEquipment(){Filter(oc2_frontend::InventoryCategory::Equipment);}
+    void FilterKnives(){m_localFilter=3;m_localPage=0;RefreshContents();}
     void PreviousPage()
     {
         if(m_localPage>0)--m_localPage;
@@ -275,7 +299,22 @@ private:
     }
     void SelectCard(CMenuBaseItem *button)
     {
-        for(int i=0;i<8;++i)if(button==&m_cards[i] && m_cardIds[i])OpenAccessory(int(m_cardIds[i]));
+        for(int i=0;i<8;++i)if(button==&m_cards[i]&&m_cardIds[i])
+        {
+            if(m_cardIds[i]<0)OpenKnife(-m_cardIds[i]-1);else OpenSkin(m_cardIds[i]);
+        }
+    }
+    int LocalKnifeCount()const
+    {
+        int count=1;for(const auto &entry:m_localCatalog)if(entry.kind==oc2_inventory::Kind::Knife)++count;return count;
+    }
+    void ReloadLocalInventory()
+    {
+        m_localCatalog.clear();std::string error,configError;
+        m_catalogValid=oc2_local_inventory::LoadCatalog(m_localCatalog,error);
+        m_localValid=oc2_local_inventory::LoadConfig(m_localConfig,configError);
+        if(m_catalogValid&&m_localValid)m_localValid=oc2_inventory::ValidateConfig(m_localConfig,m_localCatalog,configError);
+        m_localError=!m_catalogValid?error:!m_localValid?configError:std::string();
     }
     std::vector<int> LocalWeapons() const
     {
@@ -285,6 +324,11 @@ private:
             const bool pistol=id==1||id==10||id==11||id==16||id==17||id==26;
             if(!m_localFilter||(m_localFilter==1&&pistol)||(m_localFilter==2&&!pistol))ids.push_back(id);
         }
+        if(!m_localFilter||m_localFilter==3)
+        {
+            ids.push_back(-1);
+            for(const auto &entry:m_localCatalog)if(entry.kind==oc2_inventory::Kind::Knife)ids.push_back(-entry.definition-1);
+        }
         return ids;
     }
     void RefreshContents()
@@ -293,7 +337,7 @@ private:
         m_local.SetVisibility(play);m_internet.SetVisibility(play);m_lan.SetVisibility(play);
         m_multiplayer.SetVisibility(play);m_player.SetVisibility(true);
         m_refresh.SetVisibility(inventory);
-        for(int i=0;i<3;++i)m_filters[i].SetVisibility(inventory);
+        for(int i=0;i<4;++i){m_filters[i].SetVisibility(inventory);m_filters[i].colorBase=m_localFilter==i?Accent():Ink();}
         const auto ids=LocalWeapons();const int pages=(int(ids.size())+m_layout.pageSize-1)/m_layout.pageSize;
         if(m_localPage>=pages)m_localPage=Q_max(0,pages-1);
         m_previous.SetVisibility(inventory && pages>1);m_next.SetVisibility(inventory && pages>1);
@@ -303,7 +347,29 @@ private:
             const int index=m_localPage*m_layout.pageSize+i;
             const bool visible=inventory&&i<m_layout.pageSize&&index<int(ids.size());
             m_cards[i].SetVisibility(visible);m_cardIds[i]=visible?ids[index]:0;
-            if(visible)m_cards[i].SetText(oc2_accessories::Name(int(m_cardIds[i])));
+            if(visible)
+            {
+                auto &card=m_cards[i];const int key=m_cardIds[i];const oc2_inventory::Entry *skin=nullptr;
+                card.equipped=false;card.texture=false;card.image.clear();
+                if(key>0)
+                {
+                    const auto *state=oc2_inventory::Find(m_localConfig,key);const int skinId=state?state->skin:0;
+                    card.title=oc2_accessories::Name(key);card.detail=oc2_local_inventory::SkinName(m_localCatalog,skinId);
+                    skin=oc2_inventory::FindEntry(m_localCatalog,skinId);
+                    char image[96];std::snprintf(image,sizeof(image),"gfx/inventory/previews/weapon_%d.tga",key);card.image=image;
+                }
+                else
+                {
+                    const int definition=-key-1;const auto *entry=oc2_inventory::FindKnifeEntry(m_localCatalog,definition);
+                    const auto *state=oc2_inventory::FindKnife(m_localConfig,definition);const int skinId=state?state->skin:0;
+                    card.title=entry?entry->name:"Default T Knife";
+                    card.equipped=m_localConfig.knife==definition;
+                    card.detail=(card.equipped?"Equipped / ":"")+oc2_local_inventory::SkinName(m_localCatalog,skinId);
+                    skin=oc2_inventory::FindEntry(m_localCatalog,skinId);
+                    if(!skin&&entry){card.image=entry->preview;card.texture=true;}
+                }
+                if(skin){card.image=skin->preview;card.texture=true;}
+            }
         }
         m_navPlay.colorBase=play?Accent():Ink();
         m_navInventory.colorBase=m_page==Inventory?Accent():Ink();
@@ -332,18 +398,18 @@ private:
         Text(r.x+20,r.y+182,r.w-40,24,"PLAYER PROFILE",12,Muted());
         Fill(r.x+20,r.y+294,r.w-40,1,PackRGBA(116,135,151,50));
         Text(r.x+20,r.y+316,r.w-40,24,"YOUR INVENTORY",14,Muted(),true);
-        Text(r.x+20,r.y+354,r.w-40,32,"24 weapon setups",22,Ink());
+        Text(r.x+20,r.y+354,r.w-40,32,"24 guns + knives",22,Ink());
         Text(r.x+20,r.y+410,r.w-40,50,"Local customization",17,Muted());
-        Text(r.x+20,r.y+458,r.w-40,60,"StatTrak / sticker charms",17,Accent());
+        Text(r.x+20,r.y+458,r.w-40,60,"Skins / stickers / charms",17,Accent());
     }
     void DrawInventory()
     {
         const auto &r=m_layout.content;
         Text(r.x+24,r.y+24,r.w-48,24,"INVENTORY",16,Accent(),true);
-        Text(r.x+24,r.y+58,r.w-232,48,"Weapon customization",30,Ink(),true);
+        Text(r.x+24,r.y+58,r.w-232,48,"Local collection",30,Ink(),true);
         const int pages=(int(LocalWeapons().size())+m_layout.pageSize-1)/m_layout.pageSize;
         char value[96];std::snprintf(value,sizeof(value),"Local configurations  /  Page %d / %d",m_localPage+1,Q_max(1,pages));
-        Text(r.x+24,r.y+458,r.w-48,24,"Select a weapon to edit its saved StatTrak and charm settings.",15,Muted());
+        Text(r.x+24,r.y+458,r.w-48,24,m_localError.empty()?"Select a gun or knife to choose skins and saved patterns.":m_localError.c_str(),15,Muted());
         Text(r.x+r.w-340,r.y+494,316,38,value,14,Muted(),false,QM_RIGHT);
     }
     void DrawLoadout()
@@ -361,11 +427,14 @@ private:
     oc2_frontend::InventoryStatus m_status=oc2_frontend::InventoryStatus::Unavailable;
     CMenuAction m_navPlay,m_navInventory,m_navLoadout,m_settings,m_exit;
     CMenuAction m_local,m_internet,m_lan,m_multiplayer,m_player,m_refresh;
-    CMenuAction m_filters[3],m_cards[8],m_previous,m_next;
-    std::uint64_t m_cardIds[8];
+    CMenuAction m_filters[4],m_previous,m_next;CMenuLocalInventoryCard m_cards[8];
+    int m_cardIds[8];
     char m_cardTags[8][32];
     CMenuYesNoMessageBox m_quitDialog;
     CMenuAccessoriesEditor m_accessories;
+    CMenuSkinEditor m_skins;
+    oc2_inventory::Catalog m_localCatalog;oc2_inventory::Config m_localConfig=oc2_inventory::DefaultConfig();
+    bool m_catalogValid=false,m_localValid=true,m_reloadOnReturn=false;std::string m_localError;
     int m_localPage=0,m_localFilter=0;
     int m_lastKey=0;
     unsigned int m_keyEvents=0;
