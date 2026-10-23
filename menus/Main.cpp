@@ -458,6 +458,18 @@ static void UI_FrontendAccessory()
 	if( menu_main ) menu_main->OpenAccessory( atoi( EngFuncs::CmdArgv( 1 ) ));
 }
 
+static void UI_FrontendSkin()
+{
+	if( menu_main ) menu_main->OpenSkin( atoi( EngFuncs::CmdArgv( 1 ) ));
+}
+
+static void UI_FrontendKnife()
+{
+	if( menu_main ) menu_main->OpenKnife( atoi( EngFuncs::CmdArgv( 1 ) ));
+}
+
 ADD_COMMAND( frontend_dump, UI_FrontendDump );
 ADD_COMMAND( frontend_page, UI_FrontendPage );
 ADD_COMMAND( frontend_accessory, UI_FrontendAccessory );
+ADD_COMMAND( frontend_skin, UI_FrontendSkin );
+ADD_COMMAND( frontend_knife, UI_FrontendKnife );
