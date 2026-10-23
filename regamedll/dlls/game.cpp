@@ -353,6 +353,14 @@ static void OC2_WeaponDump()
 		int(weapon->m_fInReload), weapon->m_fInSpecialReload, weapon->m_flNextReload,
 		player->m_flNextAttack, weapon->m_flNextPrimaryAttack, weapon->m_iWeaponState,
 		STRING(player->pev->viewmodel), STRING(weapon->pev->model));
+	if (weapon->m_iId == WEAPON_KNIFE)
+	{
+		const char *selected = GET_KEY_VALUE(GET_INFO_BUFFER(player->edict()), "oc2_knife");
+		ALERT(at_console,"oc2knife: definition=%d anim=%d draw=%.6f inspect=%.6f idle_remaining=%.6f team=%d\n",
+			selected ? atoi(selected) : 0,player->pev->weaponanim,
+			weapon->AnimationDuration(3,0),weapon->AnimationDuration(8,0),
+			weapon->m_flTimeWeaponIdle-UTIL_WeaponTimeBase(),player->m_iTeam);
+	}
 
     const auto *schema=oc2_weapon::FromId(weapon->m_iId);
     ALERT(at_console,"oc2aimstate: t=%.6f id=%d fov=%.3f speed=%.3f maxreserve=%d ammoindex=%d burst=%d bursttime=%.6f penalty=%.8f index=%.6f last=%.6f\n",
