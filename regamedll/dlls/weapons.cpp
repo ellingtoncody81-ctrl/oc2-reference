@@ -1593,6 +1593,12 @@ int EXT_FUNC CBasePlayerWeapon::__API_HOOK(DefaultReload)(int iClipSize, int iAn
 
 float CBasePlayerWeapon::AnimationDuration(int animation, float fallback) const
 {
+	if (m_iId == WEAPON_KNIFE && m_pPlayer && !m_pPlayer->HasShield())
+	{
+		const char *value = GET_KEY_VALUE(GET_INFO_BUFFER(m_pPlayer->edict()), "oc2_knife");
+		const float base = oc2_presentation::Duration(m_iId,animation,false,false,fallback);
+		return oc2_presentation::KnifeDuration(value ? atoi(value) : 0,animation,base);
+	}
 	return oc2_presentation::Duration(m_iId,animation,(m_iWeaponState & (1 << 6)) != 0,
 		m_pPlayer && m_pPlayer->HasShield(),fallback);
 }
