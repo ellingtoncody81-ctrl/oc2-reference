@@ -15,7 +15,7 @@ struct FrontendLayout
     int width,columns,pageSize;
     FrontendRect content,profile,navPlay,navInventory,navLoadout,settings,exit;
     FrontendRect local,internet,lan,multiplayer,player,refresh,previous,next;
-    FrontendRect filters[3],cards[8];
+    FrontendRect filters[4],cards[8];
     explicit FrontendLayout(int canvasWidth):width(canvasWidth)
     {
         const int margin=40,gap=24,profileWidth=canvasWidth<1150?224:264;
@@ -37,7 +37,8 @@ struct FrontendLayout
         next=FrontendRect(content.x+148,content.y+494,112,38);
         filters[0]=FrontendRect(content.x+24,content.y+132,96,36);
         filters[1]=FrontendRect(content.x+132,content.y+132,136,36);
-        filters[2]=FrontendRect(content.x+280,content.y+132,144,36);
+        filters[2]=FrontendRect(content.x+280,content.y+132,136,36);
+        filters[3]=FrontendRect(content.x+428,content.y+132,112,36);
         columns=canvasWidth<1150?3:4;
         pageSize=columns*2;
         const int cardWidth=(content.w-48-(columns-1)*12)/columns;
