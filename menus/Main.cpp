@@ -443,6 +443,12 @@ void UI_Main_Menu()
 	else menu_main->Show();
 }
 
+void UI_PanoramaOpenPlay(){ if(menu_main)menu_main->Navigate(0); }
+void UI_PanoramaOpenInventory(){ if(menu_main)menu_main->Navigate(1); }
+void UI_PanoramaOpenSettings(){ if(menu_main)menu_main->Navigate(2); }
+void UI_PanoramaQuit(){ if(menu_main)menu_main->Navigate(3); }
+void UI_PanoramaHome(){ if(menu_main)menu_main->Navigate(-1); }
+
 static void UI_FrontendDump()
 {
 	if( menu_main ) menu_main->Dump();
@@ -468,8 +474,14 @@ static void UI_FrontendKnife()
 	if( menu_main ) menu_main->OpenKnife( atoi( EngFuncs::CmdArgv( 1 ) ));
 }
 
+static void UI_FrontendGloves()
+{
+	if( menu_main ) menu_main->OpenGloves();
+}
+
 ADD_COMMAND( frontend_dump, UI_FrontendDump );
 ADD_COMMAND( frontend_page, UI_FrontendPage );
 ADD_COMMAND( frontend_accessory, UI_FrontendAccessory );
 ADD_COMMAND( frontend_skin, UI_FrontendSkin );
 ADD_COMMAND( frontend_knife, UI_FrontendKnife );
+ADD_COMMAND( frontend_gloves, UI_FrontendGloves );
