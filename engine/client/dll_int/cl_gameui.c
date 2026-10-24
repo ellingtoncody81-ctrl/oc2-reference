@@ -1293,6 +1293,85 @@ static int pfnIsCvarReadOnly( const char *name )
 	return FBitSet( cv->flags, FCVAR_READ_ONLY ) ? 1 : 0;
 }
 
+// A versioned native object keeps the frozen menu function tables compatible.
+// The menu owns only a short, paired draw-time material override; no client
+// library, network inventory or world entity is needed for front-end previews.
+typedef struct
+{
+	unsigned int version;
+	void *(*StudioHeader)( cl_entity_t *entity );
+	int (*LoadTexture)( const char *path, int clamp );
+	void (*FreeTexture)( int texture );
+	int (*OwnTexture)( int texture, const char *path );
+	void (*SetTransform)( cl_entity_t *entity, const float matrix[3][4] );
+	void (*SetScene)( int active );
+} ui_model_preview_api_t;
+
+static void *UI_PreviewStudioHeader( cl_entity_t *entity )
+{
+	if( !entity || !entity->model || entity->model->type != mod_studio )
+		return NULL;
+	return Mod_StudioExtradata( entity->model );
+}
+
+static int UI_PreviewLoadTexture( const char *path, int clamp )
+{
+	fs_offset_t length;
+	byte *bytes;
+	char name[MAX_OSPATH];
+	int texture;
+	if( COM_StringEmptyOrNULL( path ) || !ref.dllFuncs.GL_LoadTexture )
+		return 0;
+	Q_snprintf( name, sizeof( name ), "#oc2_preview/%s", path );
+	texture = ref.dllFuncs.GL_FindTexture( name );
+	if( texture ) return texture;
+	bytes = FS_LoadFile( path, &length, false );
+	if( !bytes ) return 0;
+	texture = ref.dllFuncs.GL_LoadTexture( name, bytes, length, clamp ? TF_CLAMP : 0 );
+	Mem_Free( bytes );
+	return texture;
+}
+
+static void UI_PreviewFreeTexture( int texture )
+{
+	if( texture && ref.dllFuncs.GL_FreeTexture ) ref.dllFuncs.GL_FreeTexture( texture );
+}
+
+static int UI_PreviewOwnTexture( int texture, const char *path )
+{
+	char name[MAX_OSPATH];
+	const char *actual;
+	if( !texture || !path || !ref.dllFuncs.GL_TextureName ) return false;
+	Q_snprintf( name, sizeof( name ), "#oc2_preview/%s", path );
+	actual = ref.dllFuncs.GL_TextureName( texture );
+	return actual && !Q_strcmp( actual, name );
+}
+
+static void UI_PreviewSetTransform( cl_entity_t *entity, const float matrix[3][4] )
+{
+	if( !entity || !matrix ) return;
+	Matrix3x4_AnglesFromMatrix( matrix, entity->angles );
+	if( !FBitSet( host.features, ENGINE_COMPENSATE_QUAKE_BUG ))
+		entity->angles[PITCH] = -entity->angles[PITCH];
+	VectorCopy( entity->angles, entity->curstate.angles );
+	for( int i = 0; i < 3; ++i )
+		entity->origin[i] = entity->curstate.origin[i] = matrix[i][3];
+}
+
+static void UI_PreviewSetScene( int active )
+{
+	gameui.modelPreviewScene = active != 0;
+}
+
+static void *UI_GetNativeObject( const char *name )
+{
+	static ui_model_preview_api_t preview = { 2, UI_PreviewStudioHeader, UI_PreviewLoadTexture,
+		UI_PreviewFreeTexture, UI_PreviewOwnTexture, UI_PreviewSetTransform, UI_PreviewSetScene };
+	if( name && !Q_strcmp( name, "OC2ModelPreview002" ))
+		return &preview;
+	return Sys_GetNativeObject( name );
+}
+
 static ui_extendedfuncs_t gExtendedfuncs =
 {
 	pfnEnableTextInput,
@@ -1304,7 +1383,7 @@ static ui_extendedfuncs_t gExtendedfuncs =
 	pfnParseFileSafe,
 	NET_AdrToString,
 	NET_CompareAdrSort,
-	Sys_GetNativeObject,
+	UI_GetNativeObject,
 	&gNetApi,
 	pfnGetGameInfo,
 	pfnGetModInfo,

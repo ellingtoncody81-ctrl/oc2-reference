@@ -26,6 +26,7 @@ Returns remapinfo slot for specified entity
 */
 remap_info_t *CL_GetRemapInfoForEntity( cl_entity_t *e )
 {
+	if( gameui.modelPreviewScene ) return NULL;
 	if( !e ) return NULL;
 
 	if( e == &clgame.viewent )
@@ -453,6 +454,11 @@ CL_EntitySetRemapColors
 */
 qboolean CL_EntitySetRemapColors( cl_entity_t *e, model_t *mod, int top, int bottom )
 {
+	// Native front-end scenes use authored/temporarily overridden materials,
+	// not player palette colors. Their entities are not network edicts: menu
+	// object numbers must never index clgame.remap_info (only 3 slots exist
+	// before joining a server, including the reserved viewmodel slot).
+	if( gameui.modelPreviewScene ) return false;
 	CL_AllocRemapInfo( e, mod, top, bottom );
 
 	if( CL_GetRemapInfoForEntity( e ))

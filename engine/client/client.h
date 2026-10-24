@@ -535,6 +535,7 @@ typedef struct
 	float		logo_length;
 
 	qboolean use_extended_api;
+	qboolean modelPreviewScene; // authored UI materials, isolated from network entity palette remaps
 } gameui_static_t;
 
 typedef struct bandwidth_test_s
