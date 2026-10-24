@@ -35,6 +35,7 @@
 #include "IParticleMan_Active.h"
 #include "CMiniMem.h"
 #include "environment.h"
+#include "skin_inventory_client.h"
 
 #include "cl_util.h"
 
@@ -351,6 +352,7 @@ Called by engine every frame that client .dll is loaded
 
 void DLLEXPORT HUD_Frame( double time )
 {
+	OC2_InventoryFrame();
 #ifdef _CS16CLIENT_ENABLE_GSRC_SUPPORT
 	gEngfuncs.VGui_ViewportPaintBackground(HUD_GetRect());
 #endif
