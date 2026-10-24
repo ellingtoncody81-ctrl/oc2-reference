@@ -22,6 +22,11 @@ public:
         if(CL_IsActive()||definition<0)return;
         m_weapon=29;m_definition=definition;m_knife=true;Open();
     }
+    void OpenSticker(int weapon,int slot)
+    {
+        if(slot<0||slot>=4)return;
+        OpenWeapon(weapon);m_tab=slot+1;m_page=0;RefreshRows();
+    }
     bool KeyDown(int key) override
     {
         if(UI::Key::IsEscape(key)){Back();return true;}

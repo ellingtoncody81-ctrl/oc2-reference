@@ -1,6 +1,7 @@
 #include "precompiled.h"
 #include "oc2_inferno.h"
 #include "wpn_shared/oc2_weapon_params.h"
+#include "wpn_shared/oc2_presentation.h"
 
 cvar_t *g_pskill          = nullptr;
 cvar_t *g_psv_gravity     = nullptr;
@@ -353,11 +354,16 @@ static void OC2_WeaponDump()
 		int(weapon->m_fInReload), weapon->m_fInSpecialReload, weapon->m_flNextReload,
 		player->m_flNextAttack, weapon->m_flNextPrimaryAttack, weapon->m_iWeaponState,
 		STRING(player->pev->viewmodel), STRING(weapon->pev->model));
+	ALERT(at_console,"oc2presentation: id=%d definition=%d anim=%d selected_duration=%.6f inspect_count=%d inspecting=%d idle_remaining=%.6f state=%d\n",
+		weapon->m_iId,weapon->m_oc2Appearance.definition,player->pev->weaponanim,
+		weapon->AnimationDuration(player->pev->weaponanim,0),
+		oc2_presentation::InspectCount(weapon->m_iId,weapon->m_iWeaponState,weapon->m_oc2Appearance.definition),
+		int(oc2_presentation::IsInspect(weapon->m_iId,player->pev->weaponanim,weapon->m_oc2Appearance.definition)),
+		weapon->m_flTimeWeaponIdle-UTIL_WeaponTimeBase(),weapon->m_iWeaponState);
 	if (weapon->m_iId == WEAPON_KNIFE)
 	{
-		const char *selected = GET_KEY_VALUE(GET_INFO_BUFFER(player->edict()), "oc2_knife");
 		ALERT(at_console,"oc2knife: definition=%d anim=%d draw=%.6f inspect=%.6f idle_remaining=%.6f team=%d\n",
-			selected ? atoi(selected) : 0,player->pev->weaponanim,
+			weapon->m_oc2Appearance.definition,player->pev->weaponanim,
 			weapon->AnimationDuration(3,0),weapon->AnimationDuration(8,0),
 			weapon->m_flTimeWeaponIdle-UTIL_WeaponTimeBase(),player->m_iTeam);
 	}

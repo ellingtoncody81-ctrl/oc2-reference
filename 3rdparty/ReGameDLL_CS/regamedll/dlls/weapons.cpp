@@ -1,5 +1,6 @@
 #include "precompiled.h"
 #include "oc2_inferno.h"
+#include "oc2_item_server.h"
 #include "wpn_shared/wpn_molotov.h"
 #include "wpn_shared/oc2_reload.h"
 #include "wpn_shared/oc2_presentation.h"
@@ -309,6 +310,7 @@ void UTIL_PrecacheOtherWeapon(const char *szClassname)
 // Called by worldspawn
 void WeaponsPrecache()
 {
+	OC2_ItemsPrecache();
 	Q_memset(CBasePlayerItem::m_ItemInfoArray, 0, sizeof(CBasePlayerItem::m_ItemInfoArray));
 	Q_memset(CBasePlayerItem::m_AmmoInfoArray, 0, sizeof(CBasePlayerItem::m_AmmoInfoArray));
 
@@ -1253,6 +1255,7 @@ bool CBasePlayerItem::DestroyItem()
 int CBasePlayerItem::AddToPlayer(CBasePlayer *pPlayer)
 {
 	m_pPlayer = pPlayer;
+	OC2_ItemsAcquire(this,pPlayer);
 
 	MESSAGE_BEGIN(MSG_ONE, gmsgWeapPickup, nullptr, pPlayer->pev);
 		WRITE_BYTE(m_iId);
@@ -1595,9 +1598,8 @@ float CBasePlayerWeapon::AnimationDuration(int animation, float fallback) const
 {
 	if (m_iId == WEAPON_KNIFE && m_pPlayer && !m_pPlayer->HasShield())
 	{
-		const char *value = GET_KEY_VALUE(GET_INFO_BUFFER(m_pPlayer->edict()), "oc2_knife");
 		const float base = oc2_presentation::Duration(m_iId,animation,false,false,fallback);
-		return oc2_presentation::KnifeDuration(value ? atoi(value) : 0,animation,base);
+		return oc2_presentation::KnifeDuration(m_oc2Appearance.definition,animation,base);
 	}
 	return oc2_presentation::Duration(m_iId,animation,(m_iWeaponState & (1 << 6)) != 0,
 		m_pPlayer && m_pPlayer->HasShield(),fallback);
@@ -1609,7 +1611,8 @@ void CBasePlayerWeapon::ToggleAim()
     if (!m_pPlayer || !oc2_weapon::SupportsManualAim(m_iId) || m_pPlayer->pev->health<=0 ||
         m_fInReload || m_fInSpecialReload || m_pPlayer->m_flNextAttack>UTIL_WeaponTimeBase()) return;
     if (m_flNextPrimaryAttack-UTIL_WeaponTimeBase()>.6f) return; // attach/detach transition
-    if (oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim))
+    if (oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim,
+        m_iId == WEAPON_KNIFE ? m_oc2Appearance.definition : 0))
     {
         SendWeaponAnim(oc2_presentation::IdleSequence(m_iId,m_iWeaponState,m_iClip),UseDecrement());
         m_flTimeWeaponIdle=UTIL_WeaponTimeBase()+20;
@@ -1624,6 +1627,7 @@ void CBasePlayerWeapon::ToggleAim()
 
 void CBasePlayerWeapon::StartInspect()
 {
+	const int knifeDefinition = m_iId == WEAPON_KNIFE ? m_oc2Appearance.definition : 0;
 	// CS:GO LookAtHeldWeapon: no reload, scope, silencer transition or draw.
 	// All state is already predicted/transmitted; no new network fields.
 	if (!m_pPlayer || m_pPlayer->m_pActiveItem != this || !m_pPlayer->IsAlive() ||
@@ -1633,8 +1637,11 @@ void CBasePlayerWeapon::StartInspect()
 		m_pPlayer->m_flNextAttack > UTIL_WeaponTimeBase() ||
 		m_flNextPrimaryAttack > UTIL_WeaponTimeBase() || m_flNextSecondaryAttack > UTIL_WeaponTimeBase() ||
 		(m_pPlayer->pev->button & (IN_ATTACK | IN_ATTACK2 | IN_RELOAD)) ||
-		oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim)) return;
-	const int animation = oc2_presentation::InspectSequence(m_iId,m_iWeaponState);
+		oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim,knifeDefinition)) return;
+	const int count = oc2_presentation::InspectCount(m_iId,m_iWeaponState,knifeDefinition);
+	if (count == 0) return;
+	const int choice = count > 1 ? UTIL_SharedRandomLong(m_pPlayer->random_seed + 0x4f433249u,0,count-1) : 0;
+	const int animation = oc2_presentation::InspectSequence(m_iId,m_iWeaponState,knifeDefinition,choice);
 	if (animation < 0) return;
 	SendWeaponAnim(animation,UseDecrement());
 	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + AnimationDuration(animation,0);
@@ -1642,7 +1649,8 @@ void CBasePlayerWeapon::StartInspect()
 
 bool CBasePlayerWeapon::AdvanceInspect()
 {
-	if (!m_pPlayer || !oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim)) return false;
+	if (!m_pPlayer || !oc2_presentation::IsInspect(m_iId,m_pPlayer->pev->weaponanim,
+		m_iId == WEAPON_KNIFE ? m_oc2Appearance.definition : 0)) return false;
 	const bool cancel = !m_pPlayer->IsAlive() || m_fInReload ||
 		(oc2_reload::Shotgun(m_iId) && m_fInSpecialReload != 0) ||
 		(m_pPlayer->pev->fov > 0 && m_pPlayer->pev->fov < 90) ||
@@ -2464,6 +2472,7 @@ BOOL CWeaponBox::PackWeapon(CBasePlayerItem *pWeapon)
 	pWeapon->pev->modelindex = 0;
 	pWeapon->pev->model = 0;
 	pWeapon->pev->owner = ENT(pev);
+	pWeapon->m_bOc2Transferred = true;
 	pWeapon->SetThink(nullptr);
 	pWeapon->SetTouch(nullptr);
 	pWeapon->m_pPlayer = nullptr;

@@ -28,6 +28,7 @@
 #include "match_ui.h"
 #include "weapon_hud_layout.h"
 #include "hud_readability.h"
+#include "../common/oc2_knife_icons.h"
 #include <cmath>
 
 float color[3];
@@ -45,6 +46,7 @@ struct DeathNoticeItem {
 	int iHeadShotId;
 	int killerTeam, victimTeam;
 	bool localKiller, localVictim;
+	int killerIndex, victimIndex;
 	char weaponResource[64]; // fixed directory plus an ASCII-validated resource name
 };
 
@@ -118,6 +120,11 @@ bool NoticeIconFlips(const char *path)
 		char candidate[64]; snprintf(candidate,sizeof(candidate),"gfx/vgui/death/d_%s.tga",name);
 		if (!strcmp(path,candidate)) return true;
 	}
+	for (const auto &knife : oc2_knife_icons::entries)
+	{
+		char candidate[64]; snprintf(candidate,sizeof(candidate),"gfx/vgui/death/d_%s.tga",knife.deathToken);
+		if (!strcmp(path,candidate)) return true;
+	}
 	return false;
 }
 
@@ -146,6 +153,23 @@ void DeathIconDump()
 		const auto b = match_ui::SilhouetteBounds(path);
 		gEngfuncs.Con_Printf("deathicon: name=%s valid=%d source=%dx%d contour=%d,%d,%d,%d width=%.2f height=33 flip=%d\n",
 			name,int(b.valid),b.width,b.height,b.left,b.top,b.right,b.bottom,NoticeIconWidth(path,-1,1),int(NoticeIconFlips(path)));
+	}
+	for (const auto &knife : oc2_knife_icons::entries)
+	{
+		char path[64]; snprintf(path,sizeof(path),"gfx/vgui/death/d_%s.tga",knife.deathToken);
+		const auto b = match_ui::SilhouetteBounds(path);
+		gEngfuncs.Con_Printf("deathknife: definition=%d name=\"%s\" token=%s path=%s valid=%d source=%dx%d contour=%d,%d,%d,%d width=%.2f height=33 flip=%d\n",
+			knife.definition,knife.name,knife.deathToken,path,int(b.valid),b.width,b.height,b.left,b.top,b.right,b.bottom,NoticeIconWidth(path,-1,1),int(NoticeIconFlips(path)));
+	}
+}
+
+void DeathNoticeDump()
+{
+	for (int i=0;i<MAX_DEATHNOTICES && rgDeathNoticeList[i].iId;++i)
+	{
+		const auto &item=rgDeathNoticeList[i];
+		gEngfuncs.Con_Printf("deathnotice: index=%d killer=%d victim=%d local_killer=%d local_victim=%d path=%s sprite=%d expires=%.3f\n",
+			i,item.killerIndex,item.victimIndex,int(item.localKiller),int(item.localVictim),item.weaponResource,item.iId,item.flDisplayTime);
 	}
 }
 
@@ -279,6 +303,7 @@ int CHudDeathNotice :: Init( void )
 	HOOK_MESSAGE( gHUD.m_DeathNotice, DeathMsg );
 	HOOK_MESSAGE( gHUD.m_DeathNotice, HudRound );
 	gEngfuncs.pfnAddCommand("death_icon_dump", DeathIconDump);
+	gEngfuncs.pfnAddCommand("death_notice_dump", DeathNoticeDump);
 
 	hud_deathnotice_time = CVAR_CREATE( "hud_deathnotice_time", "6", FCVAR_ARCHIVE );
 	cl_killsound = CVAR_CREATE( "cl_killsound", "0", FCVAR_ARCHIVE );
@@ -461,6 +486,8 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	}
 	// A reused queue entry must not inherit suicide/TK flags or colors.
 	rgDeathNoticeList[i] = DeathNoticeItem();
+	rgDeathNoticeList[i].killerIndex = killer;
+	rgDeathNoticeList[i].victimIndex = victim;
 	// Resource alias only: retain the original event weapon name for kill state.
 	const char *resourceName = !strcmp(weaponName,"mp5navy") || !strcmp(weaponName,"mp5") ? "mp7" : weaponName;
 	if (!strcmp(resourceName,"taser")) resourceName = "zeus";
@@ -550,6 +577,10 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 
 	// Find the sprite in the list
 	int spr = gHUD.GetSpriteIndex( killedwith );
+	// APK knife variants have TGA artwork but may have no legacy HUD sprite.
+	// The event token is immutable: never substitute the observer's loadout.
+	if (spr < 0 && oc2_knife_icons::FindDeathToken(weaponName))
+		spr = gHUD.GetSpriteIndex("d_knife");
 
 	rgDeathNoticeList[i].iId = spr;
 

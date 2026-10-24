@@ -1,5 +1,6 @@
 #include "precompiled.h"
 #include "oc2_inferno.h"
+#include "../../../../common/oc2_knife_icons.h"
 
 CCStrikeGameMgrHelper g_GameMgrHelper;
 CHalfLifeMultiplay *g_pMPGameRules = nullptr;
@@ -5395,6 +5396,18 @@ LINK_HOOK_CLASS_VOID_CUSTOM_CHAIN(CHalfLifeMultiplay, CSGameRules, SendDeathMess
 //
 void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(SendDeathMessage)(CBaseEntity *pKiller, CBasePlayer *pVictim, CBasePlayer *pAssister, entvars_t *pevInflictor, const char *killerWeaponName, int iDeathMessageFlags, int iRarityOfKill)
 {
+	// Snapshot the actual killing item into the event. A projectile can kill
+	// after its owner switches to a knife, so both the damage source and the
+	// already resolved weapon token must describe a direct knife attack.
+	if (pKiller && pKiller->IsPlayer() && pKiller != pVictim &&
+		pevInflictor == pKiller->pev && killerWeaponName && !Q_strcmp(killerWeaponName,"knife"))
+	{
+		const auto *player = static_cast<CBasePlayer *>(pKiller);
+		const auto *item = player->m_pActiveItem;
+		if (item && item->m_iId == WEAPON_KNIFE)
+			if (const auto *knife = oc2_knife_icons::FindDefinition(item->m_oc2Appearance.definition))
+				killerWeaponName = knife->deathToken;
+	}
 	MESSAGE_BEGIN(MSG_ALL, gmsgDeathMsg);
 		WRITE_BYTE((pKiller && pKiller->IsPlayer()) ? pKiller->entindex() : 0);	// the killer
 		WRITE_BYTE(pVictim->entindex());		// the victim

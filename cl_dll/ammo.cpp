@@ -24,6 +24,8 @@
 #include "buy_menu_state.h"
 #include "weapon_pickup_feedback.h"
 #include "weapon_hud_layout.h"
+#include "skin_inventory_client.h"
+#include "../common/oc2_knife_icons.h"
 #include "view_ads.h"
 #include "cvardef.h"
 #include "cl_util.h"
@@ -63,6 +65,8 @@ struct PanelItemLayout
 	int id=0,slot=0,count=0;
 	PanelBox icon,quantity;
 	char path[MAX_WEAPON_NAME+32] = {};
+	char name[MAX_WEAPON_NAME] = {};
+	int knifeDefinition = -1;
 	float flash=0;
 };
 struct PanelRowLayout { int slot=0; PanelBox key,name; };
@@ -80,6 +84,8 @@ void WeaponHudLayoutDump()
 		const auto &p=s_PanelItems[i];
 		gEngfuncs.Con_Printf("weaponhud: id=%d slot=%d rect=%.3f,%.3f,%.3f,%.3f quantity=%.3f,%.3f,%.3f,%.3f count=%d flash=%.5f path=%s\n",
 			p.id,p.slot,p.icon.x,p.icon.y,p.icon.w,p.icon.h,p.quantity.x,p.quantity.y,p.quantity.w,p.quantity.h,p.count,p.flash,p.path);
+		if (p.id == WEAPON_KNIFE)
+			gEngfuncs.Con_Printf("weaponhudknife: definition=%d name=\"%s\" path=%s\n",p.knifeDefinition,p.name,p.path);
 	}
 	for (int i=0;i<s_PanelRowCount;++i)
 	{
@@ -2060,8 +2066,8 @@ bool PanelHasAmmo(const WEAPON *weapon)
 
 void PanelWeaponName(const WEAPON *weapon, char *text, size_t size)
 {
-	// GoldSrc has no skin/custom-name field here. Five converted slots now
-	// implement their schema weapon; the other names retain their real rules.
+	// The knife identity comes from the actual inventory instance. Converted
+	// gun slots retain their gameplay names; paint choices do not rename them.
 	const char *name = nullptr;
 	switch (weapon->iId)
 	{
@@ -2092,7 +2098,12 @@ void PanelWeaponName(const WEAPON *weapon, char *text, size_t size)
 	case WEAPON_DEAGLE: name = "Desert Eagle"; break;
 	case WEAPON_SG552: name = "SG553"; break;
 	case WEAPON_AK47: name = "AK-47"; break;
-	case WEAPON_KNIFE: name = "Knife"; break;
+	case WEAPON_KNIFE:
+	{
+		const auto *knife = oc2_knife_icons::FindDefinition(OC2_InventoryKnifeDefinition());
+		name = knife ? knife->name : "Knife";
+		break;
+	}
 	case WEAPON_P90: name = "P90"; break;
 	case WEAPON_TASER: name = "Zeus x27"; break;
 	case WEAPON_MOLOTOV: name = buy_menu_state::FireIsIncendiary() ? "Incendiary Grenade" : "Molotov"; break;
@@ -2105,6 +2116,12 @@ void PanelWeaponName(const WEAPON *weapon, char *text, size_t size)
 
 bool PanelWeaponPath(const WEAPON *weapon, char *path, size_t size)
 {
+	if (weapon->iId == WEAPON_KNIFE)
+	{
+		const auto *knife = oc2_knife_icons::FindDefinition(OC2_InventoryKnifeDefinition());
+		snprintf(path,size,"gfx/weaponlist/weapon_%s.tga",knife ? knife->panelToken : "knife_t");
+		return true;
+	}
 	// The MP5 slot is now actual MP7 gameplay/model, not MP5-SD artwork.
 	if (weapon->iId == WEAPON_MP5N) { strlcpy(path,"gfx/weaponlist/weapon_mp7.tga",size); return true; }
 	if (weapon->iId == WEAPON_MOLOTOV && buy_menu_state::FireIsIncendiary())
@@ -2222,6 +2239,8 @@ int DrawModernWeaponList(const WEAPON *active, const WEAPON *selection)
 			PanelItemLayout &layout=s_PanelItems[s_PanelItemCount++]; layout=PanelItemLayout();
 			layout.id=weapon->iId; layout.slot=slot+1; layout.icon={x,y,cellWidth*rowScale,iconHeight*rowScale};
 			layout.flash=flash; strlcpy(layout.path,path,sizeof(layout.path));
+			PanelWeaponName(weapon,layout.name,sizeof(layout.name));
+			if (weapon->iId == WEAPON_KNIFE) layout.knifeDefinition=OC2_InventoryKnifeDefinition();
 			if (!texture && !PanelSprite(weapon,current,x,y,cellWidth*rowScale,iconHeight*rowScale,iconColor))
 			{
 				char name[MAX_WEAPON_NAME]; PanelWeaponName(weapon,name,sizeof(name));

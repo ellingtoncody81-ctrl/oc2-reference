@@ -208,6 +208,7 @@ void OC2_AccessoryKill(const char *weapon,int killer,int victim,int killerTeam,i
   (killerTeam!=1&&killerTeam!=2)||(victimTeam!=1&&victimTeam!=2)||killerTeam==victimTeam)return;
  if(gEngfuncs.pDemoAPI&&gEngfuncs.pDemoAPI->IsPlayingback())return;
  const int id=WeaponId(weapon),index=Index(id);if(index<0)return;
+ if(!OC2_InventoryOwnAccessories(id))return;
  ReadSettings(gEngfuncs.GetClientTime(),true);
  const WeaponConfig *cfg=Find(settings,id);if(!cfg||!cfg->stattrak||!gRenderAPI.pfnSaveFile)return;
  // Read-modify-write the separate counter store for this authoritative event.
@@ -942,6 +943,7 @@ void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)
  const char *map=gEngfuncs.pfnGetLevelName();
  if(level!=(map?map:"")){OC2_AccessoriesVidInit();level=map?map:"";}
  ReadSettings(r.m_clTime);diag=Diagnostics();diag.weapon=weapon;frameWeapon=0;weaponSurface=nullptr;
+ if(!OC2_InventoryOwnAccessories(weapon))return;
  const bool left=gHUD.cl_righthand&&gHUD.cl_righthand->value<=0;
  WeaponConfig effective;
  const WeaponConfig *cfg=Find(settings,weapon);

@@ -27,6 +27,7 @@
 #include "StudioModelRenderer.h"
 #include "GameStudioModelRenderer.h"
 #include "com_weapons.h"
+#include "skin_inventory_client.h"
 
 #include <cstring>
 
@@ -100,6 +101,7 @@ int CHud :: MsgFunc_ViewMode( const char *pszName, int iSize, void *pbuf )
 
 int CHud :: MsgFunc_InitHUD( const char *pszName, int iSize, void *pbuf )
 {
+	OC2_InventoryResetSession();
 	// prepare all hud data
 	HUDLIST *pList = m_pHudList;
 

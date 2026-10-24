@@ -36,6 +36,7 @@
 
 #include "StudioModelRenderer.h"
 #include "GameStudioModelRenderer.h"
+#include "skin_inventory_client.h"
 #include "pm_defs.h"
 #include "camera.h"
 #include "eventscripts.h"
@@ -993,6 +994,7 @@ int CGameStudioModelRenderer::_StudioDrawPlayer(int flags, entity_state_t *pplay
 			cl_entity_t saveent = *m_pCurrentEntity;
 
 			model_t *pweaponmodel = IEngineStudio.GetModelByIndex(pplayer->weaponmodel);
+			pweaponmodel = OC2_InventoryPlayerModel(pweaponmodel,pplayer->number);
 
 			m_pStudioHeader = (studiohdr_t *)IEngineStudio.Mod_Extradata(pweaponmodel);
 			if( !m_pStudioHeader )
@@ -1004,7 +1006,10 @@ int CGameStudioModelRenderer::_StudioDrawPlayer(int flags, entity_state_t *pplay
 
 			IEngineStudio.StudioSetupLighting(&lighting);
 
-			StudioRenderModel(dir);
+			{
+				OC2_InventoryMaterialScope inventoryMaterials(*this,pweaponmodel,pplayer->number);
+				StudioRenderModel(dir);
+			}
 
 			StudioCalcAttachments();
 

@@ -43,6 +43,7 @@
 #include "com_weapons.h"
 #include "viewmodel_transition.h"
 #include "skin_inventory_client.h"
+#include "oc2_glove_inventory.h"
 #include "wpn_shared/oc2_presentation.h"
 #include "wpn_shared/oc2_reload.h"
 #include "view_ads.h"
@@ -1275,14 +1276,17 @@ static void DrawOC2EquipmentArms(CStudioModelRenderer &renderer, alight_t &light
 	g_lastArmsDrawn = 0;
 	const ViewModelArmsInfo info = InspectViewModelArms(renderer.m_pStudioHeader,
 		renderer.m_pCurrentEntity->curstate.body, renderer.m_pCurrentEntity->curstate.skin);
+	const int player = OC2_InventoryViewPlayer();
+	OC2_InventoryGloveDrawn(player, 0, 0, "none", 0, 0);
 	if (!info.NeedsArms()) return;
 
 	int team = g_iTeamNumber;
-	const int index = renderer.m_pCurrentEntity->index;
+	const int index = player;
 	if (index > 0 && index <= MAX_PLAYERS &&
 		(g_PlayerExtraInfo[index].teamnumber == 1 || g_PlayerExtraInfo[index].teamnumber == 2))
 		team = g_PlayerExtraInfo[index].teamnumber;
 	const bool ct = team == 2;
+	const oc2_gloves::Entry *const glove = OC2_InventoryPlayerGlove(player);
 	// APK scripts_character/phoenix_vara.txt and sas_vara.txt specify these
 	// models/skin5. HideArms selects blank0 for the CT sleeve, bare forearms1
 	// for the T glove. This is resource configuration, not APK game behavior.
@@ -1297,18 +1301,26 @@ static void DrawOC2EquipmentArms(CStudioModelRenderer &renderer, alight_t &light
 	mstudiobodyparts_t *const savedBodyPart = renderer.m_pBodyPart;
 	mstudiomodel_t *const savedSubModel = renderer.m_pSubModel;
 	const int savedFaceFlags = IEngineStudio.GetForceFaceFlags();
+	int drawnResource = 0, drawnBody = 0, drawnSkin = 0;
+	const char *drawnModel = "none";
 	for (int part = 0; part < (ct ? 2 : 1); ++part)
 	{
+		// A missing or incompatible optional glove falls back to the original
+		// player arms. Only one glove mesh is drawn for the weapon pose.
+		for (int attempt = 0; attempt < (part == 0 && glove ? 2 : 1); ++attempt)
+		{
+		const bool selected = part == 0 && glove && attempt == 0;
+		const char *path = selected ? glove->model.c_str() : paths[part];
 		// Mod_ForName uses the engine's model cache and does not retain a raw
 		// client pointer across map changes. Missing optional assets fail closed.
-		model_t *model = IEngineStudio.Mod_ForName(paths[part], false);
-		studiohdr_t *header = model ? (studiohdr_t *)IEngineStudio.Mod_Extradata(model) : NULL;
+		model_t *model = IEngineStudio.Mod_ForName(path, false);
+		studiohdr_t *header = model && model->type == mod_studio ? (studiohdr_t *)IEngineStudio.Mod_Extradata(model) : NULL;
 		if (!ArmMeshBonesMatch(header, renderer))
 			continue;
 		renderer.m_pRenderModel = model;
 		renderer.m_pStudioHeader = header;
 		renderer.m_pCurrentEntity->model = model;
-		renderer.m_pCurrentEntity->curstate.body = part == 0 && !ct ? 1 : 0;
+		renderer.m_pCurrentEntity->curstate.body = part == 0 ? (selected ? glove->body : 0) + (!ct ? 1 : 0) : 0;
 		renderer.m_pCurrentEntity->curstate.skin = part == 0 && header->numskinfamilies > 5 ? 5 : 0;
 		renderer.m_pCurrentEntity->curstate.sequence = 0;
 		renderer.m_pCurrentEntity->curstate.frame = 0;
@@ -1316,6 +1328,8 @@ static void DrawOC2EquipmentArms(CStudioModelRenderer &renderer, alight_t &light
 		renderer.m_pCurrentEntity->curstate.animtime = renderer.m_clTime;
 		IEngineStudio.StudioSetHeader(header);
 		IEngineStudio.SetRenderModel(model);
+		OC2_InventoryGloveMaterialScope materials(renderer, selected ? glove->id : 0);
+		if (!materials.Ready()) continue;
 		// StudioSaveBones already cached the animated weapon. Never replace
 		// that cache between glove and sleeve; both follow that same pose.
 		renderer.StudioMergeBones(model);
@@ -1325,7 +1339,15 @@ static void DrawOC2EquipmentArms(CStudioModelRenderer &renderer, alight_t &light
 		IEngineStudio.StudioSetRemapColors(renderer.m_nTopColor, renderer.m_nBottomColor);
 		renderer.StudioRenderModel(lightdir);
 		++g_lastArmsDrawn;
+		if (part == 0)
+		{
+			drawnResource = selected ? glove->id : 0; drawnModel = path;
+			drawnBody = renderer.m_pCurrentEntity->curstate.body; drawnSkin = renderer.m_pCurrentEntity->curstate.skin;
+		}
+		break;
+		}
 	}
+	OC2_InventoryGloveDrawn(player, drawnResource, g_lastArmsDrawn, drawnModel, drawnBody, drawnSkin);
 	*renderer.m_pCurrentEntity = weaponEntity;
 	renderer.m_pRenderModel = weaponModel;
 	renderer.m_pStudioHeader = weaponHeader;
@@ -1757,6 +1779,7 @@ int CStudioModelRenderer::StudioDrawPlayer(int flags, entity_state_t *pplayer)
 		{
 			cl_entity_t saveent = *m_pCurrentEntity;
 			model_t *pweaponmodel = IEngineStudio.GetModelByIndex(pplayer->weaponmodel);
+			pweaponmodel = OC2_InventoryPlayerModel(pweaponmodel,pplayer->number);
 
 			m_pStudioHeader = (studiohdr_t *)IEngineStudio.Mod_Extradata(pweaponmodel);
 			IEngineStudio.StudioSetHeader(m_pStudioHeader);
@@ -1765,7 +1788,10 @@ int CStudioModelRenderer::StudioDrawPlayer(int flags, entity_state_t *pplayer)
 
 			IEngineStudio.StudioSetupLighting(&lighting);
 
-			StudioRenderModel(dir);
+			{
+				OC2_InventoryMaterialScope inventoryMaterials(*this,pweaponmodel,pplayer->number);
+				StudioRenderModel(dir);
+			}
 
 			StudioCalcAttachments();
 

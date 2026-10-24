@@ -1,5 +1,6 @@
 #include "precompiled.h"
 #include "oc2_inferno.h"
+#include "oc2_item_server.h"
 
 int gmsgWeapPickup = 0;
 int gmsgHudText = 0;
@@ -239,6 +240,7 @@ void LinkUserMessages()
 	gmsgBuyState      = REG_USER_MSG("BuyState", 3);
 	gmsgEquipment     = REG_USER_MSG("Equipment", 2); // version byte + Zeus purchases this round
 	gmsgFireVariant   = REG_USER_MSG("FireVariant", 1); // Physical fire-grenade variant, independent of team.
+	OC2_ItemsRegisterMessage();
 }
 
 void WriteSigonMessages()
@@ -325,6 +327,7 @@ BOOL EXT_FUNC ClientConnect(edict_t *pEntity, const char *pszName, const char *p
 void EXT_FUNC ClientDisconnect(edict_t *pEntity)
 {
 	CBasePlayer *pPlayer = CBasePlayer::Instance(pEntity);
+	OC2_ItemsClientDisconnected(pPlayer);
 
 	if (!g_pGameRules->IsGameOver())
 	{
@@ -626,6 +629,7 @@ void EXT_FUNC ClientPutInServer(edict_t *pEntity)
 {
 	entvars_t *pev = &pEntity->v;
 	CBasePlayer *pPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pev);
+	OC2_ItemsClientConnected(pPlayer);
 
 	pPlayer->SetCustomDecalFrames(-1);
 	pPlayer->SetPrefsFromUserinfo(GET_INFO_BUFFER(pEntity));
@@ -2499,6 +2503,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
 	entvars_t *pev = &pEntity->v;
 	CBasePlayer *pPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pev);
 	if (OC2RemovedBuyCommand(pcmd)) return;
+	if (OC2_ItemsCommand(pPlayer,pcmd)) return;
 	if (FStrEq(pcmd,"oc2_buymenu_open") || FStrEq(pcmd,"oc2_buymenu_close"))
 	{
 		pPlayer->SetBuyPresentationOpen(FStrEq(pcmd,"oc2_buymenu_open"));
@@ -3798,6 +3803,7 @@ void EXT_FUNC StartFrame()
 	}
 
 	EndFrame();
+	OC2_ItemsFrame();
 }
 
 void EndFrame()
