@@ -27,6 +27,7 @@
 */
 
 #pragma once
+#include "../../../../common/oc2_item_appearance.h"
 
 class CBasePlayer;
 
@@ -331,6 +332,8 @@ public:
 	CBasePlayer *m_pPlayer;
 	CBasePlayerItem *m_pNext;
 	int m_iId;							// WEAPON_???
+	oc2_item::Appearance m_oc2Appearance;
+	bool m_bOc2Transferred = false;
 };
 
 #ifdef REGAMEDLL_API

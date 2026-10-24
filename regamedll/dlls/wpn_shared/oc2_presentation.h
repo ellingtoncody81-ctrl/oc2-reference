@@ -1,36 +1,45 @@
 #ifndef OC2_PRESENTATION_H
 #define OC2_PRESENTATION_H
 #include <math.h>
-// Mechanism: CS:GO weapon_csbase.cpp:1485-1517 (sequence-length deploy)
-// and cs_player.cpp:11071-11134 (inspect gates and model-selected sequence).
+// Mechanism: CS:GO weapon_csbase.cpp (sequence-length deploy),
+// cs_player.cpp:11128-11190 (ACT_VM_IDLE_LOWERED and sequence-length inspect),
+// animation.cpp:344-431 (weighted activity selection and prediction random).
 // Timing and sequence IDs below are resource metadata, not APK gameplay code.
 // Evidence generator: tools/weapon_presentation/generate_timing.py.
 namespace oc2_presentation
 {
-// Trusted cosmetic timing from the deployed knife models; combat stats are unchanged.
+// Deployed IDST v10 metadata. Inspect slots are complete independent sequences
+// 8, 9 and 10; zero means that sequence is absent. All inspect FPS are 30.
+// Evidence: tools/module5/gloves_inspect/inspect_metadata.py.
+struct KnifeSequences { int definition, drawFrames; float drawFPS; int inspectFrames[3]; };
+inline const KnifeSequences *FindKnife(int definition)
+{
+    static const KnifeSequences knives[] = {
+        {0,31,30.0f,{187,0,0}}, {42,31,30.0f,{187,0,0}},
+        {500,36,30.0f,{187,0,0}}, {503,31,30.0f,{187,118,0}},
+        {505,31,30.0f,{187,0,0}}, {506,31,30.0f,{187,0,0}},
+        {507,31,30.0f,{146,0,0}}, {508,31,30.0f,{187,0,0}},
+        {509,31,30.0f,{187,0,0}}, {512,30,30.0f,{177,177,0}},
+        {514,33,30.0f,{186,0,0}}, {515,24,23.0f,{124,136,146}},
+        {516,31,30.0f,{177,0,0}}, {517,31,30.0f,{187,134,0}},
+        {518,31,30.0f,{250,187,0}}, {519,31,30.0f,{187,151,0}},
+        {520,31,30.0f,{187,0,0}}, {521,31,30.0f,{149,187,0}},
+        {522,31,30.0f,{119,151,0}}, {523,31,30.0f,{146,81,0}},
+        {525,31,30.0f,{185,67,0}}
+    };
+    for (unsigned i=0; i<sizeof(knives)/sizeof(knives[0]); ++i)
+        if (knives[i].definition == definition) return &knives[i];
+    return 0;
+}
 inline float KnifeDuration(int definition, int animation, float fallback)
 {
-    if (animation != 3 && animation != 8) return fallback;
-    int drawFrames=31, inspectFrames=187; float drawFPS=30.0f;
-    switch(definition)
-    {
-    case 0: case 42: case 503: case 505: case 506: case 508: case 509:
-    case 517: case 519: case 520: break;
-    case 500: drawFrames=36; break;
-    case 507: inspectFrames=146; break;
-    case 512: drawFrames=30; inspectFrames=177; break;
-    case 514: drawFrames=33; inspectFrames=186; break;
-    case 515: drawFrames=24; drawFPS=23.0f; inspectFrames=124; break;
-    case 516: inspectFrames=177; break;
-    case 518: inspectFrames=250; break;
-    case 521: inspectFrames=149; break;
-    case 522: inspectFrames=119; break;
-    case 523: inspectFrames=146; break;
-    case 525: inspectFrames=185; break;
-    default: return fallback;
-    }
-    const float seconds=animation==3?(drawFrames-1)/drawFPS:(inspectFrames-1)/30.0f;
-    return ceilf(seconds*1000.0f)/1000.0f;
+    const KnifeSequences *s = FindKnife(definition);
+    if (!s) return fallback;
+    const int frames = animation == 3 ? s->drawFrames :
+        animation >= 8 && animation <= 10 ? s->inspectFrames[animation-8] : 0;
+    if (!frames) return fallback;
+    const float fps = animation == 3 ? s->drawFPS : 30.0f;
+    return static_cast<float>(ceil((frames-1)*1000.0/fps)/1000.0);
 }
 
 enum { InspectImpulse = 180, Draw = 1, Inspect = 2, Silencer = 3 };
@@ -131,11 +140,23 @@ inline float Duration(int weapon, int animation, bool incendiary, bool shield, f
 	if (!s) return fallback > 0 && fallback < 30 ? fallback : .75f;
 	return static_cast<float>(ceil((s->frames-1-FirstFrame(weapon,animation,incendiary))*1000.0/s->fps)/1000.0);
 }
-inline int InspectSequence(int weapon, int state)
+inline int InspectSequence(int weapon, int state, int knifeDefinition = 0, int choice = 0)
 {
+    // CSGO selects an activity, not the first matching sequence label. The
+    // converted MDLs have no activity weights; each distinct complete inspect
+    // therefore gets one ticket. Callers use the command's shared random seed.
+    if (weapon == 29)
+    {
+        const KnifeSequences *s = FindKnife(knifeDefinition);
+        return s && choice >= 0 && choice < 3 && s->inspectFrames[choice] ? 8+choice : -1;
+    }
+    if (weapon == 26) return choice >= 0 && choice < 2 ? 6+choice : -1;
+    if (choice != 0) return -1;
 	// Verified silencer bone visibility; masked labels alone are ambiguous.
 	if (weapon == 22) return state & 4 ? 14 : 15;
 	if (weapon == 16) return state & 1 ? 16 : 17;
+	// SG553 6/7 have identical complete bone tracks. The short AUG fidget
+	// and SG553 shoot_fidget do not add another full inspect activity.
 	for (int animation=0; animation<32; ++animation)
 	{
 		const Sequence *s = Find(weapon,animation);
@@ -143,8 +164,24 @@ inline int InspectSequence(int weapon, int state)
 	}
 	return -1; // Do not fabricate an inspect for a model without one.
 }
-inline bool IsInspect(int weapon, int animation)
+inline int InspectCount(int weapon, int state, int knifeDefinition = 0)
 {
+    if (weapon == 29)
+    {
+        const KnifeSequences *s = FindKnife(knifeDefinition);
+        if (!s) return 0;
+        return s->inspectFrames[2] ? 3 : s->inspectFrames[1] ? 2 : 1;
+    }
+    if (weapon == 26) return 2;
+    return InspectSequence(weapon,state,knifeDefinition) >= 0 ? 1 : 0;
+}
+inline bool IsInspect(int weapon, int animation, int knifeDefinition = 0)
+{
+    if (weapon == 29)
+    {
+        const KnifeSequences *s = FindKnife(knifeDefinition);
+        return s && animation >= 8 && animation <= 10 && s->inspectFrames[animation-8] != 0;
+    }
 	const Sequence *s = Find(weapon,animation);
 	return s && s->kind == Inspect;
 }
