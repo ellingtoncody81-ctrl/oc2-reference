@@ -533,7 +533,7 @@ fill screen with specfied color
 can be modulated
 =============
 */
-static void CL_DrawScreenFade( void )
+void CL_DrawScreenFade( void )
 {
 	screenfade_t	*sf = &clgame.fade;
 	int alpha = V_FadeAlpha( sf );
@@ -894,8 +894,23 @@ static void CL_DrawLoadingOrPaused( int tex )
 	ref.dllFuncs.R_DrawStretchPic( x, y, width, height, 0, 0, 1, 1, tex );
 }
 
-void CL_DrawHUD( int state )
+static qboolean CL_IsFlashFade( void )
 {
+	const screenfade_t *sf = &clgame.fade;
+
+	// CS sends flashbang blindness as a white FFADE_IN. Other colours,
+	// directions and blend modes keep their original compositing paths.
+	return !cl.background &&
+		( !Q_stricmp( GI->gamefolder, "cstrike" ) || !Q_stricmp( GI->gamefolder, "czero" )) &&
+		sf->fader == 255 && sf->fadeg == 255 && sf->fadeb == 255 &&
+		!FBitSet( sf->fadeFlags, FFADE_OUT | FFADE_MODULATE | FFADE_STAYOUT );
+}
+
+// Return true when the flash pass must wait for VGUI and mainui as well.
+qboolean CL_DrawHUD( int state )
+{
+	qboolean flash_after_ui = false;
+
 	if( state == CL_ACTIVE && !cl.video_prepped )
 		state = CL_LOADING;
 
@@ -905,15 +920,17 @@ void CL_DrawHUD( int state )
 	switch( state )
 	{
 	case CL_ACTIVE:
-		if( !cl.intermission )
+		flash_after_ui = CL_IsFlashFade();
+		if( !flash_after_ui && !cl.intermission )
 			CL_DrawScreenFade ();
 		CL_DrawCrosshair ();
 		CL_DrawCenterPrint ();
 		clgame.dllFuncs.pfnRedraw( cl.time, cl.intermission );
-		if( cl.intermission ) CL_DrawScreenFade ();
+		if( !flash_after_ui && cl.intermission ) CL_DrawScreenFade ();
 		break;
 	case CL_PAUSED:
-		CL_DrawScreenFade ();
+		flash_after_ui = CL_IsFlashFade();
+		if( !flash_after_ui ) CL_DrawScreenFade ();
 		CL_DrawCrosshair ();
 		CL_DrawCenterPrint ();
 		clgame.dllFuncs.pfnRedraw( cl.time, cl.intermission );
@@ -935,6 +952,8 @@ void CL_DrawHUD( int state )
 		}
 		break;
 	}
+
+	return flash_after_ui;
 }
 
 static void CL_ClearUserMessage( char *pszName, int svc_num )

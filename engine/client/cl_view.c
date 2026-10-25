@@ -533,6 +533,7 @@ V_PostRender
 void V_PostRender( void )
 {
 	qboolean		draw_2d = false;
+	qboolean		flash_after_ui = false;
 
 	ref.dllFuncs.R_AllowFog( false );
 	ref.dllFuncs.R_Set2DMode( true );
@@ -545,7 +546,7 @@ void V_PostRender( void )
 	if( cls.state == ca_active && cls.signon == SIGNONS && cls.scrshot_action != scrshot_mapshot )
 	{
 		SCR_TileClear();
-		CL_DrawHUD( CL_ACTIVE );
+		flash_after_ui = CL_DrawHUD( CL_ACTIVE );
 		VGui_Paint();
 	}
 
@@ -582,6 +583,11 @@ void V_PostRender( void )
 
 		S_ExtraUpdate();
 	}
+
+	// Apply the original fade once, after every HUD/menu layer. Keeping it
+	// outside HUD_Redraw also prevents hud_draw or Escape bypassing blindness.
+	if( flash_after_ui )
+		CL_DrawScreenFade();
 
 	SCR_MakeScreenShot();
 	ref.dllFuncs.R_AllowFog( true );
