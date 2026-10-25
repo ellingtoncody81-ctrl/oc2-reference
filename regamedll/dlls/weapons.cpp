@@ -706,8 +706,10 @@ void CBasePlayerWeapon::EjectBrassLate()
 	vecShellVelocity = (m_pPlayer->pev->velocity + vecRight + vecUp) + gpGlobals->v_forward * 25;
 	soundType = (m_iId == WEAPON_XM1014 || m_iId == WEAPON_M3) ? TE_BOUNCE_SHOTSHELL : TE_BOUNCE_SHELL;
 
-	EjectBrass(pev->origin + m_pPlayer->pev->view_ofs + gpGlobals->v_up * -9 + gpGlobals->v_forward * 16, gpGlobals->v_right * -9,
-		vecShellVelocity, pev->angles.y, m_iShellId, soundType, m_pPlayer->entindex());
+	const Vector shellOrigin = m_pPlayer->pev->origin + m_pPlayer->pev->view_ofs +
+		gpGlobals->v_up * -9 + gpGlobals->v_forward * 16 + gpGlobals->v_right * 8;
+	EjectBrass(shellOrigin, gpGlobals->v_right * -9, vecShellVelocity,
+		m_pPlayer->pev->v_angle.y, m_iShellId, soundType, m_pPlayer->entindex());
 }
 
 bool CBasePlayerWeapon::ShieldSecondaryFire(int iUpAnim, int iDownAnim)
