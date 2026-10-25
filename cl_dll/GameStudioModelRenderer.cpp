@@ -40,6 +40,7 @@
 #include "pm_defs.h"
 #include "camera.h"
 #include "eventscripts.h"
+#include "oc2_ragdoll.h"
 
 #define ANIM_WALK_SEQUENCE 3
 #define ANIM_JUMP_SEQUENCE 6
@@ -766,6 +767,13 @@ int CGameStudioModelRenderer::StudioDrawPlayer(int flags, entity_state_t *pplaye
 	bool isLocalPlayer = false;
 
 	m_pplayer = pplayer;
+	// This is the active CS player renderer. Suppress the server's death
+	// animation once the physical corpse owns that player's visual body.
+	if (OC2_RagdollHideDeadPlayer(pplayer->number, pplayer->sequence))
+	{
+		m_pplayer = NULL;
+		return 0;
+	}
 
 	if (m_bLocal && IEngineStudio.GetCurrentEntity() == gEngfuncs.GetLocalPlayer())
 		isLocalPlayer = true;
@@ -938,6 +946,7 @@ int CGameStudioModelRenderer::_StudioDrawPlayer(int flags, entity_state_t *pplay
 	m_pPlayerInfo = IEngineStudio.PlayerInfo(m_nPlayerIndex);
 
 	StudioSetupBones();
+	OC2_RagdollCaptureLive(*this, pplayer->number);
 	StudioSaveBones();
 
 	m_pPlayerInfo->renderframe = m_nFrameCount;

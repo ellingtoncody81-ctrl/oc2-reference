@@ -1,9 +1,11 @@
 /*
 view_bob.cpp - CS:GO view bob. See view_bob.h.
 
-Statement order and every constant follow CalcViewModelBobHelper() in
-weapon_csbase.cpp. Where CS:GO has a no-op (the clamp whose result is thrown
-away) it is left as a no-op and marked, rather than "fixed".
+The waveform and constants follow CalcViewModelBobHelper() in
+weapon_csbase.cpp. GoldSrc additionally smooths tick-sized velocity steps;
+the Source follow limit controls phase while that smoothed speed controls
+amplitude. Where CS:GO has a no-op (the clamp whose result is thrown away) it
+is left as a no-op and marked, rather than "fixed".
 */
 
 #include "view_bob.h"
@@ -141,6 +143,11 @@ namespace view_bob
 		{
 			state.speed_in = speed;
 		}
+		// GoldSrc's velocity arrives in server-sized steps. Keep the Source
+		// follow limit on stride phase, but let the already smoothed velocity
+		// drive the visible amplitude. With a low follow cvar the old path took
+		// over a second to bring a running weapon up to full motion.
+		const float amplitude_speed = Clamp( speed, 0.0f, 320.0f );
 
 		// don't allow too big speed changes
 		float max_speed_delta = std::fmax( 0.0f, ( time - state.last_bob_time ) * params.speed_follow );
@@ -149,7 +156,7 @@ namespace view_bob
 
 		state.last_speed = speed;
 
-		// Valve applies the run lowering after the speed follow clamp.
+		// Preserve the Source follow-limited run lowering independently of bob amplitude.
 		float run_add_amt = 0.0f;
 		if( !input.zoomed )
 		{
@@ -278,7 +285,7 @@ namespace view_bob
 
 		float bob_multiplier = 0.00625f * state.air_mix;
 
-		float vertical = speed * ( bob_multiplier * params.amt_vert );
+		float vertical = amplitude_speed * ( bob_multiplier * params.amt_vert );
 		vertical = Blend( vertical, std::sin( cycle ) );
 		out.vertical = ClampFinite( static_cast<float>( vertical - ( run_add_amt - ( gun_acc_pos * 0.2 ) ) ), -7.0f, 4.0f );
 
@@ -292,7 +299,7 @@ namespace view_bob
 			cycle /= bob_cycle * 2;
 			cycle = RaisedCycle( cycle, params.bob_up );
 
-			float lateral = speed * ( bob_multiplier * params.amt_lat );
+			float lateral = amplitude_speed * ( bob_multiplier * params.amt_lat );
 			lateral = Blend( lateral, std::sin( cycle ) );
 			out.lateral = ClampFinite( static_cast<float>( lateral + gun_acc_pos * 0.25 ), -8.0f, 8.0f );
 		}

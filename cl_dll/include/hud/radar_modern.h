@@ -47,6 +47,11 @@ public:
 private:
 	void LoadSprites();
 	void LoadOverview( const char *pszMapName );
+	void LoadObjectives( const char *pszMapName );
+	void DrawObjectives( int localTeam );
+	void DrawBomb( int localTeam, float flTime );
+	void DrawHostages( int localTeam, float flTime );
+	bool ObjectivePoint( const Vector &world, int halfSize, int &x, int &y );
 
 	// Recomputes the world<->radar scale from the overview description.
 	// Must run before DrawOverviewLayer() and CalcPoint().
@@ -76,7 +81,7 @@ private:
 	void DrawSelfMarker( int cx, int cy, int radius );
 	bool DrawBlurredBackground( int cx, int cy, int radius );
 	void DrawRadarMask( int cx, int cy, int radius );
-	void DrawRadarFrame( int cx, int cy, int radius, int r, int g, int b, int a );
+	void DrawRadarFrame( int cx, int cy, int radius, int r, int g, int b, int a, bool additive );
 	void DrawWarningFrame( int cx, int cy, int radius, float flTime );
 	void DrawPlayerBlip( int cx, int cy, int radius, int i, float flTime );
 	bool  CalcPoint( const Vector &vecWorld, int &x, int &y, int &radius );
@@ -101,6 +106,19 @@ public:
 	bool  m_bEnabled;
 	float m_flLastCapture;   // throttle for the blurred background
 	float m_flLastBombPlanted;
+	struct Objective
+	{
+		Vector origin;
+		bool bomb;
+		char label;
+		char group[64];
+		int sources;
+	};
+	Objective m_Objectives[32];
+	int m_iObjectiveCount;
+	char m_szObjectiveMap[64];
+	bool m_bObjectivesLoaded;
+	const char *m_pObjectiveEntities;
 	int   m_iPlayerNum;
 	int   m_iCenterX;
 	int   m_iCenterY;

@@ -101,6 +101,7 @@ struct State
 
 struct cl_entity_s;
 float V_ADSWorldFOV(float rawFov,float time);
+float V_CurrentADSWorldFOV();
 bool V_DrawADSCrosshair();
 void V_ApplyADSBody(cl_entity_s *entity);
 void V_ObserveADSSight(cl_entity_s *entity,const char *bone,const float matrix[3][4]);

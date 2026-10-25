@@ -106,20 +106,21 @@ void Money(int value, int delta, float fade, bool blink)
 {
 	values.money = value; values.moneyTime = gHUD.m_flTime;
 	const float s = hud_readability::Scale(match_ui::Scale()), x = 57*s, y = ScreenHeight-70*s;
+	const float moneyHeight = 26*s, moneyAdvance = 20*s;
 	const auto color = blink ? match_ui::Color(255,70,70) : Theme();
 	match_ui::Picture(match_ui::Texture("gfx/vgui/dollar.tga"), 37*s, y, 26*s, 26*s, color);
 	// The original atlas has a transparent edge: its first number cell starts at 57.
-	match_ui::Number(max(0,value), x, y, 26*s, color, false, 1, 20*s);
+	match_ui::Number(max(0,value), x, y, moneyHeight, color, false, 1, moneyAdvance);
 	if (gHUD.m_StatusIcons.IsIconActive("buyzone"))
-		match_ui::Picture(match_ui::Texture("gfx/vgui/cart.tga"), x+match_ui::NumberWidth(max(0,value),26*s,1,20*s)+12*s,
+		match_ui::Picture(match_ui::Texture("gfx/vgui/cart.tga"), x+match_ui::NumberWidth(max(0,value),moneyHeight,1,moneyAdvance)+12*s,
 			y, 26*s, 26*s, match_ui::Color());
 	if (delta && fade > 0)
 	{
 		auto change = delta > 0 ? match_ui::Color(120,220,135) : match_ui::Color(255,90,90);
 		change.a = int(min(1.0f, fade/5.0f)*255);
-		match_ui::Text(delta > 0 ? "+" : "-", 37*s, y-32*s, 22*s, change);
+		match_ui::Text(delta > 0 ? "+" : "-", 37*s, y-36*s, moneyHeight, change);
 		const int absolute = delta == (-2147483647-1) ? 2147483647 : (delta < 0 ? -delta : delta);
-		match_ui::Number(absolute, x, y-32*s, 22*s, change, false, 1, 16*s);
+		match_ui::Number(absolute, x, y-36*s, moneyHeight, change, false, 1, moneyAdvance);
 	}
 }
 

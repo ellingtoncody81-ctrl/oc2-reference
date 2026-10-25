@@ -37,14 +37,23 @@ void EV_FireXM1014(event_args_t *args)
 	Vector origin(args->origin);
 	// XM1014 sends complete shot angles; iparam1/2 carry seed/pattern index.
 	Vector angles(args->angles);
+	Vector velocity(args->velocity);
 	Vector forward, right, up;
 	AngleVectors(angles, forward, right, up);
+	Vector shellVelocity, shellOrigin;
 	if (EV_IsLocal(idx))
 	{
 		++g_iShotsFired;
 		EV_MuzzleFlash();
 		gEngfuncs.pEventAPI->EV_WeaponAnimation(Com_RandomLong(XM1014_FIRE1, XM1014_FIRE2), 2);
+		const float side = gHUD.cl_righthand && gHUD.cl_righthand->value == 0.0f ? -10.0f : 10.0f;
+		EV_GetDefaultShellInfo(args, origin, velocity, shellVelocity, shellOrigin,
+			forward, right, up, 20.0f, -8.0f, side, false);
 	}
+	else
+		EV_GetDefaultShellInfo(args, origin, velocity, shellVelocity, shellOrigin,
+			forward, right, up, 20.0f, -12.0f, 4.0f, false);
+	EV_EjectBrass(shellOrigin, shellVelocity, angles[YAW], g_iShotgunShell, TE_BOUNCE_SHOTSHELL);
 	PLAY_EVENT_SOUND(SOUNDS_NAME);
 	Vector source;
 	EV_GetGunPosition(args, source, origin);

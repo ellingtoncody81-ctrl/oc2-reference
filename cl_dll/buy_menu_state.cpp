@@ -30,25 +30,25 @@ struct Entry
 // has baked CS2 prices/names, which the menu replaces using these values.
 // Stable indices are intentional: a team change must not remap a click.
 const Entry catalog[] = {
-	{1001,0,"Kevlar","vest","gfx/weaponbuy/kevlar.tga",650,Vest},
-	{1002,0,"Kevlar + Helmet","vesthelm","gfx/weaponbuy/kevlarhelmet.tga",1000,VestHelmet},
-	{1003,0,"Defuse Kit","defuser","gfx/weaponbuy/defusekit.tga",200,Defuser},
-	{WEAPON_TASER,0,"Zeus x27","zeus","gfx/weaponbuy/taser.tga",TASER_PRICE,Zeus},
+	{1001,0,"防弹衣","vest","gfx/weaponbuy/kevlar.tga",650,Vest},
+	{1002,0,"防弹衣与头盔","vesthelm","gfx/weaponbuy/kevlarhelmet.tga",1000,VestHelmet},
+	{1003,0,"拆弹工具","defuser","gfx/weaponbuy/defusekit.tga",200,Defuser},
+	{WEAPON_TASER,0,"宙斯 x27","zeus","gfx/weaponbuy/taser.tga",TASER_PRICE,Zeus},
 	{WEAPON_GLOCK18,1,"Glock-18","glock","gfx/weaponbuy/weapon_glock.tga",GLOCK18_PRICE,Gun},
 	{WEAPON_USP,1,"USP-S","usp","gfx/weaponbuy/weapon_usp.tga",USP_PRICE,Gun},
 	{WEAPON_P228,1,"P250","p250","gfx/weaponbuy/weapon_p228.tga",P228_PRICE,Gun},
-	{WEAPON_DEAGLE,1,"Desert Eagle","deagle","gfx/weaponbuy/weapon_deagle.tga",DEAGLE_PRICE,Gun},
-	{WEAPON_ELITE,1,"Dual Berettas","elites","gfx/weaponbuy/weapon_elites.tga",ELITE_PRICE,Gun},
+	{WEAPON_DEAGLE,1,"沙漠之鹰","deagle","gfx/weaponbuy/weapon_deagle.tga",DEAGLE_PRICE,Gun},
+	{WEAPON_ELITE,1,"双持贝瑞塔","elites","gfx/weaponbuy/weapon_elites.tga",ELITE_PRICE,Gun},
 	{WEAPON_FIVESEVEN,1,"Five-SeveN","fn57","gfx/weaponbuy/weapon_fiveseven.tga",FIVESEVEN_PRICE,Gun},
 	{WEAPON_MAC10,2,"MAC-10","mac10","gfx/weaponbuy/weapon_mac10.tga",MAC10_PRICE,Gun},
 	{WEAPON_TMP,2,"MP9","mp9","gfx/weaponbuy/weapon_tmp.tga",TMP_PRICE,Gun},
 	{WEAPON_MP5N,2,"MP7","mp7","gfx/weaponbuy/weapon_mp7.tga",MP5NAVY_PRICE,Gun},
 	{WEAPON_UMP45,2,"UMP-45","ump45","gfx/weaponbuy/weapon_ump45.tga",UMP45_PRICE,Gun},
 	{WEAPON_P90,2,"P90","p90","gfx/weaponbuy/weapon_p90.tga",P90_PRICE,Gun},
-	{WEAPON_M3,2,"Nova","nova","gfx/weaponbuy/weapon_m3.tga",M3_PRICE,Gun},
+	{WEAPON_M3,2,"新星","nova","gfx/weaponbuy/weapon_m3.tga",M3_PRICE,Gun},
 	{WEAPON_XM1014,2,"XM1014","xm1014","gfx/weaponbuy/weapon_xm1014.tga",XM1014_PRICE,Gun},
 	{WEAPON_M249,2,"M249","m249","gfx/weaponbuy/weapon_m249.tga",M249_PRICE,Gun},
-	{WEAPON_GALIL,3,"Galil AR","galil","gfx/weaponbuy/weapon_galil.tga",GALIL_PRICE,Gun},
+	{WEAPON_GALIL,3,"加利尔 AR","galil","gfx/weaponbuy/weapon_galil.tga",GALIL_PRICE,Gun},
 	{WEAPON_FAMAS,3,"FAMAS","famas","gfx/weaponbuy/weapon_famas.tga",FAMAS_PRICE,Gun},
 	{WEAPON_AK47,3,"AK-47","ak47","gfx/weaponbuy/weapon_ak47.tga",AK47_PRICE,Gun},
 	{WEAPON_M4A1,3,"M4A1-S","m4a1","gfx/weaponbuy/weapon_m4a1.tga",M4A1_PRICE,Gun},
@@ -58,10 +58,10 @@ const Entry catalog[] = {
 	{WEAPON_AWP,3,"AWP","awp","gfx/weaponbuy/weapon_awp.tga",AWP_PRICE,Gun},
 	{WEAPON_G3SG1,3,"G3SG1","g3sg1","gfx/weaponbuy/weapon_g3sg1.tga",G3SG1_PRICE,Gun},
 	{WEAPON_SG550,3,"SCAR-20","sg550","gfx/weaponbuy/weapon_sg550.tga",SG550_PRICE,Gun},
-	{WEAPON_FLASHBANG,4,"Flashbang","flash","gfx/weaponbuy/flashbang.tga",200,Grenade},
-	{WEAPON_SMOKEGRENADE,4,"Smoke Grenade","sgren","gfx/weaponbuy/smoke.tga",300,Grenade},
-	{WEAPON_HEGRENADE,4,"HE Grenade","hegren","gfx/weaponbuy/hegren.tga",300,Grenade},
-	{WEAPON_MOLOTOV,4,"Molotov","molotov","gfx/weaponbuy/molly.tga",MOLOTOV_PRICE,Grenade},
+	{WEAPON_FLASHBANG,4,"闪光弹","flash","gfx/weaponbuy/flashbang.tga",200,Grenade},
+	{WEAPON_SMOKEGRENADE,4,"烟雾弹","sgren","gfx/weaponbuy/smoke.tga",300,Grenade},
+	{WEAPON_HEGRENADE,4,"高爆手雷","hegren","gfx/weaponbuy/hegren.tga",300,Grenade},
+	{WEAPON_MOLOTOV,4,"燃烧瓶","molotov","gfx/weaponbuy/molly.tga",MOLOTOV_PRICE,Grenade},
 };
 const int kItems = sizeof(catalog)/sizeof(catalog[0]);
 bool opened = false, hasServerState = false, serverCanBuy = false, hasItemStatus = false;
@@ -102,7 +102,7 @@ bool GetState(oc2_buy::State &state)
 	state = oc2_buy::State();
 	hud_player_info_t info{};
 	const int slot = LocalSlot(info);
-	if (!slot) { state.reason = "Not connected"; return false; }
+	if (!slot) { state.reason = "尚未连接服务器"; return false; }
 	state.team = g_PlayerExtraInfo[slot].teamname[0] ? g_PlayerExtraInfo[slot].teamnumber : info.team;
 	state.money = max(0,gHUD.m_Money.GetMoney());
 	state.alive = g_iUser1 == 0 && gHUD.m_Health.m_iHealth > 0 && !g_PlayerExtraInfo[slot].dead;
@@ -114,18 +114,18 @@ bool GetState(oc2_buy::State &state)
 		const float elapsed = std::isfinite(now) && now >= stateTime ? now-stateTime : 0.0f;
 		state.seconds = max(0,serverSeconds-int(min(elapsed,32767.0f)));
 	}
-	if (!hasEquipmentState) state.reason = "Server equipment protocol required";
-	else if (!hasServerState) state.reason = "Waiting for server buy state";
-	else if (state.team != TEAM_TERRORIST && state.team != TEAM_CT) state.reason = "Choose a team";
-	else if (!state.alive) state.reason = "Must be alive";
+	if (!hasEquipmentState) state.reason = "服务器尚未提供装备状态";
+	else if (!hasServerState) state.reason = "正在等待服务器购买状态";
+	else if (state.team != TEAM_TERRORIST && state.team != TEAM_CT) state.reason = "请先选择阵营";
+	else if (!state.alive) state.reason = "存活时才能购买";
 	else
 	{
 		// BuyState's eligibility is authoritative, including the exact deadline
 		// instant. A displayed zero is not a substitute for CanPlayerBuy(false).
 		state.canBuy = serverCanBuy;
 		if (!state.canBuy)
-			state.reason = !state.inBuyZone ? "Not in buy zone"
-				: hasServerState && state.seconds == 0 ? "Buy time expired" : "Purchases disabled by server";
+			state.reason = !state.inBuyZone ? "请进入购买区域"
+				: hasServerState && state.seconds == 0 ? "购买时间已结束" : "服务器已禁用购买";
 	}
 	return true;
 }
@@ -142,7 +142,7 @@ bool GetItem(int index, oc2_buy::Item &item)
 	// physical item and may contain the other variant after a world pickup.
 	if (entry.id == WEAPON_MOLOTOV && state.team == TEAM_CT)
 	{
-		item.name = "Incendiary Grenade";
+		item.name = "燃烧弹";
 		item.image = "gfx/weaponbuy/incendiary.tga";
 		item.price = 600;
 	}
@@ -171,14 +171,14 @@ bool GetItem(int index, oc2_buy::Item &item)
 		item.count = item.owned ? 1 : 0; break;
 	}
 
-	if (!item.visible) item.reason = entry.kind == Defuser ? "CT equipment only" : "Choose a team";
+	if (!item.visible) item.reason = entry.kind == Defuser ? "仅供反恐精英使用" : "请先选择阵营";
 	else if (!state.canBuy) item.reason = state.reason;
 	else if (entry.id == WEAPON_ELITE && g_bHoldingShield)
-		item.reason = "Conflicts with carried equipment";
-	else if (entry.kind == Zeus && zeusBought >= 1) item.reason = "Round purchase limit reached";
-	else if (entry.kind == Grenade && item.count >= item.limit) item.reason = "Carry limit reached";
-	else if (entry.kind != Grenade && item.owned) item.reason = "Already owned";
-	else if (state.money < item.price) item.reason = "Not enough money";
+		item.reason = "与当前携带装备冲突";
+	else if (entry.kind == Zeus && zeusBought >= 1) item.reason = "已达本回合购买上限";
+	else if (entry.kind == Grenade && item.count >= item.limit) item.reason = "已达携带数量上限";
+	else if (entry.kind != Grenade && item.owned) item.reason = "已拥有此装备";
+	else if (state.money < item.price) item.reason = "资金不足";
 	item.enabled = !item.reason[0];
 	return true;
 }

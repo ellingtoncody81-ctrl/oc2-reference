@@ -21,6 +21,7 @@
 #include "cl_util.h"
 #include "parsemsg.h"
 #include "com_weapons.h"
+#include "com_model.h"
 #include "buy_menu_state.h"
 
 #include <string.h>
@@ -36,6 +37,20 @@ char g_szMenuString[MAX_MENU_STRING];
 char g_szPrelocalisedMenuString[MAX_MENU_STRING];
 
 int KB_ConvertString( char *in, char **ppout );
+
+static void DumpTeamSelectionPlayer()
+{
+	const cl_entity_t *entity=gEngfuncs.GetLocalPlayer();
+	const int index=entity?entity->index:0;
+	const bool valid=index>0&&index<=MAX_PLAYERS;
+	hud_player_info_t info{};
+	if(valid)GetPlayerInfo(index,&info);
+	const char *model=info.model;
+	const int team=valid?g_PlayerExtraInfo[index].teamnumber:0;
+	const bool alive=valid&&g_iUser1==0&&gHUD.m_Health.m_iHealth>0&&!g_PlayerExtraInfo[index].dead;
+	gEngfuncs.Con_Printf("teamselect_player: index=%d team=%d model=%s entity_model=%s alive=%d health=%d\n",
+		index,team,model&&*model?model:"none",entity&&entity->model?entity->model->name:"none",int(alive),gHUD.m_Health.m_iHealth);
+}
 
 void Touch_CloseMenu()
 {
@@ -54,6 +69,7 @@ int CHudMenu :: Init( void )
 	HOOK_COMMAND( gHUD.m_Menu, "client_buy_open", OldStyleMenuOpen );
 	HOOK_COMMAND( gHUD.m_Menu, "client_buy_close", OldStyleMenuClose );
 	HOOK_COMMAND( gHUD.m_Menu, "showvguimenu", ShowVGUIMenu );
+	gEngfuncs.pfnAddCommand("teamselect_player_dump",DumpTeamSelectionPlayer);
 
 	_extended_menus = CVAR_CREATE("_extended_menus", "1", FCVAR_ARCHIVE);
 
@@ -173,9 +189,29 @@ int CHudMenu :: MsgFunc_ShowMenu( const char *pszName, int iSize, void *pbuf )
 	}
 
 	menustring = reader.ReadString();
-	// Legacy servers can send the buy root as ShowMenu rather than VGUIMenu.
-	// Route this exact root to the native purchase UI without replacing radio,
-	// team selection or arbitrary server/plugin menus.
+	// Route known server roots on either protocol; arbitrary plugin menus retain
+	// their original text/slot handling. Class roots acknowledge jointeam.
+	if(!m_fWaitingForMore&&!NeedMore&&g_pMenu&&!UseOldTouchMenusEnabled())
+	{
+		const bool teamMenu=!strcmp(menustring,"#Team_Select")||!strcmp(menustring,"#Team_Select_Spect")||
+			!strcmp(menustring,"#IG_Team_Select")||!strcmp(menustring,"#IG_Team_Select_Spect")||
+			!strcmp(menustring,"#IG_VIP_Team_Select")||!strcmp(menustring,"#IG_VIP_Team_Select_Spect");
+		const int classMenu=!strcmp(menustring,"#Terrorist_Select")?MENU_CLASS_T:
+			!strcmp(menustring,"#CT_Select")?MENU_CLASS_CT:0;
+		if(teamMenu||classMenu)
+		{
+			m_fMenuDisplayed=0;m_iFlags&=~HUD_DRAW;
+			Touch_CloseMenu();
+			if(teamMenu)
+			{
+				const int flags=((m_bitsValidSlots&(1<<5))?1:0)|((m_bitsValidSlots&(1<<2))?2:0)|((m_bitsValidSlots&(1<<9))?4:0);
+				const int team=g_PlayerExtraInfo[gHUD.m_Scoreboard.m_iPlayerNum].teamnumber;
+				g_pMenu->ShowVGUIMenu(MENU_TEAM,flags,team);
+			}
+			else ShowVGUIMenu(classMenu);
+			return 1;
+		}
+	}
 	if (!m_fWaitingForMore && !NeedMore && !strcmp(menustring,"#Buy") && g_pMenu && !UseOldTouchMenusEnabled())
 	{
 		m_fMenuDisplayed = 0;
@@ -313,7 +349,7 @@ void CHudMenu::ShowVGUIMenu( int menuType )
 			if( haveCancel )
 				param |= 1 << 2;
 
-			g_pMenu->ShowVGUIMenu( menuType, param, 0 );
+			g_pMenu->ShowVGUIMenu( menuType, param, team );
 			return;
 		}
 		case MENU_CLASS_T:

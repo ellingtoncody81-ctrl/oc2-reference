@@ -112,5 +112,5 @@ void EV_FireUSP( event_args_t *args )
 		forward, right,	up,
 		1, vecSrc, vecAiming,
 		vSpread, oc2_weapon::Get(oc2_weapon::USPS).range, BULLET_PLAYER_45ACP,
-		2 );
+		2, silencer_on ? 2 : 0 );
 }

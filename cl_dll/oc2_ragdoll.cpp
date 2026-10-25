@@ -1,0 +1,821 @@
+#include "hud.h"
+#include "cl_util.h"
+#include "const.h"
+#include "pm_defs.h"
+#include "pmtrace.h"
+#include "event_api.h"
+#include "r_efx.h"
+#include "studio.h"
+#include "r_studioint.h"
+#include "StudioModelRenderer.h"
+#include "eventscripts.h"
+#include "oc2_ragdoll.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <limits.h>
+#include <string.h>
+
+extern engine_studio_api_t IEngineStudio;
+
+namespace
+{
+enum Joint
+{
+    PELVIS, CHEST, HEAD,
+    LEFT_SHOULDER, LEFT_ELBOW, LEFT_HAND,
+    RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_HAND,
+    LEFT_HIP, LEFT_KNEE, LEFT_FOOT,
+    RIGHT_HIP, RIGHT_KNEE, RIGHT_FOOT,
+    JOINT_COUNT
+};
+
+const char *const kBoneNames[JOINT_COUNT] = {
+    "Bip01 Pelvis", "Bip01 Spine3", "Bip01 Head",
+    "Bip01 L UpperArm", "Bip01 L Forearm", "Bip01 L Hand",
+    "Bip01 R UpperArm", "Bip01 R Forearm", "Bip01 R Hand",
+    "Bip01 L Thigh", "Bip01 L Calf", "Bip01 L Foot",
+    "Bip01 R Thigh", "Bip01 R Calf", "Bip01 R Foot"
+};
+
+const int kParent[JOINT_COUNT] = {
+    -1, PELVIS, CHEST,
+    CHEST, LEFT_SHOULDER, LEFT_ELBOW,
+    CHEST, RIGHT_SHOULDER, RIGHT_ELBOW,
+    PELVIS, LEFT_HIP, LEFT_KNEE,
+    PELVIS, RIGHT_HIP, RIGHT_KNEE
+};
+
+const int kDirectionChild[JOINT_COUNT] = {
+    CHEST, HEAD, -1,
+    LEFT_ELBOW, LEFT_HAND, -1,
+    RIGHT_ELBOW, RIGHT_HAND, -1,
+    LEFT_KNEE, LEFT_FOOT, -1,
+    RIGHT_KNEE, RIGHT_FOOT, -1
+};
+
+struct JointState
+{
+    int bone;
+    Vector base;
+    Vector position;
+    Vector previous;
+    Vector lastFree;
+    float radius;
+};
+
+struct Body
+{
+    int serial;
+    int playerIndex;
+    bool ready;
+    bool early;
+    bool legacySeen;
+    bool hasLivePose;
+    bool sleeping;
+    int quietFrames;
+    unsigned int steps;
+    unsigned int contacts;
+    int catchupSteps;
+    float accumulator;
+    float initialHeadZ;
+    double birth;
+    double lastTime;
+    double expires;
+    Vector launch;
+    Vector deathOrigin;
+    tempent_s *corpse;
+    model_t *model;
+    studiohdr_t *header;
+    int boneCount;
+    JointState joints[JOINT_COUNT];
+    float rest[JOINT_COUNT];
+    float baseMatrix[MAXSTUDIOBONES][3][4];
+};
+
+struct LivePose
+{
+    bool valid;
+    model_t *model;
+    double time;
+    int boneCount;
+    Vector origin;
+    Vector angles;
+    float matrix[MAXSTUDIOBONES][3][4];
+};
+
+Body s_bodies[64] = {};
+LivePose s_livePose[33] = {};
+int s_nextSerial = 0;
+int s_pendingEarlyVictim = 0;
+int s_pendingKiller = 0;
+cvar_t *s_ragdoll = NULL;
+bool s_dumpRegistered = false;
+
+float Clamp(float value, float low, float high)
+{
+    return value < low ? low : value > high ? high : value;
+}
+
+float Dot(const Vector &a, const Vector &b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+Vector Cross(const Vector &a, const Vector &b)
+{
+    return Vector(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x);
+}
+
+float Length(const Vector &vector)
+{
+    return sqrtf(Dot(vector, vector));
+}
+
+Vector Origin(const float matrix[3][4])
+{
+    return Vector(matrix[0][3], matrix[1][3], matrix[2][3]);
+}
+
+int FindBone(const studiohdr_t *header, const char *name)
+{
+    const mstudiobone_t *bones = reinterpret_cast<const mstudiobone_t *>(
+        reinterpret_cast<const byte *>(header) + header->boneindex);
+    for (int i = 0; i < header->numbones; ++i)
+        if (!strcmp(bones[i].name, name)) return i;
+    return -1;
+}
+
+bool SupportedSkeleton(const studiohdr_t *header)
+{
+    if (!header || header->numbones <= 0 || header->numbones > MAXSTUDIOBONES)
+        return false;
+    for (int joint = 0; joint < JOINT_COUNT; ++joint)
+    {
+        if (FindBone(header, kBoneNames[joint]) >= 0) continue;
+        if (joint == HEAD && FindBone(header, "Bip01 Neck") >= 0) continue;
+        if (joint == CHEST && FindBone(header, "Bip01 Spine2") >= 0) continue;
+        return false;
+    }
+    return true;
+}
+
+int FindLiveIdleSequence(const studiohdr_t *header)
+{
+    if (!header || header->numseq <= 0) return 0;
+    const mstudioseqdesc_t *sequences = reinterpret_cast<const mstudioseqdesc_t *>(
+        reinterpret_cast<const byte *>(header) + header->seqindex);
+    for (int i = 0; i < header->numseq; ++i)
+        if (!strncmp(sequences[i].label, "idle1", sizeof(sequences[i].label)))
+            return i;
+    for (int i = 0; i < header->numseq; ++i)
+        if (!strncmp(sequences[i].label, "idle", 4) &&
+            strncmp(sequences[i].label, "crouch", 6))
+            return i;
+    return 0;
+}
+
+bool IsDeathAnimation(model_t *model, int sequence)
+{
+    if (!model || !IEngineStudio.Mod_Extradata)
+        return false;
+    const studiohdr_t *header = static_cast<const studiohdr_t *>(
+        IEngineStudio.Mod_Extradata(model));
+    if (!header || sequence < 0 || sequence >= header->numseq)
+        return false;
+    const mstudioseqdesc_t *sequences = reinterpret_cast<const mstudioseqdesc_t *>(
+        reinterpret_cast<const byte *>(header) + header->seqindex);
+    const char *label = sequences[sequence].label;
+    return !strncmp(label, "death", 5) ||
+        !strncmp(label, "crouch_die", 10) ||
+        !strncmp(label, "head", 5) ||
+        !strncmp(label, "gutshot", 8) ||
+        !strncmp(label, "left", 5) || !strncmp(label, "back", 5) ||
+        !strncmp(label, "right", 6) || !strncmp(label, "forward", 8);
+}
+
+model_t *RenderedPlayerModel(int playerIndex)
+{
+    if (playerIndex < 1 || playerIndex > 32) return NULL;
+    if (gHUD.cl_minmodels && gHUD.cl_minmodels->value > 0.0f)
+    {
+        const extra_player_info_t &info = g_PlayerExtraInfo[playerIndex];
+        const char *path = NULL;
+        if (info.teamnumber == TEAM_TERRORIST)
+        {
+            const int index = gHUD.cl_min_t && BIsValidTModelIndex(gHUD.cl_min_t->value)
+                ? static_cast<int>(gHUD.cl_min_t->value) : 1;
+            path = sPlayerModelFiles[index];
+        }
+        else if (info.teamnumber == TEAM_CT)
+        {
+            const int index = info.vip ? 3 :
+                gHUD.cl_min_ct && BIsValidCTModelIndex(gHUD.cl_min_ct->value)
+                    ? static_cast<int>(gHUD.cl_min_ct->value) : 2;
+            path = sPlayerModelFiles[index];
+        }
+        return path ? gEngfuncs.CL_LoadModel(path, NULL) : NULL;
+    }
+    // SetupPlayerModel reads RI.currententity as its fallback. A DeathMsg
+    // arrives outside the render callback, so resolve the same userinfo path
+    // directly instead of touching that renderer-global pointer.
+    const player_info_t *info = IEngineStudio.PlayerInfo
+        ? IEngineStudio.PlayerInfo(playerIndex - 1) : NULL;
+    if (!info || !info->model[0] || !IEngineStudio.Mod_ForName)
+        return NULL;
+    char path[2 * MAX_QPATH + 32];
+    snprintf(path, sizeof(path), "models/player/%s/%s.mdl",
+        info->model, info->model);
+    return IEngineStudio.Mod_ForName(path, 0);
+}
+
+Vector RotateArc(const Vector &vector, const Vector &from, const Vector &to)
+{
+    const float fromLength = Length(from);
+    const float toLength = Length(to);
+    if (fromLength < 0.001f || toLength < 0.001f) return vector;
+    const Vector a = from * (1.0f / fromLength);
+    const Vector b = to * (1.0f / toLength);
+    const float cosine = Clamp(Dot(a, b), -1.0f, 1.0f);
+    Vector axis = Cross(a, b);
+    const float sine = Length(axis);
+    if (sine < 0.0001f)
+    {
+        if (cosine > 0.0f) return vector;
+        axis = Cross(a, Vector(0.0f, 0.0f, 1.0f));
+        if (Length(axis) < 0.001f) axis = Cross(a, Vector(1.0f, 0.0f, 0.0f));
+        axis = axis * (1.0f / Length(axis));
+        return axis * (2.0f * Dot(axis, vector)) - vector;
+    }
+    axis = axis * (1.0f / sine);
+    return vector * cosine + Cross(axis, vector) * sine +
+        axis * (Dot(axis, vector) * (1.0f - cosine));
+}
+
+void SolveDistance(Body &body, int first, int second, float minimum, float maximum)
+{
+    Vector delta = body.joints[second].position - body.joints[first].position;
+    const float distance = Length(delta);
+    if (distance < 0.0001f) return;
+    const float target = Clamp(distance, minimum, maximum);
+    const float correction = (distance - target) / distance;
+    const float firstMass = first == PELVIS ? 0.65f : 1.0f;
+    const float secondMass = second == PELVIS ? 0.65f : 1.0f;
+    const float sum = firstMass + secondMass;
+    body.joints[first].position = body.joints[first].position + delta * (correction * firstMass / sum);
+    body.joints[second].position = body.joints[second].position - delta * (correction * secondMass / sum);
+}
+
+void TraceWorld(const Vector &start, const Vector &end, pmtrace_t &trace)
+{
+    Vector traceStart = start;
+    Vector traceEnd = end;
+    gEngfuncs.pEventAPI->EV_SetTraceHull(2);
+    gEngfuncs.pEventAPI->EV_PlayerTrace(traceStart, traceEnd,
+        PM_STUDIO_BOX | PM_WORLD_ONLY, -1, &trace);
+}
+
+bool WorldFree(const Vector &point)
+{
+    Vector tracePoint = point;
+    return gEngfuncs.PM_PointContents(tracePoint, NULL) != CONTENTS_SOLID;
+}
+
+Vector RecoverFree(const JointState &joint, const Vector &start)
+{
+    if (WorldFree(joint.lastFree)) return joint.lastFree;
+    if (WorldFree(start)) return start;
+    // A bone can spawn partly in a brush or be pulled through one by a
+    // constraint. Search a bounded neighborhood instead of adding height
+    // on every physics step, which used to accelerate corpses up walls.
+    const Vector directions[] = {
+        Vector(0.0f, 0.0f, 1.0f), Vector(1.0f, 0.0f, 0.0f),
+        Vector(-1.0f, 0.0f, 0.0f), Vector(0.0f, 1.0f, 0.0f),
+        Vector(0.0f, -1.0f, 0.0f)
+    };
+    for (int distance = 2; distance <= 16; distance *= 2)
+        for (int direction = 0; direction < 5; ++direction)
+        {
+            const Vector candidate = start + directions[direction] * static_cast<float>(distance);
+            if (WorldFree(candidate)) return candidate;
+        }
+    return joint.lastFree;
+}
+
+bool Collide(JointState &joint, const Vector &start, Vector &normal, bool &stuck)
+{
+    normal = Vector(0.0f, 0.0f, 0.0f);
+    stuck = false;
+    pmtrace_t trace;
+    TraceWorld(start, joint.position, trace);
+    if (trace.startsolid || trace.allsolid)
+    {
+        joint.position = RecoverFree(joint, start);
+        stuck = true;
+        return true;
+    }
+    if (trace.fraction < 1.0f)
+    {
+        normal = Vector(trace.plane.normal);
+        joint.position = Vector(trace.endpos) + normal * (joint.radius + 0.1f);
+        return true;
+    }
+    // Point traces otherwise let feet sink until their center crosses the
+    // floor. This short world-only probe keeps their collision radius above it.
+    const Vector probeEnd = joint.position - Vector(0.0f, 0.0f, joint.radius + 0.2f);
+    TraceWorld(joint.position, probeEnd, trace);
+    if (trace.startsolid || trace.allsolid)
+    {
+        joint.position = RecoverFree(joint, start);
+        stuck = true;
+        return true;
+    }
+    if (trace.fraction < 1.0f && trace.plane.normal[2] > 0.5f)
+    {
+        normal = Vector(trace.plane.normal);
+        joint.position = Vector(trace.endpos) + Vector(trace.plane.normal) * (joint.radius + 0.1f);
+        return true;
+    }
+    if (WorldFree(joint.position)) joint.lastFree = joint.position;
+    return false;
+}
+
+void Simulate(Body &body, float dt)
+{
+    Vector start[JOINT_COUNT];
+    Vector predictedTravel[JOINT_COUNT];
+    bool contacted[JOINT_COUNT] = {};
+    bool stuck[JOINT_COUNT] = {};
+    Vector contactNormal[JOINT_COUNT][2];
+    int contactCount[JOINT_COUNT] = {};
+    for (int i = 0; i < JOINT_COUNT; ++i)
+    {
+        JointState &joint = body.joints[i];
+        start[i] = joint.position;
+        Vector velocity = (joint.position - joint.previous) * 0.982f;
+        joint.position = joint.position + velocity + Vector(0.0f, 0.0f, -800.0f * dt * dt);
+        predictedTravel[i] = joint.position - start[i];
+    }
+
+    for (int iteration = 0; iteration < 5; ++iteration)
+    {
+        for (int i = 1; i < JOINT_COUNT; ++i)
+            SolveDistance(body, kParent[i], i, body.rest[i], body.rest[i]);
+        SolveDistance(body, LEFT_SHOULDER, RIGHT_SHOULDER,
+            body.rest[LEFT_SHOULDER] * 1.3f, body.rest[LEFT_SHOULDER] * 2.6f);
+        SolveDistance(body, LEFT_HIP, RIGHT_HIP,
+            body.rest[LEFT_HIP] * 1.2f, body.rest[LEFT_HIP] * 2.5f);
+        const int chains[][3] = {
+            {LEFT_SHOULDER, LEFT_ELBOW, LEFT_HAND},
+            {RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_HAND},
+            {LEFT_HIP, LEFT_KNEE, LEFT_FOOT},
+            {RIGHT_HIP, RIGHT_KNEE, RIGHT_FOOT}
+        };
+        for (int chain = 0; chain < 4; ++chain)
+        {
+            const int first = chains[chain][0], middle = chains[chain][1], last = chains[chain][2];
+            const float total = body.rest[middle] + body.rest[last];
+            SolveDistance(body, first, last, total * 0.42f, total * 0.98f);
+        }
+        if (iteration == 2 || iteration == 4)
+            for (int i = 0; i < JOINT_COUNT; ++i)
+            {
+                Vector normal;
+                bool trapped = false;
+                if (Collide(body.joints[i], start[i], normal, trapped))
+                {
+                    contacted[i] = true;
+                    stuck[i] = stuck[i] || trapped;
+                    if (!trapped && contactCount[i] < 2)
+                        contactNormal[i][contactCount[i]++] = normal;
+                    ++body.contacts;
+                }
+            }
+    }
+
+    float motion = 0.0f;
+    for (int i = 0; i < JOINT_COUNT; ++i)
+    {
+        JointState &joint = body.joints[i];
+        // Constraint corrections are positional, not an impulse. Remove only
+        // inward velocity at a contact; a body touching a vertical wall must
+        // still fall under gravity along the wall's tangent.
+        Vector carry = stuck[i] ? Vector(0.0f, 0.0f, 0.0f)
+            : predictedTravel[i] * 0.90f;
+        for (int contact = 0; contact < contactCount[i]; ++contact)
+        {
+            const Vector &normal = contactNormal[i][contact];
+            const float inward = Dot(carry, normal);
+            if (inward < 0.0f) carry = carry - normal * inward;
+        }
+        if (contacted[i] && !stuck[i]) carry = carry * 0.70f;
+        joint.previous = joint.position - carry;
+        const float displacement = Length(joint.position - start[i]);
+        if (displacement > motion) motion = displacement;
+        if (WorldFree(joint.position)) joint.lastFree = joint.position;
+    }
+    float worstError = 0.0f;
+    for (int i = 1; i < JOINT_COUNT; ++i)
+    {
+        const float error = fabsf(Length(body.joints[i].position -
+            body.joints[kParent[i]].position) - body.rest[i]);
+        if (error > worstError) worstError = error;
+    }
+    body.quietFrames = motion < 0.09f && worstError < 5.0f
+        ? body.quietFrames + 1 : 0;
+    if (body.quietFrames > 60 ||
+        (body.lastTime - body.birth > 12.0 && motion < 0.2f && worstError < 8.0f))
+    {
+        body.sleeping = true;
+        for (int i = 0; i < JOINT_COUNT; ++i)
+            body.joints[i].previous = body.joints[i].position;
+    }
+    ++body.steps;
+}
+
+bool Initialise(Body &body, CStudioModelRenderer &renderer)
+{
+    studiohdr_t *header = renderer.m_pStudioHeader;
+    if (!header || header->numbones <= 0 || header->numbones > MAXSTUDIOBONES ||
+        !IEngineStudio.IsHardware()) return false;
+    body.header = header;
+    body.boneCount = header->numbones;
+    if (!body.hasLivePose)
+        memcpy(body.baseMatrix, *renderer.m_pbonetransform,
+            sizeof(body.baseMatrix[0]) * body.boneCount);
+    for (int i = 0; i < JOINT_COUNT; ++i)
+    {
+        int bone = FindBone(header, kBoneNames[i]);
+        if (bone < 0 && i == HEAD) bone = FindBone(header, "Bip01 Neck");
+        if (bone < 0 && i == CHEST) bone = FindBone(header, "Bip01 Spine2");
+        if (bone < 0) return false;
+        JointState &joint = body.joints[i];
+        joint.bone = bone;
+        joint.base = Origin(body.baseMatrix[bone]);
+        joint.position = joint.base;
+        joint.lastFree = joint.position;
+        joint.radius = i == PELVIS || i == CHEST ? 7.0f : i == HEAD ? 6.0f : 3.5f;
+        const Vector impulse = body.launch + Vector(0.0f, 0.0f,
+            i == HEAD || i == CHEST ? 75.0f : 24.0f);
+        joint.previous = joint.position - impulse * (1.0f / 90.0f);
+        body.rest[i] = kParent[i] >= 0
+            ? Length(joint.base - body.joints[kParent[i]].base) : 0.0f;
+        if (kParent[i] >= 0 && body.rest[i] < 0.5f) body.rest[i] = 0.5f;
+    }
+    body.initialHeadZ = body.joints[HEAD].position.z;
+    body.ready = true;
+    return true;
+}
+
+void ApplyPose(Body &body, CStudioModelRenderer &renderer)
+{
+    const mstudiobone_t *bones = reinterpret_cast<const mstudiobone_t *>(
+        reinterpret_cast<const byte *>(body.header) + body.header->boneindex);
+    for (int bone = 0; bone < body.boneCount; ++bone)
+    {
+        int owner = -1;
+        for (int joint = 0; joint < JOINT_COUNT; ++joint)
+            if (body.joints[joint].bone == bone) { owner = joint; break; }
+        if (owner < 0)
+        {
+            const char *name = bones[bone].name;
+            if (strstr(name, "Spine2") || strstr(name, "backpack")) owner = CHEST;
+            else if (strstr(name, "Neck")) owner = HEAD;
+            else if (strstr(name, "L Clavicle")) owner = LEFT_SHOULDER;
+            else if (strstr(name, "R Clavicle")) owner = RIGHT_SHOULDER;
+            else if (strstr(name, "L Knee")) owner = LEFT_KNEE;
+            else if (strstr(name, "R Knee")) owner = RIGHT_KNEE;
+            else if (strstr(name, "L Elbow")) owner = LEFT_ELBOW;
+            else if (strstr(name, "R Elbow")) owner = RIGHT_ELBOW;
+        }
+        if (owner < 0)
+        {
+            int ancestor = bones[bone].parent;
+            while (ancestor >= 0 && owner < 0)
+            {
+                for (int joint = 0; joint < JOINT_COUNT; ++joint)
+                    if (body.joints[joint].bone == ancestor) { owner = joint; break; }
+                ancestor = owner < 0 ? bones[ancestor].parent : -1;
+            }
+        }
+        if (owner < 0) continue;
+        const JointState &joint = body.joints[owner];
+        int direction = kDirectionChild[owner];
+        if (direction < 0) direction = kParent[owner];
+        const Vector oldDirection = direction >= 0
+            ? body.joints[direction].base - joint.base : Vector(0.0f, 0.0f, 1.0f);
+        const Vector newDirection = direction >= 0
+            ? body.joints[direction].position - joint.position : oldDirection;
+        const float (*original)[4] = body.baseMatrix[bone];
+        float (*render)[4] = (*renderer.m_pbonetransform)[bone];
+        float (*light)[4] = (*renderer.m_plighttransform)[bone];
+        for (int column = 0; column < 3; ++column)
+        {
+            const Vector axis(original[0][column], original[1][column], original[2][column]);
+            const Vector rotated = RotateArc(axis, oldDirection, newDirection);
+            render[0][column] = light[0][column] = rotated.x;
+            render[1][column] = light[1][column] = rotated.y;
+            render[2][column] = light[2][column] = rotated.z;
+        }
+        const Vector localOffset = Origin(original) - joint.base;
+        const Vector position = joint.position + RotateArc(localOffset, oldDirection, newDirection);
+        render[0][3] = light[0][3] = position.x;
+        render[1][3] = light[1][3] = position.y;
+        render[2][3] = light[2][3] = position.z;
+    }
+    // Let the normal studio frustum test follow the physical torso after it
+    // travels away from the death-message origin.
+    body.joints[PELVIS].position.CopyToArray(renderer.m_pCurrentEntity->origin);
+    VectorCopy(renderer.m_pCurrentEntity->origin, renderer.m_pCurrentEntity->curstate.origin);
+}
+
+void DumpRagdolls()
+{
+    const double now = gEngfuncs.GetClientTime();
+    int live = 0, moving = 0, sleeping = 0;
+    for (int i = 0; i < 64; ++i)
+    {
+        const Body &body = s_bodies[i];
+        if (!body.serial || body.expires < now) continue;
+        ++live;
+        if (!body.ready) continue;
+        if (body.sleeping) ++sleeping; else ++moving;
+        if (live <= 4)
+        {
+            float worst = 0.0f;
+            for (int joint = 1; joint < JOINT_COUNT; ++joint)
+            {
+                const float error = fabsf(Length(body.joints[joint].position -
+                    body.joints[kParent[joint]].position) - body.rest[joint]);
+                if (error > worst) worst = error;
+            }
+            const Vector &pelvis = body.joints[PELVIS].position;
+            const float speed = Length(pelvis - body.joints[PELVIS].previous) * 90.0f;
+            gEngfuncs.Con_Printf("ragdoll: serial=%d player=%d age=%.2f early=%d live_pose=%d legacy_seen=%d sleep=%d steps=%u contacts=%u speed=%.2f joint_error=%.2f pelvis=%.1f/%.1f/%.1f head_z=%.1f head_drop=%.1f\n",
+                body.serial, body.playerIndex, now - body.birth,
+                int(body.early), int(body.hasLivePose), int(body.legacySeen),
+                int(body.sleeping),
+                body.steps, body.contacts, speed, worst,
+                pelvis.x, pelvis.y, pelvis.z,
+                body.joints[HEAD].position.z,
+                body.initialHeadZ - body.joints[HEAD].position.z);
+        }
+    }
+    gEngfuncs.Con_Printf("ragdoll: live=%d moving=%d sleeping=%d\n", live, moving, sleeping);
+}
+}
+
+void OC2_RagdollInit()
+{
+    if (!s_ragdoll)
+        s_ragdoll = CVAR_CREATE("cl_ragdoll", "1", FCVAR_ARCHIVE);
+    if (!s_dumpRegistered)
+    {
+        gEngfuncs.pfnAddCommand("oc2_ragdoll_dump", DumpRagdolls);
+        s_dumpRegistered = true;
+    }
+}
+
+void OC2_RagdollCaptureLive(CStudioModelRenderer &renderer, int playerIndex)
+{
+    if (playerIndex < 1 || playerIndex > 32 || !renderer.m_pCurrentEntity ||
+        renderer.m_pCurrentEntity->curstate.renderfx == kRenderFxDeadPlayer ||
+        !renderer.m_pRenderModel ||
+        !renderer.m_pStudioHeader || renderer.m_pStudioHeader->numbones <= 0 ||
+        renderer.m_pStudioHeader->numbones > MAXSTUDIOBONES)
+        return;
+    LivePose &pose = s_livePose[playerIndex];
+    pose.valid = true;
+    pose.model = renderer.m_pRenderModel;
+    pose.time = renderer.m_clTime;
+    pose.boneCount = renderer.m_pStudioHeader->numbones;
+    pose.origin = Vector(renderer.m_pCurrentEntity->origin);
+    pose.angles = Vector(renderer.m_pCurrentEntity->angles);
+    memcpy(pose.matrix, *renderer.m_pbonetransform,
+        sizeof(pose.matrix[0]) * pose.boneCount);
+}
+
+bool OC2_RagdollHideDeadPlayer(int playerIndex, int drawnSequence)
+{
+    if (playerIndex < 1 || playerIndex > 32) return false;
+    const double now = gEngfuncs.GetClientTime();
+    for (int i = 0; i < 64; ++i)
+    {
+        const Body &body = s_bodies[i];
+        if (body.early && body.playerIndex == playerIndex &&
+            body.expires > now && body.corpse &&
+            body.corpse->entity.curstate.iuser4 == body.serial &&
+            (g_PlayerExtraInfo[playerIndex].dead ||
+                IsDeathAnimation(body.model, drawnSequence) || now - body.birth < 0.25))
+            return true;
+    }
+    return false;
+}
+
+void OC2_RagdollSpawnDeath(int victimIndex, int killerIndex)
+{
+    OC2_RagdollInit();
+    if (victimIndex < 1 || victimIndex > gEngfuncs.GetMaxClients() ||
+        victimIndex > 32 || !s_ragdoll || s_ragdoll->value <= 0)
+        return;
+    cl_entity_t *player = gEngfuncs.GetEntityByIndex(victimIndex);
+    const LivePose &pose = s_livePose[victimIndex];
+    const double now = gEngfuncs.GetClientTime();
+    const bool freshPose = pose.valid && pose.model &&
+        now >= pose.time - 0.05 && now - pose.time < 0.5;
+    model_t *model = freshPose ? pose.model : RenderedPlayerModel(victimIndex);
+    if (!model && player) model = player->model;
+    if (!model || !model->name[0]) return;
+    for (int i = 0; i < 64; ++i)
+        if (s_bodies[i].early && s_bodies[i].playerIndex == victimIndex &&
+            now - s_bodies[i].birth < 0.25) return;
+    const Vector origin = player ? Vector(player->origin) : pose.origin;
+    const Vector angles = player ? Vector(player->angles) : pose.angles;
+    // The local player is normally hidden in first person and has no cached
+    // world-model bones. Use the model's own standing sequence in that case;
+    // the current network sequence may already be a prone death animation.
+    const studiohdr_t *header = IEngineStudio.Mod_Extradata
+        ? static_cast<const studiohdr_t *>(IEngineStudio.Mod_Extradata(model)) : NULL;
+    if (!SupportedSkeleton(header)) return;
+    const int sequence = FindLiveIdleSequence(header);
+    s_pendingEarlyVictim = victimIndex;
+    s_pendingKiller = killerIndex;
+    CreateCorpse(origin, angles, model->name, static_cast<float>(now), sequence,
+        player ? player->curstate.body : 0, victimIndex);
+    s_pendingEarlyVictim = s_pendingKiller = 0;
+}
+
+bool OC2_RagdollSuppressDelayedCorpse(int playerIndex, const Vector &origin)
+{
+    if (playerIndex < 1 || playerIndex > 32) return false;
+    const double now = gEngfuncs.GetClientTime();
+    for (int i = 0; i < 64; ++i)
+    {
+        Body &body = s_bodies[i];
+        if (body.early && !body.legacySeen && body.playerIndex == playerIndex &&
+            now >= body.birth && now - body.birth < 30.0 &&
+            Length(origin - body.deathOrigin) < 96.0f)
+        {
+            body.legacySeen = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool OC2_RagdollRegister(tempent_s *corpse, int playerIndex)
+{
+    OC2_RagdollInit();
+    if (!corpse || !corpse->entity.model || !s_ragdoll || s_ragdoll->value <= 0 ||
+        !IEngineStudio.Mod_Extradata || !IEngineStudio.IsHardware ||
+        !IEngineStudio.IsHardware()) return false;
+    const studiohdr_t *header = static_cast<const studiohdr_t *>(
+        IEngineStudio.Mod_Extradata(corpse->entity.model));
+    if (!SupportedSkeleton(header)) return false;
+    const double now = gEngfuncs.GetClientTime();
+    int slot = -1;
+    for (int i = 0; i < 64; ++i)
+        if (!s_bodies[i].serial || s_bodies[i].expires < now) { slot = i; break; }
+    if (slot < 0)
+    {
+        slot = 0;
+        for (int i = 1; i < 64; ++i)
+            if (s_bodies[i].birth < s_bodies[slot].birth) slot = i;
+    }
+    if (s_bodies[slot].serial && s_bodies[slot].expires >= now &&
+        s_bodies[slot].corpse &&
+        s_bodies[slot].corpse->entity.curstate.iuser4 == s_bodies[slot].serial)
+    {
+        OC2_CorpseForget(s_bodies[slot].corpse);
+        s_bodies[slot].corpse->flags &= ~FTENT_FADEOUT;
+        s_bodies[slot].corpse->die = static_cast<float>(now) - 1.0f;
+    }
+    Body &body = s_bodies[slot];
+    body = Body();
+    if (s_nextSerial >= INT_MAX - 1) s_nextSerial = 0;
+    body.serial = ++s_nextSerial;
+    body.playerIndex = playerIndex;
+    body.early = s_pendingEarlyVictim == playerIndex;
+    body.birth = body.lastTime = now;
+    body.expires = corpse->die;
+    body.corpse = corpse;
+    body.model = corpse->entity.model;
+    body.deathOrigin = Vector(corpse->entity.origin);
+    if (body.early && playerIndex > 0 && playerIndex <= 32)
+    {
+        const LivePose &pose = s_livePose[playerIndex];
+        if (pose.valid && pose.model &&
+            !strcmp(pose.model->name, body.model->name) &&
+            pose.boneCount == header->numbones &&
+            now >= pose.time - 0.05 && now - pose.time < 0.5)
+        {
+            memcpy(body.baseMatrix, pose.matrix,
+                sizeof(body.baseMatrix[0]) * pose.boneCount);
+            const Vector delta = body.deathOrigin - pose.origin;
+            for (int bone = 0; bone < pose.boneCount; ++bone)
+            {
+                body.baseMatrix[bone][0][3] += delta.x;
+                body.baseMatrix[bone][1][3] += delta.y;
+                body.baseMatrix[bone][2][3] += delta.z;
+            }
+            body.hasLivePose = true;
+        }
+    }
+    if (playerIndex > 0 && playerIndex <= gEngfuncs.GetMaxClients())
+    {
+        cl_entity_t *player = gEngfuncs.GetEntityByIndex(playerIndex);
+        if (player) body.launch = Vector(player->curstate.velocity);
+    }
+    if (body.early && s_pendingKiller > 0 &&
+        s_pendingKiller <= gEngfuncs.GetMaxClients() &&
+        s_pendingKiller != playerIndex)
+    {
+        cl_entity_t *killer = gEngfuncs.GetEntityByIndex(s_pendingKiller);
+        if (killer)
+        {
+            Vector away = body.deathOrigin - Vector(killer->origin);
+            away.z = 0.0f;
+            const float distance = Length(away);
+            if (distance > 1.0f)
+                body.launch = body.launch + away * (110.0f / distance);
+        }
+    }
+    body.launch.x = Clamp(body.launch.x, -220.0f, 220.0f);
+    body.launch.y = Clamp(body.launch.y, -220.0f, 220.0f);
+    body.launch.z = Clamp(body.launch.z, -140.0f, 140.0f);
+    corpse->entity.curstate.iuser4 = body.serial;
+    return true;
+}
+
+static void Advance(Body &body, double now)
+{
+    // Temp-entity time is float while studio render time is double. Ignore
+    // their sub-frame rounding difference; only a real seek resets physics.
+    if (now < body.lastTime - 0.01)
+    {
+        body.sleeping = false;
+        body.quietFrames = 0;
+        body.accumulator = 0;
+        body.lastTime = now;
+    }
+    if (now <= body.lastTime) return;
+    if (!body.sleeping && now > body.lastTime)
+    {
+        const double gap = now - body.lastTime;
+        if (gap < 0.25)
+            body.accumulator += Clamp(static_cast<float>(gap), 0.0f, 0.05f);
+        const float stepTime = 1.0f / 90.0f;
+        for (int step = 0; step < 5 && body.accumulator >= stepTime &&
+            !body.sleeping; ++step)
+        {
+            Simulate(body, stepTime);
+            body.accumulator -= stepTime;
+        }
+    }
+    body.lastTime = now;
+}
+
+void OC2_RagdollTick(double clientTime)
+{
+    double now = clientTime;
+    if (IEngineStudio.GetTimes) IEngineStudio.GetTimes(NULL, &now, NULL);
+    for (int i = 0; i < 64; ++i)
+    {
+        Body &body = s_bodies[i];
+        if (!body.serial || !body.ready || body.expires < now ||
+            !body.corpse || body.corpse->entity.curstate.iuser4 != body.serial)
+            continue;
+        for (int step = 0; step < 10 && body.catchupSteps > 0 &&
+            !body.sleeping; ++step, --body.catchupSteps)
+            Simulate(body, 1.0f / 90.0f);
+        Advance(body, now);
+    }
+}
+
+void OC2_RagdollApply(CStudioModelRenderer &renderer)
+{
+    cl_entity_t *entity = renderer.m_pCurrentEntity;
+    if (!entity || !entity->curstate.iuser4) return;
+    Body *body = NULL;
+    for (int i = 0; i < 64; ++i)
+        if (s_bodies[i].serial == entity->curstate.iuser4) { body = &s_bodies[i]; break; }
+    if (!body || body->model != entity->model) return;
+    if (!body->ready)
+    {
+        if (!Initialise(*body, renderer)) return;
+        const double age = renderer.m_clTime - body->birth;
+        body->catchupSteps = age > 0.0 ? static_cast<int>(Clamp(
+            static_cast<float>(age * 90.0), 0.0f, 90.0f)) : 0;
+        body->lastTime = renderer.m_clTime;
+    }
+    if (body->header != renderer.m_pStudioHeader) return;
+    ApplyPose(*body, renderer);
+}
+
+void OC2_RagdollClear()
+{
+    for (int i = 0; i < 64; ++i) s_bodies[i] = Body();
+    for (int i = 0; i < 33; ++i) s_livePose[i] = LivePose();
+    s_pendingEarlyVictim = s_pendingKiller = 0;
+}

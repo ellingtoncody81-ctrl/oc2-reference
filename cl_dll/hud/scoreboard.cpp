@@ -31,6 +31,7 @@
 #include "eventscripts.h"
 #include "match_ui.h"
 #include "scoreboard_layout.h"
+#include "unicode_labels.h"
 #include <algorithm>
 #include <vector>
 #include <string>
@@ -60,6 +61,9 @@ struct ModernScoreRow
 scoreboard_layout::Layout s_modernScoreLayout;
 std::vector<ModernScoreRow> s_modernScoreRows;
 int s_modernSpectators=0;
+using hud_unicode::UnicodeLabel;
+using hud_unicode::FixedLabelWidth;
+using hud_unicode::FixedLabel;
 
 void ModernScoreDump()
 {
@@ -80,7 +84,8 @@ void ModernScoreFill(float x,float y,float width,float height,match_ui::Color co
 
 void ModernScoreValue(const char *value,float right,float y,float width,float height,match_ui::Color color)
 {
-	match_ui::Text(value,right,y,height,color,true,width);
+	if(UnicodeLabel(value))FixedLabel(value,right,y,height,color,true,width);
+	else match_ui::Text(value,right,y,height,color,true,width);
 }
 
 int DrawModernScoreboard()
@@ -110,8 +115,9 @@ int DrawModernScoreboard()
 	s_modernScoreLayout=layout;s_modernScoreRows.clear();s_modernSpectators=int(spectators.size());
 	const float s=layout.scale;
 	ModernScoreFill(layout.x-2*s,layout.y-2*s,layout.width+4*s,layout.height+4*s,{8,10,13,225});
-	const char *server=gHUD.m_szServerName[0]?gHUD.m_szServerName:"COUNTER-STRIKE";
-	match_ui::Text(server,layout.x+20*s,layout.y+12*s,28*s,{240,243,246},false,layout.width*.68f);
+	const char *server=gHUD.m_szServerName[0]?gHUD.m_szServerName:"反恐精英";
+	if(gHUD.m_szServerName[0])match_ui::Text(server,layout.x+20*s,layout.y+12*s,28*s,{240,243,246},false,layout.width*.68f);
+	else FixedLabel(server,layout.x+20*s,layout.y+12*s,28*s,{240,243,246},false,layout.width*.68f);
 	std::string map=gEngfuncs.pfnGetLevelName()?gEngfuncs.pfnGetLevelName():"";
 	const auto separator=map.find_last_of("/\\");if(separator!=std::string::npos)map.erase(0,separator+1);
 	if(map.size()>4 && map.compare(map.size()-4,4,".bsp")==0)map.resize(map.size()-4);
@@ -127,10 +133,10 @@ int DrawModernScoreboard()
 		ModernScoreFill(x,y,width,layout.teamHeading,{theme.r/3,theme.g/3,theme.b/3,210});
 		ModernScoreFill(x,y,4*s,layout.TeamHeight(index),theme);
 		match_ui::Silhouette(index==0?"gfx/vgui/icon_ct.tga":"gfx/vgui/icon_t.tga",x+16*s,y+10*s,36*s,36*s,theme);
-		match_ui::Text(index==0?"COUNTER-TERRORISTS":"TERRORISTS",x+64*s,y+7*s,(layout.sideBySide?22:26)*s,theme,false,width-205*s);
+		FixedLabel(index==0?"反恐精英":"恐怖分子",x+64*s,y+7*s,(layout.sideBySide?22:26)*s,theme,false,width-205*s);
 		int alive=0;for(int slot:teams[index])if(!g_PlayerExtraInfo[slot].dead)++alive;
-		char text[64];snprintf(text,sizeof(text),"%d ALIVE / %d PLAYERS",alive,int(teams[index].size()));
-		match_ui::Text(text,x+64*s,y+34*s,16*s,{182,190,198},false,width-205*s);
+		char text[64];snprintf(text,sizeof(text),"存活 %d / %d 名玩家",alive,int(teams[index].size()));
+		FixedLabel(text,x+64*s,y+34*s,16*s,{182,190,198},false,width-205*s);
 		if(gHUD.m_Scoreboard.RoundScoreKnown(team))snprintf(text,sizeof(text),"%d",gHUD.m_Scoreboard.RoundScore(team));else snprintf(text,sizeof(text),"--");
 		ModernScoreValue(text,x+width-20*s,y+8*s,110*s,38*s,theme);
 		const float columnY=y+layout.teamHeading;
@@ -145,12 +151,12 @@ int DrawModernScoreboard()
 		const float nameRight=statusRight-statusWidth-12*s;
 		const float nameX=x+20*s+layout.avatar+12*s;
 		const float labelHeight=16*s,labelY=columnY+5*s;
-		match_ui::Text("PLAYER",nameX,labelY,labelHeight,{175,184,194},false,max(1.0f,nameRight-nameX));
-		ModernScoreValue("PING",pingRight,labelY,pingWidth,labelHeight,{175,184,194});
-		ModernScoreValue("D",deathsRight,labelY,deathsWidth,labelHeight,{175,184,194});
-		ModernScoreValue("SCORE",killsRight,labelY,killsWidth,labelHeight,{175,184,194});
-		if(showHealth)ModernScoreValue("HP",hpRight,labelY,hpWidth,labelHeight,{175,184,194});
-		if(showMoney)ModernScoreValue("MONEY",moneyRight,labelY,moneyWidth,labelHeight,{175,184,194});
+		FixedLabel("玩家",nameX,labelY,labelHeight,{175,184,194},false,max(1.0f,nameRight-nameX));
+		ModernScoreValue("延迟",pingRight,labelY,pingWidth,labelHeight,{175,184,194});
+		ModernScoreValue("阵亡",deathsRight,labelY,deathsWidth,labelHeight,{175,184,194});
+		ModernScoreValue("得分",killsRight,labelY,killsWidth,labelHeight,{175,184,194});
+		if(showHealth)ModernScoreValue("生命",hpRight,labelY,hpWidth,labelHeight,{175,184,194});
+		if(showMoney)ModernScoreValue("金钱",moneyRight,labelY,moneyWidth,labelHeight,{175,184,194});
 		for(int ordinal=0;ordinal<int(teams[index].size());++ordinal)
 		{
 			const int slot=teams[index][ordinal];const auto &info=g_PlayerInfoList[slot];const auto &extra=g_PlayerExtraInfo[slot];
@@ -161,14 +167,14 @@ int DrawModernScoreboard()
 			if(gHUD.m_Avatars.Enabled())gHUD.m_Avatars.DrawPlayerAvatar(slot,int(x+20*s),int(rowY+(layout.row-layout.avatar)*.5f),int(layout.avatar));
 			const match_ui::Color foreground=extra.dead?match_ui::Color(145,151,158):match_ui::Color(235,238,241);
 			match_ui::Text(info.name,nameX,textY,layout.font,foreground,false,max(1.0f,nameRight-nameX));
-			const char *status=extra.dead?"DEAD":extra.has_c4?"C4":extra.vip?"VIP":extra.has_defuse_kit?"KIT":"";
+			const char *status=extra.dead?"阵亡":extra.has_c4?"炸弹":extra.vip?"要员":extra.has_defuse_kit?"拆弹钳":"";
 			ModernScoreValue(status,statusRight,textY,statusWidth,layout.font,extra.dead?foreground:theme);
 			if(showMoney){if(extra.sb_account>=0)snprintf(text,sizeof(text),"$%d",extra.sb_account);else snprintf(text,sizeof(text),"--");ModernScoreValue(text,moneyRight,textY,moneyWidth,layout.font,foreground);}
 			if(showHealth){if(extra.sb_health>=0&&!extra.dead)snprintf(text,sizeof(text),"%d",extra.sb_health);else snprintf(text,sizeof(text),"--");ModernScoreValue(text,hpRight,textY,hpWidth,layout.font,foreground);}
 			snprintf(text,sizeof(text),"%d",extra.frags);ModernScoreValue(text,killsRight,textY,killsWidth,layout.font,foreground);
 			snprintf(text,sizeof(text),"%d",extra.deaths);ModernScoreValue(text,deathsRight,textY,deathsWidth,layout.font,foreground);
 			const char *bot=gEngfuncs.PlayerInfo_ValueForKey(slot,"*bot");
-			if(bot && atoi(bot)>0)snprintf(text,sizeof(text),"BOT");else if(info.ping>=0)snprintf(text,sizeof(text),"%d",info.ping);else snprintf(text,sizeof(text),"--");
+			if(bot && atoi(bot)>0)snprintf(text,sizeof(text),"机器人");else if(info.ping>=0)snprintf(text,sizeof(text),"%d",info.ping);else snprintf(text,sizeof(text),"--");
 			ModernScoreValue(text,pingRight,textY,pingWidth,layout.font,foreground);
 			ModernScoreRow row;row.slot=slot;row.team=team;row.frags=extra.frags;row.deaths=extra.deaths;row.ping=info.ping;row.dead=extra.dead;row.local=info.thisplayer;
 			row.bot=bot&&atoi(bot)>0;row.health=showHealth&&!extra.dead?extra.sb_health:-1;row.money=showMoney?extra.sb_account:-1;row.x=x;row.y=rowY;row.width=width;row.height=layout.row;s_modernScoreRows.push_back(row);
@@ -176,8 +182,8 @@ int DrawModernScoreboard()
 	}
 	const float footerY=layout.y+layout.height-layout.footer;
 	ModernScoreFill(layout.x,footerY,layout.width,layout.footer,{8,11,15,200});
-	char label[64];snprintf(label,sizeof(label),"SPECTATORS / JOINING  %d",int(spectators.size()));
-	match_ui::Text(label,layout.x+20*s,footerY+12*s,18*s,{160,170,182},false,270*s);
+	char label[64];snprintf(label,sizeof(label),"观察者 / 正在加入  %d",int(spectators.size()));
+	FixedLabel(label,layout.x+20*s,footerY+12*s,18*s,{160,170,182},false,270*s);
 	std::string names;for(int slot:spectators){if(!names.empty())names+="   ";names+=g_PlayerInfoList[slot].name;}
 	match_ui::Text(names.c_str(),layout.x+300*s,footerY+12*s,18*s,{195,201,207},false,max(1.0f,layout.width-320*s));
 	return 1;
@@ -185,6 +191,7 @@ int DrawModernScoreboard()
 
 int ScoreTextWidth(const char *text)
 {
+	if(UnicodeLabel(text)&&g_pMenu)return int(FixedLabelWidth(text,s_scoreFontHeight)+0.5f);
 	return s_scoreStyled ? int(match_ui::TextWidth(text, s_scoreFontHeight) + 0.5f)
 		: DrawUtils::HudStringLen(text ? text : "");
 }
@@ -203,6 +210,11 @@ void ScoreText(int x, int y, int boundary, const char *text, int r, int g, int b
 
 void ScoreTextReverse(int x, int y, int boundary, const char *text, int r, int g, int b)
 {
+	if(UnicodeLabel(text)&&g_pMenu)
+	{
+		if(boundary<x)FixedLabel(text,float(x),y+max(0.0f,(s_scoreRowGap-s_scoreFontHeight)*0.5f),s_scoreFontHeight,{r,g,b},true,float(x-boundary));
+		return;
+	}
 	if (!s_scoreStyled)
 	{
 		DrawUtils::DrawHudStringReverse(x, y, boundary, text, r, g, b);
@@ -302,6 +314,7 @@ int CHudScoreboard :: Init( void )
 
 int CHudScoreboard :: VidInit( void )
 {
+	hud_unicode::ClearFonts();
 	xstart = ScreenWidth * 0.125f;
 	xend = ScreenWidth - xstart;
 	ystart = 100;
@@ -416,23 +429,23 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
 	float list_slot = 0;
 
 	// calculate columns sizes
-	g_Columns[COL_PING] = Column( xend - 15, Localize( "#PlayerPing" ) );
+	g_Columns[COL_PING] = Column( xend - 15, "延迟" );
 	g_Columns[COL_PING].end = min( g_Columns[COL_PING].end, g_Columns[COL_PING].start - ScoreTextWidth( "9999" ) );
 
-	g_Columns[COL_DEATHS] = Column( g_Columns[COL_PING].end - 10, Localize( "#PlayerDeath" ) );
+	g_Columns[COL_DEATHS] = Column( g_Columns[COL_PING].end - 10, "阵亡" );
 	g_Columns[COL_DEATHS].end = min( g_Columns[COL_DEATHS].end, g_Columns[COL_DEATHS].start - ScoreTextWidth( "9999" ) );
 
-	g_Columns[COL_KILLS] = Column( g_Columns[COL_DEATHS].end - 10, Localize( "#PlayerScore" ) );
+	g_Columns[COL_KILLS] = Column( g_Columns[COL_DEATHS].end - 10, "得分" );
 	g_Columns[COL_KILLS].end = min( g_Columns[COL_KILLS].end, g_Columns[COL_KILLS].start - ScoreTextWidth( "9999" ) );
 
-	g_Columns[COL_MONEY] = Column( g_Columns[COL_KILLS].end - 10, Localize( "#Cstrike_ACCOUNT" ) );
+	g_Columns[COL_MONEY] = Column( g_Columns[COL_KILLS].end - 10, "金钱" );
 	g_Columns[COL_MONEY].end = min( g_Columns[COL_MONEY].end, g_Columns[COL_MONEY].start - ScoreTextWidth( "$999999" ) );
 
-	g_Columns[COL_HP] = Column( g_Columns[COL_MONEY].end - 10, Localize( "#Cstrike_HEALTH" ) );
+	g_Columns[COL_HP] = Column( g_Columns[COL_MONEY].end - 10, "生命" );
 	g_Columns[COL_HP].end = min( g_Columns[COL_HP].end, g_Columns[COL_HP].start - ScoreTextWidth( "999999" ) );
 
 	g_Columns[COL_ATTRIB] = Column( g_Columns[COL_HP].end - 10 );
-	g_Columns[COL_ATTRIB].end = g_Columns[COL_ATTRIB].start - ScoreTextWidth( "#Cstrike_DEFUSE_KIT" );
+	g_Columns[COL_ATTRIB].end = g_Columns[COL_ATTRIB].start - ScoreTextWidth( "拆弹钳" );
 
 	g_Columns[COL_NAME] = Column( xstart + 15, nullptr, false );
 	g_Columns[COL_NAME].end = g_Columns[COL_ATTRIB].end - 10;
@@ -448,9 +461,10 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
 		// snprintf( ServerName, 80, "%s", (char*)(gHUD.m_Teamplay ? "TEAMS" : "PLAYERS"), gHUD.m_szServerName );
 		strncpy( ServerName, gHUD.m_szServerName, 80 );
 	else
-		strncpy( ServerName, gHUD.m_Teamplay ? "TEAMS" : "PLAYERS", 80 );
+		strncpy( ServerName, gHUD.m_Teamplay ? "队伍" : "玩家", 80 );
 
-	ScoreText( g_Columns[COL_NAME].start, ypos, g_Columns[COL_NAME].end, ServerName, 255, 140, 0 );
+	if(gHUD.m_szServerName[0])ScoreText( g_Columns[COL_NAME].start, ypos, g_Columns[COL_NAME].end, ServerName, 255, 140, 0 );
+	else FixedLabel(ServerName,float(g_Columns[COL_NAME].start),float(ypos),s_scoreFontHeight,{255,140,0},false,float(g_Columns[COL_NAME].end-g_Columns[COL_NAME].start));
 	ScoreTextReverse( g_Columns[COL_HP].start, ypos, g_Columns[COL_HP].end, g_Columns[COL_HP].name, 255, 140, 0 );
 	ScoreTextReverse( g_Columns[COL_MONEY].start, ypos, g_Columns[COL_MONEY].end, g_Columns[COL_MONEY].name, 255, 140, 0 );
 	ScoreTextReverse( g_Columns[COL_KILLS].start, ypos, g_Columns[COL_KILLS].end, g_Columns[COL_KILLS].name, 255, 140, 0 );
@@ -578,47 +592,30 @@ int CHudScoreboard :: DrawTeams( float list_slot )
 			break;
 
 		int r, g, b;
-		char teamName[64];
-
-		char numPlayers[16];
-		sprintf( numPlayers, "%d", team_info->players );
-
-		char fmtString[32];
-		const char *fmtStringName = team_info->players == 1 ? "#Cstrike_ScoreBoard_Player" : "#Cstrike_ScoreBoard_Players";
-		strncpy( fmtString, Localize( fmtStringName ), sizeof( fmtString ) );
-		fmtString[sizeof( fmtString ) - 1] = 0;
-
-		if ( !strcmp( fmtString, fmtStringName ) )
-		{
-			const char *fallback = team_info->players == 1 ? "%s1    -   %s2 player" : "%s1    -   %s2 players";
-			strncpy( fmtString, fallback, sizeof( fmtString ) );
-			fmtString[sizeof( fmtString ) - 1] = 0;
-		}
+		char teamName[64]="";
 
 		GetTeamColor( r, g, b, team_info->teamnumber );
 		switch ( team_info->teamnumber )
 		{
 		case TEAM_TERRORIST:
 		{
-			const char *args[2] = { Localize( "#Cstrike_ScoreBoard_Ter" ), numPlayers };
-			Localize_Format( teamName, sizeof( teamName ), fmtString, args, 2 );
+			snprintf(teamName,sizeof(teamName),"恐怖分子 · %d 人",team_info->players);
 			ScoreNumber( g_Columns[COL_KILLS].start, ypos, g_Columns[COL_KILLS].end, team_info->frags, r, g, b );
 			break;
 		}
 		case TEAM_CT:
 		{
-			const char *args[2] = { Localize( "#Cstrike_ScoreBoard_CT" ), numPlayers };
-			Localize_Format( teamName, sizeof( teamName ), fmtString, args, 2 );
+			snprintf(teamName,sizeof(teamName),"反恐精英 · %d 人",team_info->players);
 			ScoreNumber( g_Columns[COL_KILLS].start, ypos, g_Columns[COL_KILLS].end, team_info->frags, r, g, b );
 			break;
 		}
 		case TEAM_SPECTATOR:
 		case TEAM_UNASSIGNED:
-			strncpy( teamName, Localize( "#Spectators" ), sizeof( teamName ) );
+			snprintf(teamName,sizeof(teamName),"观察者 · %d 人",team_info->players);
 			break;
 		}
 
-		ScoreText( g_Columns[COL_NAME].start, ypos, g_Columns[COL_NAME].end, teamName, r, g, b );
+		FixedLabel(teamName,float(g_Columns[COL_NAME].start),float(ypos),s_scoreFontHeight,{r,g,b},false,float(g_Columns[COL_NAME].end-g_Columns[COL_NAME].start));
 		ScoreNumber( g_Columns[COL_PING].start, ypos, g_Columns[COL_PING].end, team_info->sumping / team_info->players, r, g, b );
 
 		team_info->already_drawn = TRUE;  // set the already_drawn to be TRUE, so this team won't get drawn again
@@ -704,13 +701,13 @@ int CHudScoreboard :: DrawPlayers( float list_slot, int nameoffset, const char *
 			{
 				// draw bomb( if player have the bomb )
 				if( g_PlayerExtraInfo[best_player].dead )
-					ScoreTextReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, Localize( "#Cstrike_DEAD" ), r, g, b );
+					ScoreTextReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, "阵亡", r, g, b );
 				else if( g_PlayerExtraInfo[best_player].has_c4 )
-					ScoreTextReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, Localize( "#Cstrike_BOMB" ), r, g, b );
+					ScoreTextReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, "炸弹", r, g, b );
 				else if( g_PlayerExtraInfo[best_player].vip )
-					ScoreTextReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, Localize( "#Cstrike_VIP" ),  r, g, b );
+					ScoreTextReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, "要员",  r, g, b );
 				else if (g_PlayerExtraInfo[best_player].has_defuse_kit )
-					ScoreTextReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, Localize( "#Cstrike_DEFUSE_KIT" ),  r, g, b );
+					ScoreTextReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, "拆弹钳",  r, g, b );
 			}
 		}
 		else
@@ -753,7 +750,7 @@ int CHudScoreboard :: DrawPlayers( float list_slot, int nameoffset, const char *
 			&& ( value = gEngfuncs.PlayerInfo_ValueForKey( best_player, "*bot" ) )
 			&& atoi( value ) > 0 )
 		{
-			ScoreTextReverse( g_Columns[COL_PING].start, ypos, g_Columns[COL_PING].end, "BOT", r, g, b );
+			ScoreTextReverse( g_Columns[COL_PING].start, ypos, g_Columns[COL_PING].end, "机器人", r, g, b );
 		}
 		else
 		{

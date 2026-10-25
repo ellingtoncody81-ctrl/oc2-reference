@@ -26,6 +26,8 @@
 #include "weapon_hud_layout.h"
 #include "skin_inventory_client.h"
 #include "../common/oc2_knife_icons.h"
+#include "../common/oc2_display_names.h"
+#include "hud/unicode_labels.h"
 #include "view_ads.h"
 #include "cvardef.h"
 #include "cl_util.h"
@@ -43,10 +45,6 @@
 #include "triangleapi.h"
 #include "render_api.h"
 #include "weapontype.h"
-
-#ifndef M_PI
-#define M_PI		3.14159265358979323846	// matches value in gcc v2 math.h
-#endif
 
 WEAPON *gpActiveSel;	// NULL means off, 1 means just the menu bar, otherwise
 						// this points to the active weapon menu item
@@ -814,32 +812,32 @@ int CHudAmmo::MsgFunc_Brass( const char *pszName, int iSize, void *pbuf )
 	velocity.y = reader.ReadCoord();
 	velocity.z = reader.ReadCoord();
 
-	float Rotation = M_PI * reader.ReadAngle() / 180.0f;
+	float Rotation = reader.ReadAngle();
 	int ModelIndex = reader.ReadShort();
 	int BounceSoundType = reader.ReadByte();
 	int Life = reader.ReadByte();
 	int Client = reader.ReadByte();
 
-	float sin, cos, x, y;
-	sin = fabs(Rotation);
-	cos = fabs(Rotation);
-
-	if( gHUD.cl_righthand->value != 0.0f && EV_IsLocal( Client ) )
+	if (EV_IsLocal(Client))
 	{
-		velocity.x += sin * -120.0;
-		velocity.y += cos * 120.0;
-		x = 9.0 * sin;
-		y = -9.0 * cos;
+		// The server cannot know the client viewmodel's ADS pose. Attach the
+		// delayed bolt/pump casing to its actual port when one exists.
+		if (!EV_GetViewModelAttachmentPoint(Client, 1, origin) &&
+			gHUD.cl_righthand && gHUD.cl_righthand->value == 0.0f)
+		{
+			Vector forward, right, up;
+			AngleVectors(Vector(0.0f, Rotation, 0.0f), forward, right, up);
+			origin = origin - right * 16.0f;
+		}
+		if (gHUD.cl_righthand && gHUD.cl_righthand->value == 0.0f)
+		{
+			Vector forward, right, up;
+			AngleVectors(Vector(0.0f, Rotation, 0.0f), forward, right, up);
+			velocity = velocity - right * 120.0f;
+		}
 	}
-	else
-	{
-		x = -9.0 * sin;
-		y = 9.0 * cos;
-	}
-
-	origin.x += x;
-	origin.y += y;
-	EV_EjectBrass( origin, velocity, Rotation, ModelIndex, BounceSoundType, Life );
+	// Brass messages encode tent life in tenths of a second (25 means 2.5s).
+	EV_EjectBrass( origin, velocity, Rotation, ModelIndex, BounceSoundType, Life * 0.1f );
 	return 1;
 }
 
@@ -2064,6 +2062,17 @@ bool PanelHasAmmo(const WEAPON *weapon)
 		|| PanelAmmo(weapon->iAmmoType) > 0 || PanelAmmo(weapon->iAmmo2Type) > 0;
 }
 
+float PanelNameWidth(const char *name,float height)
+{
+	return hud_unicode::UnicodeLabel(name)?hud_unicode::FixedLabelWidth(name,height):match_ui::TextWidth(name,height);
+}
+
+void PanelNameText(const char *name,float right,float y,float height,match_ui::Color color,float maxWidth)
+{
+	if(hud_unicode::UnicodeLabel(name))hud_unicode::FixedLabel(name,right,y,height,color,true,maxWidth);
+	else match_ui::Text(name,right,y,height,color,true,maxWidth);
+}
+
 void PanelWeaponName(const WEAPON *weapon, char *text, size_t size)
 {
 	// The knife identity comes from the actual inventory instance. Converted
@@ -2073,12 +2082,12 @@ void PanelWeaponName(const WEAPON *weapon, char *text, size_t size)
 	{
 	case WEAPON_P228: name = "P250"; break;
 	case WEAPON_SCOUT: name = "SSG 08"; break;
-	case WEAPON_HEGRENADE: name = "HE Grenade"; break;
+	case WEAPON_HEGRENADE: name = u8"高爆手雷"; break;
 	case WEAPON_XM1014: name = "XM1014"; break;
 	case WEAPON_C4: name = "C4"; break;
 	case WEAPON_MAC10: name = "MAC-10"; break;
 	case WEAPON_AUG: name = "AUG"; break;
-	case WEAPON_SMOKEGRENADE: name = "Smoke Grenade"; break;
+	case WEAPON_SMOKEGRENADE: name = u8"烟雾弹"; break;
 	case WEAPON_ELITE: name = "Dual Berettas"; break;
 	case WEAPON_FIVESEVEN: name = "Five-SeveN"; break;
 	case WEAPON_UMP45: name = "UMP-45"; break;
@@ -2094,19 +2103,18 @@ void PanelWeaponName(const WEAPON *weapon, char *text, size_t size)
 	case WEAPON_M4A1: name = "M4A1-S"; break;
 	case WEAPON_TMP: name = "MP9"; break;
 	case WEAPON_G3SG1: name = "G3SG1"; break;
-	case WEAPON_FLASHBANG: name = "Flashbang"; break;
+	case WEAPON_FLASHBANG: name = u8"闪光弹"; break;
 	case WEAPON_DEAGLE: name = "Desert Eagle"; break;
 	case WEAPON_SG552: name = "SG553"; break;
 	case WEAPON_AK47: name = "AK-47"; break;
 	case WEAPON_KNIFE:
 	{
-		const auto *knife = oc2_knife_icons::FindDefinition(OC2_InventoryKnifeDefinition());
-		name = knife ? knife->name : "Knife";
+		name = oc2_display_names::Knife(OC2_InventoryKnifeDefinition());
 		break;
 	}
 	case WEAPON_P90: name = "P90"; break;
 	case WEAPON_TASER: name = "Zeus x27"; break;
-	case WEAPON_MOLOTOV: name = buy_menu_state::FireIsIncendiary() ? "Incendiary Grenade" : "Molotov"; break;
+	case WEAPON_MOLOTOV: name = buy_menu_state::FireIsIncendiary() ? u8"燃烧弹" : u8"燃烧瓶"; break;
 	default:
 		name = !strncmp(weapon->szName, "weapon_", 7) ? weapon->szName+7 : weapon->szName;
 		break;
@@ -2244,7 +2252,7 @@ int DrawModernWeaponList(const WEAPON *active, const WEAPON *selection)
 			if (!texture && !PanelSprite(weapon,current,x,y,cellWidth*rowScale,iconHeight*rowScale,iconColor))
 			{
 				char name[MAX_WEAPON_NAME]; PanelWeaponName(weapon,name,sizeof(name));
-				match_ui::Text(name,x+cellWidth*rowScale,y+29*rowScale,22*rowScale,gold,true,cellWidth*rowScale);
+				PanelNameText(name,x+cellWidth*rowScale,y+29*rowScale,22*rowScale,gold,cellWidth*rowScale);
 			}
 			if (preview)
 				FillRGBABlend(int(x-4*rowScale),int(y+10*rowScale),max(1,int(2*rowScale)),int(59*rowScale),255,255,255,210);
@@ -2261,9 +2269,9 @@ int DrawModernWeaponList(const WEAPON *active, const WEAPON *selection)
 		if (rowActive)
 		{
 			char name[MAX_WEAPON_NAME]; PanelWeaponName(rowActive,name,sizeof(name));
-			const float nameWidth=min(match_ui::TextWidth(name,nameHeight*scale),min(384*scale,ScreenWidth*0.30f));
+			const float nameWidth=min(PanelNameWidth(name,nameHeight*scale),min(384*scale,ScreenWidth*0.30f));
 			rowLayout.name={right-nameWidth,y+(grenades ? grenadeNameOffset : gunNameOffset)*scale,nameWidth,nameHeight*scale};
-			match_ui::Text(name,right,y+(grenades ? grenadeNameOffset : gunNameOffset)*scale,nameHeight*scale,{255,255,255},true,min(384*scale,ScreenWidth*0.30f));
+			PanelNameText(name,right,y+(grenades ? grenadeNameOffset : gunNameOffset)*scale,nameHeight*scale,{255,255,255},min(384*scale,ScreenWidth*0.30f));
 		}
 		y += (grenades ? grenadeRowHeight : gunRowHeight)*scale;
 	}

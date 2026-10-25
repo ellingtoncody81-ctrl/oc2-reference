@@ -103,7 +103,7 @@ void EV_FireElite( event_args_s *args, bool isRight )
 		forward, right,	up,
 		1, vecSrc, vecAiming,
 		vSpread, oc2_weapon::Get(oc2_weapon::DualBerettas).range, BULLET_PLAYER_9MM,
-		2 );
+		2, isRight ? 1 : 0 );
 }
 
 void EV_FireEliteLeft(event_args_s *args)

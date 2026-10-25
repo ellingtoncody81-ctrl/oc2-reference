@@ -35,10 +35,13 @@
 #include "r_studioint.h"
 
 #include "StudioModelRenderer.h"
+#include "oc2_ragdoll.h"
+#include "oc2_legs.h"
 #include "GameStudioModelRenderer.h"
 
 #include "event_api.h"
 #include "pm_defs.h"
+#include "eventscripts.h"
 
 #include "com_weapons.h"
 #include "viewmodel_transition.h"
@@ -1068,6 +1071,10 @@ void CStudioModelRenderer::StudioSetupBones(void)
 		}
 		ViewModelHandPosition(m_pStudioHeader,pos,q,g_viewFlow.blendedHand);
 	}
+	else if (OC2_LegsBlend(*this, pos, q))
+	{
+		// The predicted body owns a separate queue with advancing outgoing clips.
+	}
 	else if (m_fDoInterp && m_pCurrentEntity->latched.sequencetime && (m_pCurrentEntity->latched.sequencetime + 0.2 > m_clTime) && (m_pCurrentEntity->latched.prevsequence >= 0) && (m_pCurrentEntity->latched.prevsequence < m_pStudioHeader->numseq))
 	{
 		static float pos1b[MAXSTUDIOBONES][3];
@@ -1450,12 +1457,14 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 		StudioMergeBones(m_pRenderModel);
 	else
 		StudioSetupBones();
+	OC2_RagdollApply(*this);
 
 	StudioSaveBones();
 
 	if (flags & STUDIO_EVENTS)
 	{
 		StudioCalcAttachments();
+		if (bIsViewModel) EV_FlushViewModelTracers(m_pCurrentEntity);
 		const float savedSequenceTime=m_pCurrentEntity->latched.sequencetime;
 		if (bIsViewModel)
 		{

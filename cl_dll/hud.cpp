@@ -21,6 +21,8 @@
 #include <new>
 
 #include "hud.h"
+#include "oc2_legs.h"
+#include "oc2_ragdoll.h"
 #include "accessory_client.h"
 #include "skin_inventory_client.h"
 #include "match_ui.h"
@@ -289,6 +291,8 @@ void CHud :: Init( void )
 	SetGameType(); // call it first, so we will know gamedir at very early stage
 	OC2_AccessoriesInit();
 	OC2_InventoryInit();
+	OC2_LegsInit();
+	OC2_RagdollInit();
 
 	HOOK_COMMAND_FUNC( "special", __CmdFunc_InputCommandSpecial, );
 	HOOK_COMMAND_FUNC( "gunsmoke", __CmdFunc_GunSmoke, );

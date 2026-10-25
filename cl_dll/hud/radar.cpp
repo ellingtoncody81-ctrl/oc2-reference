@@ -105,8 +105,15 @@ void CHudRadar::Reset()
 	{
 		g_PlayerExtraInfo[i].radarflashes = 0;
 
-		if( i <= MAX_HOSTAGES ) g_HostageInfo[i].radarflashes = 0;
+		if( i <= MAX_HOSTAGES )
+		{
+			g_HostageInfo[i].radarflashes = 0;
+			g_HostageInfo[i].dead = false;
+		}
 	}
+	g_PlayerExtraInfo[33].dead = true;
+	g_PlayerExtraInfo[33].playerclass = 0;
+	g_PlayerExtraInfo[33].origin = Vector( 0, 0, 0 );
 }
 
 static void Radar_InitBitmap( int w, int h, byte *buf )
@@ -544,6 +551,8 @@ int CHudRadar::MsgFunc_BombPickup(const char *pszName, int iSize, void *pbuf)
 {
 	g_PlayerExtraInfo[33].radarflashes = false;
 	g_PlayerExtraInfo[33].dead = true;
+	g_PlayerExtraInfo[33].playerclass = 0;
+	g_PlayerExtraInfo[33].origin = Vector( 0, 0, 0 );
 
 	return 1;
 }
@@ -561,7 +570,7 @@ int CHudRadar::MsgFunc_HostagePos(const char *pszName, int iSize, void *pbuf)
 		g_HostageInfo[idx].origin.z = reader.ReadCoord();
 		g_HostageInfo[idx].dead = false;
 
-		if( Flag == 1 ) // first message about this hostage, start flashing
+		if( Flag == 1 || !g_HostageInfo[idx].radarflashes ) // initial or first known update
 		{
 			g_HostageInfo[idx].radarflashes = 99999;
 			g_HostageInfo[idx].radarflashtime = gHUD.m_flTime;
@@ -576,7 +585,7 @@ int CHudRadar::MsgFunc_HostageK(const char *pszName, int iSize, void *pbuf)
 {
 	BufferReader reader( pszName, pbuf, iSize );
 	int idx = reader.ReadByte();
-	if ( idx >= 1 && idx <= MAX_HOSTAGES )
+	if ( idx >= 1 && idx <= MAX_HOSTAGES && g_HostageInfo[idx].radarflashes )
 	{
 		g_HostageInfo[idx].dead = true;
 		g_HostageInfo[idx].radarflashtime = gHUD.m_flTime;
