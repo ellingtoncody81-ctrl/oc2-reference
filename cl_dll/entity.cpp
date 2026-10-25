@@ -257,7 +257,7 @@ void DLLEXPORT HUD_CreateEntities( void )
 	// Add in any game specific objects
 
 	GetClientVoiceHud()->CreateEntities();
-	OC2_LegsCreateEntity();
+	OC2_LegsBeginFrame();
 }
 
 /*
