@@ -6,6 +6,7 @@
 #include "studio.h"
 #include "r_studioint.h"
 #include "camera.h"
+#include "const.h"
 #include "oc2_legs.h"
 #include "StudioModelRenderer.h"
 #include "viewmodel_transition.h"
@@ -14,6 +15,7 @@
 #include <string.h>
 
 extern engine_studio_api_t IEngineStudio;
+extern int g_iPlayerFlags;
 
 namespace
 {
@@ -25,6 +27,7 @@ struct LegView
     double time;
     float dt;
     bool ducked;
+    float stance;
     bool grounded;
     bool paused;
     bool valid;
@@ -34,15 +37,20 @@ LegView s_view = {};
 cl_entity_t s_entity = {};
 cvar_t *s_showLegs = NULL;
 double s_lastTime = -1.0;
-double s_animationTime = 0.0;
 float s_phase = 0.0f;
-float s_gaitPhase = 0.0f;
+float s_jumpPhase = 0.0f;
+float s_jumpElapsed = 0.0f;
+float s_jumpWeight = 0.0f;
+float s_standMove = 0.0f;
+float s_duckMove = 0.0f;
+float s_runWeight = 0.0f;
+float s_stanceWeight = 0.0f;
 float s_playbackRate = 0.0f;
-double s_sequenceStart = 0.0;
-int s_previousSequence = -1;
+bool s_jumping = false;
+bool s_wasGrounded = true;
 bool s_hidden = true;
-oc2_viewmodel::Transitioner s_transitions;
 bool s_dumpRegistered = false;
+bool s_submitted = false;
 bool s_lastSubmitted = false;
 char s_modelName[96] = "none";
 
@@ -66,41 +74,74 @@ const char *ModelName(const cl_entity_t *local)
     return NULL;
 }
 
-bool Locomotion(int sequence)
+float Mix(float a, float b, float weight)
 {
-    return sequence >= 3 && sequence <= 5;
+    return a + (b - a) * weight;
 }
 
-int Sequence(const LegView &view, int previous)
+float Approach(float current, float target, float amount)
 {
-    const float speed = sqrtf(view.velocity.x * view.velocity.x + view.velocity.y * view.velocity.y);
-    if (!view.grounded) return 6; // jump
-    // Separate entry/exit thresholds prevent prediction noise from repeatedly
-    // restarting a walk/run or idle transition around one exact speed.
-    const bool moving = speed > (Locomotion(previous) ? 6.0f : 12.0f);
-    if (view.ducked) return moving ? 5 : 2;
-    if (moving && speed > (previous == 4 ? 140.0f : 165.0f)) return 4;
-    if (moving) return 3;
-    return 1; // stand
+    return current + Clamp(target - current, -amount, amount);
 }
 
-float CycleRate(const mstudioseqdesc_t &desc, int sequence, float speed)
+float NativeCycleRate(const mstudioseqdesc_t &desc)
 {
-    if (desc.numframes <= 1) return 0.0f;
-    const float distance = sqrtf(desc.linearmovement[0] * desc.linearmovement[0] +
+    return desc.numframes > 1 ? desc.fps / (desc.numframes - 1) : 0.0f;
+}
+
+float Stride(const mstudioseqdesc_t &desc)
+{
+    return sqrtf(desc.linearmovement[0] * desc.linearmovement[0] +
         desc.linearmovement[1] * desc.linearmovement[1] +
         desc.linearmovement[2] * desc.linearmovement[2]);
-    if (Locomotion(sequence) && distance > 1.0f) return speed / distance;
-    return desc.fps / (desc.numframes - 1);
+}
+
+float NativeSpeed(const mstudioseqdesc_t &desc)
+{
+    return Stride(desc) * NativeCycleRate(desc);
+}
+
+float WrapCycle(float cycle)
+{
+    return cycle - floorf(cycle);
+}
+
+float GaitDirection()
+{
+    const float travelYaw = atan2f(s_view.velocity.y, s_view.velocity.x) * 57.2957795f;
+    float delta = fmodf(travelYaw - s_view.yaw + 180.0f, 360.0f);
+    if (delta < 0.0f) delta += 360.0f;
+    delta -= 180.0f;
+    // GoldSrc reverses its gait beyond 120 degrees instead of turning backwards.
+    return fabsf(delta) > 120.0f ? -1.0f : 1.0f;
+}
+
+void Sample(CStudioModelRenderer &renderer, const mstudioseqdesc_t *descs,
+    int sequence, float cycle, float pos[][3], float q[][4])
+{
+    const mstudioseqdesc_t &desc = descs[sequence];
+    const float frame = Clamp(cycle * (desc.numframes - 1), 0.0f,
+        static_cast<float>(desc.numframes - 1) - 0.001f);
+    renderer.StudioSampleSequence(sequence, frame, 0, 0, pos, q);
+    if (sequence == 2 || sequence == 5)
+    {
+        // Crouch clips were authored for the 18-unit hull origin. All layers
+        // now share the standing hull's foot anchor before any pose blending.
+        const mstudiobone_t *bones = reinterpret_cast<const mstudiobone_t *>(
+            reinterpret_cast<const byte *>(renderer.m_pStudioHeader) + renderer.m_pStudioHeader->boneindex);
+        for (int bone = 0; bone < renderer.m_pStudioHeader->numbones; ++bone)
+            if (bones[bone].parent < 0) pos[bone][2] -= 18.0f;
+    }
 }
 
 void DumpLegs()
 {
-    gEngfuncs.Con_Printf("legs: visible=%d model=%s sequence=%d phase=%.3f grounded=%d ducked=%d origin=%.1f/%.1f/%.1f rate=%.3f layers=%d\n",
+    gEngfuncs.Con_Printf("legs: visible=%d model=%s sequence=%d phase=%.3f grounded=%d ducked=%d origin=%.1f/%.1f/%.1f rate=%.3f stance=%.3f move=%.3f/%.3f run=%.3f jump=%.3f/%.3f\n",
         int(s_lastSubmitted),
         s_modelName, s_entity.curstate.sequence,
         s_phase, int(s_view.grounded), int(s_view.ducked),
-        s_view.origin.x, s_view.origin.y, s_view.origin.z, s_playbackRate, s_transitions.Count());
+        s_view.origin.x, s_view.origin.y, s_view.origin.z, s_playbackRate, s_view.stance,
+        s_standMove, s_duckMove, s_runWeight, s_jumpPhase, s_jumpWeight);
 }
 }
 
@@ -115,6 +156,12 @@ void OC2_LegsInit()
     }
 }
 
+void OC2_LegsBeginFrame()
+{
+    s_submitted = s_lastSubmitted = false;
+    s_entity.curstate.effects |= EF_NODRAW;
+}
+
 void OC2_LegsRefdef(const ref_params_s *view)
 {
     OC2_LegsInit();
@@ -124,29 +171,40 @@ void OC2_LegsRefdef(const ref_params_s *view)
         view->viewentity > view->maxclients || gEngfuncs.IsSpectateOnly())
     {
         s_hidden = true;
+        s_entity.curstate.effects |= EF_NODRAW;
+        s_lastSubmitted = false;
         return;
     }
 
-    // The player collision origin sits on the predicted floor. Keep the body
-    // there while the camera independently eases stairs, bobs and recoils.
+    // A hull-origin change must not move the body's feet. Every sampled layer
+    // uses one standing-hull anchor; the camera retains its own stair smoothing.
     s_view.origin = Vector(view->simorg[0], view->simorg[1], view->simorg[2]);
     s_view.velocity = Vector(view->simvel[0], view->simvel[1], view->simvel[2]);
     s_view.yaw = view->cl_viewangles[1];
     s_view.time = view->time;
     s_view.dt = view->frametime;
-    // This project uses PM_VEC_VIEW=17 and PM_VEC_DUCK_VIEW=12.
-    s_view.ducked = view->viewheight[2] < 14.5f;
+    s_view.ducked = (g_iPlayerFlags & FL_DUCKING) != 0;
+    const float hullHeight = s_view.ducked ? 18.0f : 36.0f;
+    s_view.origin.z += 36.0f - hullHeight;
+    // Eye height above the feet is 53 standing and 30 fully crouched.
+    s_view.stance = Clamp((53.0f - (hullHeight + view->viewheight[2])) / 23.0f, 0.0f, 1.0f);
     // Xash passes a boolean ref_params.onground (0 in air, 1 on ground).
     s_view.grounded = view->onground != 0;
     s_view.paused = view->paused != 0;
     s_view.valid = true;
     if (!oc2_viewmodel::Finite(s_view.velocity.x) || !oc2_viewmodel::Finite(s_view.velocity.y) ||
         !oc2_viewmodel::Finite(s_view.velocity.z)) s_view.valid = false;
+    if (s_view.valid)
+        OC2_LegsCreateEntity();
+    else
+    {
+        s_entity.curstate.effects |= EF_NODRAW;
+        s_lastSubmitted = false;
+    }
 }
 
 void OC2_LegsCreateEntity()
 {
-    s_lastSubmitted = false;
     if (!s_view.valid || !s_showLegs || s_showLegs->value <= 0) return;
     cl_entity_t *local = gEngfuncs.GetLocalPlayer();
     const char *path = ModelName(local);
@@ -173,11 +231,12 @@ void OC2_LegsCreateEntity()
         // Reset only for a new body/life/map, never for an ordinary slow frame.
         s_entity = cl_entity_t();
         s_phase = 0.0f;
-        s_gaitPhase = 0.0f;
-        s_previousSequence = -1;
+        s_jumpPhase = s_jumpElapsed = s_jumpWeight = 0.0f;
+        s_standMove = s_duckMove = s_runWeight = 0.0f;
+        s_stanceWeight = s_view.stance;
+        s_jumping = false;
+        s_wasGrounded = s_view.grounded;
         s_lastTime = now;
-        s_animationTime = now;
-        s_transitions.Clear();
     }
     else if (now > s_lastTime)
     {
@@ -191,29 +250,42 @@ void OC2_LegsCreateEntity()
     const float speed = sqrtf(s_view.velocity.x * s_view.velocity.x + s_view.velocity.y * s_view.velocity.y);
     if (reset || dt > 0.0f)
     {
-        s_animationTime += dt;
-        const int sequence = Sequence(s_view, s_previousSequence);
-        if (sequence != s_previousSequence)
+        // Follow the predicted duck curve directly; GoldSrc unducks its hull
+        // instantly, so only that sharp return needs a brief visual recovery.
+        s_stanceWeight = Approach(s_stanceWeight, s_view.stance, dt / 0.12f);
+        const float walkSpeed = NativeSpeed(descs[3]);
+        const float runSpeed = NativeSpeed(descs[4]);
+        const float run = Clamp((speed - walkSpeed) / (runSpeed - walkSpeed), 0.0f, 1.0f);
+        const float weightStep = dt / 0.1f;
+        s_runWeight = Approach(s_runWeight, run, weightStep);
+        const float standSpeed = Mix(walkSpeed, runSpeed, s_runWeight);
+        s_standMove = Approach(s_standMove, Clamp(speed / standSpeed, 0.0f, 1.0f), weightStep);
+        s_duckMove = Approach(s_duckMove, Clamp(speed / NativeSpeed(descs[5]), 0.0f, 1.0f), weightStep);
+        const float stride = Mix(Mix(Stride(descs[3]), Stride(descs[4]), s_runWeight),
+            Stride(descs[5]), s_stanceWeight);
+        const float move = Mix(s_standMove, s_duckMove, s_stanceWeight);
+        const float idleRate = Mix(NativeCycleRate(descs[1]), NativeCycleRate(descs[2]), s_stanceWeight);
+        s_playbackRate = Mix(idleRate, GaitDirection() * speed / stride, move);
+        // One continuously advancing cycle belongs to all ground activities.
+        // Stopping, changing speed or crouching never retrieves an old phase.
+        s_phase = WrapCycle(s_phase + s_playbackRate * dt);
+
+        if (!s_jumping && (reset || s_wasGrounded) && !s_view.grounded && s_view.velocity.z > 1.0f)
         {
-            s_entity.latched.prevsequence = s_previousSequence;
-            if (s_previousSequence >= 0)
-                s_entity.latched.prevframe = s_phase * (descs[s_previousSequence].numframes - 1);
-            s_entity.latched.sequencetime = static_cast<float>(s_animationTime);
-            // Preserve planted-foot phase when changing speed or stance. Idle
-            // breathing and a new nonlooping jump have their own timeline.
-            s_phase = Locomotion(sequence) ? s_gaitPhase : 0.0f;
-            s_sequenceStart = s_animationTime;
-            s_previousSequence = sequence;
+            s_jumping = true;
+            s_jumpPhase = s_jumpElapsed = 0.0f;
         }
-        const mstudioseqdesc_t &desc = descs[s_previousSequence];
-        const float cycles = CycleRate(desc, s_previousSequence, speed);
-        s_phase += cycles * dt;
-        if (desc.flags & STUDIO_LOOPING)
-            s_phase -= floorf(s_phase);
-        else if (desc.numframes > 1)
-            s_phase = Clamp(s_phase, 0.0f, 1.0f - 0.001f / (desc.numframes - 1));
-        if (Locomotion(s_previousSequence)) s_gaitPhase = s_phase;
-        s_playbackRate = desc.fps > 0.0f ? cycles * (desc.numframes - 1) / desc.fps : 0.0f;
+        if (s_jumping)
+        {
+            s_jumpElapsed += dt;
+            s_jumpPhase = Clamp(s_jumpPhase + NativeCycleRate(descs[6]) * dt, 0.0f, 1.0f);
+            // The first predicted airborne update can still carry the old
+            // ground flag. Match Source's brief landing grace after takeoff.
+            if (s_view.grounded && s_jumpElapsed >= 0.2f) s_jumping = false;
+        }
+        s_jumpWeight = Approach(s_jumpWeight, s_jumping ? 1.0f : 0.0f,
+            dt / (s_jumping ? 0.08f : 0.12f));
+        s_wasGrounded = s_view.grounded;
     }
 
     s_entity.model = model;
@@ -226,47 +298,48 @@ void OC2_LegsCreateEntity()
     VectorCopy(s_entity.origin, s_entity.curstate.origin);
     VectorCopy(s_entity.angles, s_entity.curstate.angles);
     s_entity.curstate.modelindex = 0;
-    s_entity.curstate.sequence = s_previousSequence;
+    const int groundSequence = s_stanceWeight > 0.5f ? (s_duckMove > 0.5f ? 5 : 2)
+        : (s_standMove > 0.5f ? (s_runWeight > 0.5f ? 4 : 3) : 1);
+    s_entity.curstate.sequence = s_jumpWeight > 0.5f ? 6 : groundSequence;
     // StudioEstimateFrame uses a 256-unit normalized frame. This is an explicit
     // prediction sample; renderer extrapolation must not advance it a second time.
-    s_entity.curstate.frame = s_phase * 256.0f;
+    s_entity.curstate.frame = (s_entity.curstate.sequence == 6 ? s_jumpPhase : s_phase) * 256.0f;
     s_entity.curstate.animtime = static_cast<float>(s_lastTime);
     s_entity.curstate.framerate = 0.0f;
     s_entity.curstate.skin = 0;
     s_entity.curstate.movetype = MOVETYPE_NONE;
     s_entity.curstate.rendermode = kRenderNormal;
     s_entity.curstate.renderamt = 255;
+    s_entity.curstate.effects &= ~EF_NODRAW;
     s_entity.curstate.colormap = local ? local->curstate.colormap : 0;
-    s_lastSubmitted = gEngfuncs.CL_CreateVisibleEntity(ET_NORMAL, &s_entity) != 0;
+    // HUD_CreateEntities runs before this frame's V_CalcRefdef. Submit only
+    // after sampling the current view, and reuse the pointer for extra views.
+    if (!s_submitted)
+        s_submitted = gEngfuncs.CL_CreateVisibleEntity(ET_NORMAL, &s_entity) != 0;
+    s_lastSubmitted = s_submitted;
 }
 
 bool OC2_LegsBlend(CStudioModelRenderer &renderer, float pos[][3], float q[][4])
 {
     if (renderer.m_pCurrentEntity != &s_entity) return false;
-    const int sequence = s_entity.curstate.sequence;
-    const mstudioseqdesc_t &desc = reinterpret_cast<const mstudioseqdesc_t *>(
-        reinterpret_cast<const byte *>(renderer.m_pStudioHeader) + renderer.m_pStudioHeader->seqindex)[sequence];
-    oc2_viewmodel::Layer current;
-    current.sequence = sequence;
-    current.frame = s_phase * (desc.numframes - 1);
-    current.frames = desc.numframes;
-    current.fps = desc.fps;
-    current.rate = s_playbackRate;
-    current.loop = (desc.flags & STUDIO_LOOPING) != 0;
-    current.sampleTime = s_animationTime;
-    current.startTime = s_sequenceStart;
-    s_transitions.Observe(reinterpret_cast<uintptr_t>(s_entity.model), current, renderer.m_fDoInterp != 0);
-    static float oldPos[MAXSTUDIOBONES][3];
-    static vec4_t oldQ[MAXSTUDIOBONES];
-    for (int layer = s_transitions.Count() - 1; layer >= 0; --layer)
+    const mstudioseqdesc_t *descs = reinterpret_cast<const mstudioseqdesc_t *>(
+        reinterpret_cast<const byte *>(renderer.m_pStudioHeader) + renderer.m_pStudioHeader->seqindex);
+    static float movePos[MAXSTUDIOBONES][3], duckPos[MAXSTUDIOBONES][3], runPos[MAXSTUDIOBONES][3];
+    static vec4_t moveQ[MAXSTUDIOBONES], duckQ[MAXSTUDIOBONES], runQ[MAXSTUDIOBONES];
+    Sample(renderer, descs, 1, s_phase, pos, q);
+    Sample(renderer, descs, 3, s_phase, movePos, moveQ);
+    Sample(renderer, descs, 4, s_phase, runPos, runQ);
+    renderer.StudioSlerpBones(moveQ, movePos, runQ, runPos, s_runWeight);
+    renderer.StudioSlerpBones(q, pos, moveQ, movePos, s_standMove);
+    Sample(renderer, descs, 2, s_phase, duckPos, duckQ);
+    Sample(renderer, descs, 5, s_phase, movePos, moveQ);
+    renderer.StudioSlerpBones(duckQ, duckPos, moveQ, movePos, s_duckMove);
+    // Stance is the real eye/hull transition, with no second sequence fade.
+    renderer.StudioSlerpBones(q, pos, duckQ, duckPos, s_stanceWeight);
+    if (s_jumpWeight > 0.0f)
     {
-        const oc2_viewmodel::Layer &old = s_transitions.Previous(layer);
-        if (old.sequence < 0 || old.sequence >= renderer.m_pStudioHeader->numseq) continue;
-        // Outgoing gait keeps moving during the fade, including interrupted
-        // crouch/start/stop transitions, instead of holding one frozen old frame.
-        renderer.StudioSampleSequence(old.sequence, s_transitions.PreviousFrame(layer, s_animationTime),
-            old.blend0, old.blend1, oldPos, oldQ);
-        renderer.StudioSlerpBones(q, pos, oldQ, oldPos, s_transitions.Weight(layer, s_animationTime));
+        Sample(renderer, descs, 6, s_jumpPhase, movePos, moveQ);
+        renderer.StudioSlerpBones(q, pos, moveQ, movePos, s_jumpWeight);
     }
     return true;
 }
