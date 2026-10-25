@@ -30,6 +30,7 @@ public:
 	void Init( void ) override;
 	void VidInit( void ) override;
 	bool KeyDown( int key ) override;
+	bool KeyUp( int key ) override;
 	void Draw( void ) override;
 	void Char( int key ) override;
 	void UpdateEditable() override;

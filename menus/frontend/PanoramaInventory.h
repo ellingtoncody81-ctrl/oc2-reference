@@ -6,26 +6,33 @@
 #include "GloveEditor.h"
 #include "PanoramaModelView.h"
 #include "PanoramaChrome.h"
+#include "ProfileInventory.h"
+#include <memory>
 #include <string>
 #include <vector>
 
 class CMenuPanoramaWheel : public CMenuBaseItem
 {
 public:
-    struct Item { int key;std::string name,image; };
+    struct Item { int key;std::string name,image;std::shared_ptr<CMenuPanoramaModelView> model; };
     std::vector<Item> entries;
     std::string title;
     int selected=0,hover=-1;
+    int previewWidth=200,previewHeight=114;
+    bool pagedLayout=false;
     void Draw() override;
     bool KeyDown(int key) override;
     bool KeyUp(int key) override;
     bool MouseMove(int x,int y) override;
     Point SlotCenter(int slot) const;
+    void SlotBounds(int slot,Point &position,Size &size) const;
 private:
     int Hit(int x,int y) const;
+    float InnerRadiusSquared() const { return pagedLayout?.0784f:.19f; }
     struct Span {int x,y,width,sector;};
     std::vector<Span> m_spans;
     int m_cachedRadius=0,m_cachedCount=0,m_cachedStep=0;
+    bool m_cachedPaged=false;
 };
 
 class CMenuPanoramaSkinCard : public CMenuAction
@@ -54,7 +61,7 @@ public:
     bool KeyUp(int key) override;
     bool MouseMove(int x,int y) override;
 private:
-    enum { Pistol,SMG,Rifle,Sniper,Heavy,Knife,Glove,CategoryCount,CardCount=9 };
+    enum { Pistol,SMG,Rifle,Sniper,Heavy,Knife,Glove,CategoryCount,CardCount=9,WheelPageSize=5 };
     void _Init() override;
     void _VidInit() override;
     void Think() override;
@@ -66,7 +73,7 @@ private:
     static unsigned Accent();
     Point Pixel(int x,int y) const;
     void Fill(int x,int y,int w,int h,unsigned color);
-    void Text(int x,int y,int w,int h,const char *text,int height,unsigned color,bool bold=false,unsigned align=QM_LEFT);
+    void Text(int x,int y,int w,int h,const char *text,int height,unsigned color,bool bold=false,unsigned align=QM_CENTER);
     void Button(CMenuAction &button,const char *name,const char *tag,bool primary=false);
     int Right() const;
     int Pages() const;
@@ -94,7 +101,6 @@ private:
     void Previous();
     void Next();
     void Equip();
-    void OpenPatterns();
     void OpenSticker(CMenuBaseItem *button);
     void OpenAccessories();
     void Back();
@@ -106,13 +112,14 @@ private:
     std::string m_query,m_message;
     oc2_inventory::Catalog m_catalog;
     oc2_inventory::Config m_config;
+    oc2_local_profiles::State m_profiles;
     oc2_gloves::Catalog m_gloveCatalog;
     oc2_gloves::Config m_gloveConfig;
     std::vector<int> m_wheelKeys,m_options;
     int m_cardIds[CardCount];
     char m_categoryTags[CategoryCount][40],m_cardTags[CardCount][32],m_stickerTags[4][32];
     CMenuAction m_categories[CategoryCount],m_back,m_refresh,m_previous,m_next,m_wheelPrevious,m_wheelNext;
-    CMenuAction m_closeInspect,m_equip,m_patterns,m_accessories,m_stickers[4];
+    CMenuAction m_closeInspect,m_equip,m_accessories,m_stickers[4];
     CMenuPanoramaSkinCard m_cards[CardCount];
     CMenuPanoramaWheel m_wheel;
     CMenuField m_search;

@@ -473,6 +473,40 @@ static void Localize_InitLanguage( const char *language )
 	Localize_AddToDictionary( gamedir,  language );
 }
 
+static void Localize_OC2CommonStrings()
+{
+	const char *game=gMenu.m_gameinfo.gamefolder;
+	if(stricmp(game,"cstrike")&&stricmp(game,"czero"))return;
+	// The OC2 frontend is Chinese. Override only its reachable common labels
+	// after the normal dictionaries, without rewriting the user's language cvar.
+	static const struct {const char *key,*value;} strings[]={
+		{"GameUI_OK","确定"},{"GameUI_Cancel","取消"},{"GameUI_Yes","是"},{"GameUI_No","否"},
+		{"GameUI_Apply","应用"},{"GameUI_Close","关闭"},{"GameUI_Back","返回"},{"GameUI_Done","完成"},
+		{"GameUI_Options","设置"},{"GameUI_UseDefaults","恢复默认"},{"GameUI_Save","保存"},{"GameUI_LoadGame","读取游戏"},
+		{"GameUI_Console","控制台"},{"GameUI_GameMenu_Disconnect","断开连接"},{"GameUI_GameMenu_ResumeGame","继续游戏"},
+		{"GameUI_GameMenu_Quit","退出游戏"},{"GameUI_QuitConfirmationText","确定退出游戏？"},
+		{"GameUI_PrecachingResources","正在加载游戏资源…"},{"GameUI_StartingServer","正在启动本地对局…"},
+		{"GameUI_EstablishingConnection","正在连接服务器…"},{"GameUI_Disconnected","已断开连接"},
+		{"GameUI_ParseServerInfo","正在读取服务器信息…"},{"Changing level on server","服务器正在切换地图…"},
+		{"Downloading %s \nfrom %s","正在下载 %s\n来源：%s"},{"Really disconnect?","确定断开连接？"},{"Skip","跳过"},
+		{"Cstrike_Terrorist_Forces","恐怖分子"},{"Cstrike_CT_Forces","反恐精英"},{"Cstrike_VIP_Team","要员"},
+		{"Cstrike_Team_AutoAssign","自动分配"},{"Cstrike_Menu_Spectate","观察者"},{"Cstrike_Cancel","取消"},
+		{"Cstrike_Join_Team","选择阵营"},{"Cstrike_Join_Class","选择角色"},{"Cstrike_Auto_Select","随机选择"},
+		{"Cstrike_TitlesTXT_Map_Description_not_available","选择阵营加入对局。\n请按本地图规则完成任务。"},
+		{"Cstrike_Terror","凤凰战士"},{"Cstrike_L337_Krew","精英部队"},{"Cstrike_Arctic","北极复仇者"},
+		{"Cstrike_Guerilla","游击队员"},{"Cstrike_Militia","民兵"},{"Cstrike_Urban","海豹六队"},
+		{"Cstrike_GSG9","德国边防警察 GSG9"},{"Cstrike_SAS","英国特勤队 SAS"},
+		{"Cstrike_GIGN","法国宪兵特勤队 GIGN"},{"Cstrike_Spetsnaz","俄罗斯特种部队"},
+		{"Cstrike_Terror_Label","凤凰战士\n恐怖分子阵营角色。"},{"Cstrike_Leet_Label","精英部队\n恐怖分子阵营角色。"},
+		{"Cstrike_Arctic_Label","北极复仇者\n恐怖分子阵营角色。"},{"Cstrike_Guerilla_Label","游击队员\n恐怖分子阵营角色。"},
+		{"Cstrike_Militia_Label","民兵\n恐怖分子阵营角色。"},{"Cstrike_Urban_Label","海豹六队\n反恐精英阵营角色。"},
+		{"Cstrike_GSG9_Label","德国边防警察 GSG9\n反恐精英阵营角色。"},{"Cstrike_SAS_Label","英国特勤队 SAS\n反恐精英阵营角色。"},
+		{"Cstrike_GIGN_Label","法国宪兵特勤队 GIGN\n反恐精英阵营角色。"},{"Cstrike_Spetsnaz_Label","俄罗斯特种部队\n反恐精英阵营角色。"},
+		{"Cstrike_AutoSelect_Label","随机选择一名角色外观。"}
+	};
+	for(const auto &entry:strings)Dictionary_Insert(entry.key,entry.value);
+}
+
 static void Localize_Init( void )
 {
 	EngFuncs::ClientCmd( true, "exec mainui.cfg\n" );
@@ -502,6 +536,7 @@ static void Localize_Init( void )
 
 	// strings.lst compatible aliasstrings then
 	UI_InitAliasStrings ();
+	Localize_OC2CommonStrings();
 }
 
 static void Localize_Free( void )

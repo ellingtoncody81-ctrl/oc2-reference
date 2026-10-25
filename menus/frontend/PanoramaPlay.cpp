@@ -1,6 +1,8 @@
 #include "PanoramaPlay.h"
+#include "PhysicalMapResources.h"
 #include "keydefs.h"
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 
@@ -13,8 +15,56 @@ Point Pixel(CMenuBaseItem &item,int x,int y){return item.GetRenderPosition()+Poi
 void Fill(CMenuBaseItem &item,int x,int y,int w,int h,unsigned c)
 { UI_FillRect(Pixel(item,x,y),Size(w,h).Scale(),c); }
 void Text(CMenuBaseItem &item,int x,int y,int w,int h,const char *s,int height,unsigned c,bool bold=false,unsigned align=QM_LEFT)
-{ UI_DrawString(bold?uiStatic.hBoldFont:uiStatic.hDefaultFont,Pixel(item,x,y),Size(w,h).Scale(),s,c,Q_max(1,int(height*uiStatic.scaleY)),align,ETF_FORCECOL|ETF_NO_WRAP); }
+{ oc2_panorama::DrawText(Pixel(item,x,y),Size(w,h).Scale(),s,height,c,bold,align); }
 const char *Difficulties[]={"无机器人","无害机器人（静止）","简单机器人","中等机器人","困难机器人","专家机器人"};
+std::string PhysicalGameDirectory()
+{
+    // Xash sets its working directory to the filesystem root before loading UI.
+    char directory[1024]={};EngFuncs::GetGameDir(directory);return directory;
+}
+bool OverviewImage(const std::string &gameDirectory,const std::string &name,std::string &image)
+{
+    image.clear();
+    const std::string bsp="maps/"+name+".bsp",definition="overviews/"+name+".txt";
+    if(!oc2_physical_maps::FileExists(gameDirectory,bsp))return false;
+    std::string definitionText;
+    if(!oc2_physical_maps::ReadDefinition(gameDirectory,definition,definitionText))return false;
+    bool valid=true,inLayer=false,layerImage=false;
+    int depth=0;char token[1024];char *cursor=&definitionText[0];
+    while(valid&&(cursor=EngFuncs::COM_ParseFile(cursor,token,sizeof(token)))!=nullptr)
+    {
+        std::string word=token;
+        std::transform(word.begin(),word.end(),word.begin(),[](unsigned char c){return char(std::tolower(c));});
+        if(word=="layer"&&depth==0)
+        {
+            cursor=EngFuncs::COM_ParseFile(cursor,token,sizeof(token));
+            if(!cursor||std::strcmp(token,"{")){valid=false;break;}
+            depth=1;inLayer=true;layerImage=false;continue;
+        }
+        if(word=="{"){++depth;continue;}
+        if(word=="}")
+        {
+            if(depth<=0){valid=false;break;}
+            if(inLayer&&depth==1){valid=layerImage;inLayer=false;}
+            --depth;continue;
+        }
+        if(!inLayer||depth!=1||word!="image")continue;
+        cursor=EngFuncs::COM_ParseFile(cursor,token,sizeof(token));
+        if(!cursor){valid=false;break;}
+        std::string reference=token;
+        std::replace(reference.begin(),reference.end(),'\\','/');
+        std::transform(reference.begin(),reference.end(),reference.begin(),[](unsigned char c){return char(std::tolower(c));});
+        // A generated frontend card is only a display cache. A selectable map
+        // must still own its overview definition and every referenced image.
+        if(reference.compare(0,10,"overviews/")||reference.size()<=10||reference.find("..")!=std::string::npos||
+            reference.find(':')!=std::string::npos||!oc2_physical_maps::FileExists(gameDirectory,reference))
+        {valid=false;break;}
+        if(image.empty())image=reference;
+        layerImage=true;
+    }
+    if(!valid||depth||image.empty()){image.clear();return false;}
+    return true;
+}
 const char *Title(const std::string &name)
 {
     struct Named { const char *name,*title; };
@@ -37,9 +87,8 @@ CMenuPanoramaPlay::CMenuPanoramaPlay():CMenuFramework("CMenuPanoramaPlay"),m_pag
 
 void CMenuPanoramaPlay::Button(CMenuAction &item,const char *label,const char *tag)
 {
-    item.SetNameAndStatus(label,nullptr,tag);item.SetCharSize(QM_SMALLFONT);
-    item.colorBase=Ink();item.colorFocus=AccentColor();item.SetTextInsetX(16);
-    item.eTextAlignment=QM_LEFT;item.bIgnoreColorstring=true;
+    item.SetNameAndStatus(label,nullptr,tag);oc2_panorama::CenterButton(item);
+    item.colorBase=Ink();item.colorFocus=AccentColor();item.bIgnoreColorstring=true;
     item.SetBackground(PackRGBA(255,255,255,12),PackRGBA(255,255,255,26));AddItem(item);
 }
 
@@ -76,30 +125,16 @@ void CMenuPanoramaPlay::ReloadMaps()
 {
     std::string previous=m_selected>=0&&m_selected<int(m_maps.size())?m_maps[m_selected].name:"de_dust2";
     m_maps.clear();
-    int count=0;char **files=EngFuncs::GetFilesList("maps/*.bsp",&count,true);
-    // Copy names before subsequent filesystem calls: the engine owns this list.
-    std::vector<std::string> names;
-    for(int i=0;files&&i<count;++i)
-    {
-        std::string name=files[i];const auto slash=name.find_last_of("/\\");
-        if(slash!=std::string::npos)name.erase(0,slash+1);
-        if(name.size()>4)name.resize(name.size()-4);
-        if(name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")==std::string::npos)names.push_back(name);
-    }
-    std::sort(names.begin(),names.end());names.erase(std::unique(names.begin(),names.end()),names.end());
+    const std::string gameDirectory=PhysicalGameDirectory();
+    const std::vector<std::string> names=oc2_physical_maps::Names(gameDirectory);
     for(const auto &name:names)
     {
         if(!EngFuncs::IsMapValid(name.c_str()))continue;
+        std::string overview;if(!OverviewImage(gameDirectory,name,overview))continue;
         Map map;map.name=name;const char *title=Title(name);map.title=title?title:name;
+        map.overview=overview;map.radar=overview;
         const std::string cardImage="gfx/frontend/maps/"+name+".tga";
         if(EngFuncs::FileExists(cardImage.c_str(),true))map.radar=cardImage;
-        const char *extensions[]={".bmp",".tga",".png"};
-        for(const char *ext:extensions)
-        {
-            if(!map.radar.empty())break;
-            const std::string image="overviews/"+name+ext;
-            if(EngFuncs::FileExists(image.c_str(),true)){map.radar=image;break;}
-        }
         m_maps.push_back(map);
     }
     m_selected=m_maps.empty()?-1:0;
@@ -157,24 +192,24 @@ void CMenuPanoramaPlay::PaintCard(Card &card)
     const unsigned edge=selected?AccentColor():PackRGBA(220,230,240,card.IsCurrentSelected()?125:35);
     UI_FillRect(p,Size(z.w,2),edge);UI_FillRect(p+Point(0,z.h-2),Size(z.w,2),edge);
     UI_FillRect(p,Size(2,z.h),edge);UI_FillRect(p+Point(z.w-2,0),Size(2,z.h),edge);
-    Text(card,12,158,card.size.w-24,25,map.title.c_str(),18,selected?AccentColor():Ink(),true);
+    Text(card,12,158,card.size.w-24,25,map.title.c_str(),18,selected?AccentColor():Ink(),true,QM_CENTER);
 }
 
 void CMenuPanoramaPlay::Draw()
 {
     if(CL_IsActive())return;
     oc2_panorama::DrawBackground();
-    Text(*this,104,43,600,48,"开始游戏",34,Ink());
-    Text(*this,104,112,500,34,"单人本地对局",23,Ink());
-    Text(*this,104,153,620,22,m_difficulty==1?"无害机器人保持静止，不会攻击。":"选择地图和机器人难度，然后开始游戏。",15,Muted());
+    Text(*this,104,43,uiStatic.width-144,48,"开始游戏",34,Ink(),false,QM_CENTER);
+    Text(*this,104,112,uiStatic.width-460,34,"单人本地对局",23,Ink(),false,QM_CENTER);
+    Text(*this,104,153,uiStatic.width-460,22,m_difficulty==1?"无害机器人保持静止，不会攻击。":"选择地图和机器人难度，然后开始游戏。",15,Muted(),false,QM_CENTER);
     Fill(*this,104,99,uiStatic.width-144,1,PackRGBA(255,255,255,35));
-    if(m_maps.empty())Text(*this,104,270,700,80,"未找到已安装的有效地图。",24,Ink());
+    if(m_maps.empty())Text(*this,104,270,uiStatic.width-144,80,"未找到地图与雷达资源均完整的地图。",24,Ink(),false,QM_CENTER);
     char info[256];std::snprintf(info,sizeof(info),"%d / %d     %u 张已安装地图",m_page+1,Q_max(1,(int(m_maps.size())+7)/8),unsigned(m_maps.size()));
-    Text(*this,350,642,450,28,info,14,Muted());
+    Text(*this,350,638,uiStatic.width-640,36,info,14,Muted(),false,QM_CENTER);
     if(m_selected>=0)
     {
         std::string selected="已选择："+m_maps[m_selected].title;
-        Text(*this,230,696,uiStatic.width-560,30,selected.c_str(),17,Ink());
+        Text(*this,230,686,uiStatic.width-560,52,selected.c_str(),17,Ink(),false,QM_CENTER);
     }
     m_chrome.Draw();CMenuFramework::Draw();if(m_drawChrome)m_drawChrome(this);
 }
@@ -183,7 +218,8 @@ void CMenuPanoramaPlay::Start()
 {
     if(m_selected<0||m_selected>=int(m_maps.size()))return;
     const std::string name=m_maps[m_selected].name;
-    if(!EngFuncs::IsMapValid(name.c_str())){ReloadMaps();Refresh();return;}
+    std::string overview;
+    if(!EngFuncs::IsMapValid(name.c_str())||!OverviewImage(PhysicalGameDirectory(),name,overview)){ReloadMaps();Refresh();return;}
     if(EngFuncs::GetCvarFloat("host_serverstate"))EngFuncs::HostEndGame("starting local game");
     EngFuncs::CvarSetValue("deathmatch",1);
     EngFuncs::CvarSetValue("sv_lan",1);EngFuncs::CvarSetValue("sv_nat",0);
@@ -203,7 +239,7 @@ void CMenuPanoramaPlay::Dump()
 {
     Con_Printf("panorama_play: visible=%d installed=%u page=%d selected=%s difficulty=%d bot_quota=%d bot_zombie=%d bot_difficulty=%d\n",int(IsVisible()),unsigned(m_maps.size()),m_page,
         m_selected>=0?m_maps[m_selected].name.c_str():"none",m_difficulty,m_difficulty?9:0,m_difficulty==1,Q_max(0,m_difficulty-2));
-    for(const auto &map:m_maps)Con_Printf("panorama_map: name=%s radar=%s installed=1\n",map.name.c_str(),map.radar.empty()?"none":map.radar.c_str());
+    for(const auto &map:m_maps)Con_Printf("panorama_map: name=%s radar=%s overview=%s installed=1\n",map.name.c_str(),map.radar.c_str(),map.overview.c_str());
     for(int i=0;i<ItemCount();++i)
     {
         CMenuBaseItem *item=GetItemByIndex(i);if(!item||!item->szTag)continue;

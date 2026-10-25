@@ -14,7 +14,22 @@ Point Pixel(CMenuBaseItem &item,int x,int y){return item.GetRenderPosition()+Poi
 void Fill(CMenuBaseItem &item,int x,int y,int w,int h,unsigned c)
 {UI_FillRect(Pixel(item,x,y),Size(w,h).Scale(),c);}
 void Text(CMenuBaseItem &item,int x,int y,int w,int h,const char *s,int height,unsigned c,bool bold=false,unsigned align=QM_LEFT)
-{UI_DrawString(bold?uiStatic.hBoldFont:uiStatic.hDefaultFont,Pixel(item,x,y),Size(w,h).Scale(),s,c,Q_max(1,int(height*uiStatic.scaleY)),align,ETF_FORCECOL|ETF_NO_WRAP);}
+{oc2_panorama::DrawText(Pixel(item,x,y),Size(w,h).Scale(),s,height,c,bold,align);}
+const char *KeyLabel(const char *key)
+{
+    if(!key||!*key)return "未知按键";
+    static const struct {const char *key,*label;} names[]={
+        {"MOUSE1","鼠标左键"},{"MOUSE2","鼠标右键"},{"MOUSE3","鼠标中键"},
+        {"MOUSE4","鼠标侧键一"},{"MOUSE5","鼠标侧键二"},
+        {"MWHEELUP","滚轮向上"},{"MWHEELDOWN","滚轮向下"},{"SPACE","空格"},
+        {"TAB","制表键"},{"ENTER","回车"},{"BACKSPACE","退格"},{"PAUSE","暂停键"},
+        {"UPARROW","上方向键"},{"DOWNARROW","下方向键"},{"LEFTARROW","左方向键"},{"RIGHTARROW","右方向键"},
+        {"INS","插入键"},{"DEL","删除键"},{"PGDN","下一页键"},{"PGUP","上一页键"},
+        {"HOME","起始键"},{"END","结束键"},{"CAPSLOCK","大写锁定"},{"NUMLOCK","数字锁定"}
+    };
+    for(const auto &name:names)if(!stricmp(name.key,key))return name.label;
+    return key;
+}
 std::vector<std::string> Split(const char *s)
 {
     std::vector<std::string> parts;if(!s)return parts;
@@ -76,7 +91,7 @@ const CMenuPanoramaSettings::Setting *CMenuPanoramaSettings::Definitions(int &co
         {2,Number,"音乐音量","MP3Volume","1.0",0,1,0.05f,nullptr,nullptr},
         {2,Choice,"失去焦点时静音","snd_mute_losefocus","1",0,1,1,"关闭|开启","0|1"},
         {2,Choice,"环境音效处理","room_off","0",0,1,1,"开启|关闭","0|1"},
-        {2,Choice,"Alpha 环境音效算法","dsp_coeff_table","0",0,1,1,"关闭|开启","0|1"},
+        {2,Choice,"环境音效算法","dsp_coeff_table","0",0,1,1,"关闭|开启","0|1"},
         {3,Resolution,"分辨率与显示模式","","",0,0,0,nullptr,nullptr},
         {3,Choice,"垂直同步","gl_vsync","1",0,1,1,"关闭|开启","0|1"},
         {3,Number,"最高帧率","fps_max","72",30,500,10,nullptr,nullptr},
@@ -91,14 +106,13 @@ const CMenuPanoramaSettings::Setting *CMenuPanoramaSettings::Definitions(int &co
     count=sizeof(settings)/sizeof(settings[0]);return settings;
 }
 
-CMenuPanoramaSettings::CMenuPanoramaSettings():CMenuFramework("CMenuPanoramaSettings"),m_category(0),m_scroll(0),m_capture(-1),m_captureKey(-1),m_dirty(false),m_drawChrome(nullptr)
+CMenuPanoramaSettings::CMenuPanoramaSettings():CMenuFramework("CMenuPanoramaSettings"),m_category(0),m_scroll(0),m_capture(-1),m_captureKey(-1),m_dirty(false),m_drawChrome(nullptr),m_backCallback(nullptr)
 {for(bool &b:m_touchedBindings)b=false;}
 
 void CMenuPanoramaSettings::Button(CMenuAction &item,const char *label,const char *tag)
 {
-    item.SetNameAndStatus(label,nullptr,tag);item.SetCharSize(QM_SMALLFONT);
-    item.colorBase=Ink();item.colorFocus=AccentColor();item.eTextAlignment=QM_LEFT;
-    item.SetTextInsetX(18);item.bIgnoreColorstring=true;
+    item.SetNameAndStatus(label,nullptr,tag);oc2_panorama::CenterButton(item);
+    item.colorBase=Ink();item.colorFocus=AccentColor();item.bIgnoreColorstring=true;
     item.SetBackground(PackRGBA(255,255,255,8),PackRGBA(255,255,255,22));AddItem(item);
 }
 
@@ -122,17 +136,27 @@ void CMenuPanoramaSettings::_Init()
         Button(m_rows[i],"",m_rowTags[i]);
         SET_EVENT_MULTI(m_rows[i].onReleased,{static_cast<CMenuPanoramaSettings*>(pSelf->Parent())->Activate(pSelf);});
     }
+    Button(m_displayMode,"","settings_display_resolution");
+    SET_EVENT_MULTI(m_displayMode.onReleased,{static_cast<CMenuPanoramaSettings*>(pSelf->Parent())->CycleDisplayMode();});
+    Button(m_displayWindow,"","settings_display_window");
+    SET_EVENT_MULTI(m_displayWindow.onReleased,{static_cast<CMenuPanoramaSettings*>(pSelf->Parent())->CycleDisplayWindow();});
+    Button(m_displayApply,"应用显示设置","settings_display_apply");m_displayApply.onReleased=VoidCb(&CMenuPanoramaSettings::ApplyDisplay);
+    Button(m_displayCancel,"取消","settings_display_cancel");m_displayCancel.onReleased=VoidCb(&CMenuPanoramaSettings::CancelDisplay);
 }
 
 void CMenuPanoramaSettings::_VidInit()
 {
     m_chrome.Layout();
     const int width=uiStatic.width,left=104,right=width-50;
-    for(int i=0;i<4;++i)m_tabs[i].SetRect(left+i*180,112,176,46);
+    const int tabWidth=(right-left)/4;
+    for(int i=0;i<4;++i)m_tabs[i].SetRect(left+i*tabWidth,112,tabWidth-4,46);
     for(int i=0;i<9;++i)m_rows[i].SetRect(left,185+i*51,right-left-20,48);
     m_up.SetRect(right-115,650,55,30);m_down.SetRect(right-55,650,55,30);
     m_back.SetRect(left,696,100,42);m_save.SetRect(right-190,690,190,48);
     m_revert.SetRect(right-400,690,195,48);Refresh();
+    const int displayLeft=(width-700)/2;
+    m_displayMode.SetRect(displayLeft,260,700,54);m_displayWindow.SetRect(displayLeft,330,700,54);
+    m_displayApply.SetRect(displayLeft+365,450,335,50);m_displayCancel.SetRect(displayLeft,450,335,50);
 }
 
 void CMenuPanoramaSettings::Show()
@@ -141,7 +165,12 @@ void CMenuPanoramaSettings::Show()
     for(int key=0;key<256;++key){const char *b=EngFuncs::KEY_GetBinding(key);m_originalBindings[key]=b?b:"";m_touchedBindings[key]=false;}
     Refresh();SetCursorToItem(m_tabs[m_category]);
 }
-void CMenuPanoramaSettings::Hide(){Save();CMenuFramework::Hide();}
+void CMenuPanoramaSettings::Hide()
+{
+    if(m_displayOpen)CancelDisplay();
+    Save();m_capture=-1;m_captureKey=-1;for(auto &row:m_rows)row.dragging=false;
+    CMenuFramework::Hide();
+}
 
 void CMenuPanoramaSettings::SelectCategory(int category)
 {m_category=bound(0,category,3);m_scroll=0;m_capture=-1;Refresh();}
@@ -155,12 +184,14 @@ void CMenuPanoramaSettings::Refresh()
     for(int i=0;i<9;++i)
     {
         const int row=m_scroll+i;m_rows[i].index=row<int(m_visible.size())?m_visible[row]:-1;
-        m_rows[i].SetVisibility(m_rows[i].index>=0);m_rows[i].SetGrayed(m_rows[i].index>=0&&!Available(settings[m_rows[i].index]));
+        m_rows[i].SetVisibility(!m_displayOpen&&m_rows[i].index>=0);m_rows[i].SetGrayed(m_rows[i].index>=0&&!Available(settings[m_rows[i].index]));
     }
-    for(int i=0;i<4;++i)m_tabs[i].colorBase=i==m_category?AccentColor():Ink();
+    for(int i=0;i<4;++i){m_tabs[i].colorBase=i==m_category?AccentColor():Ink();m_tabs[i].SetVisibility(!m_displayOpen);}
+    m_back.SetVisibility(!m_displayOpen);m_save.SetVisibility(!m_displayOpen);m_revert.SetVisibility(!m_displayOpen);
     m_up.SetGrayed(m_scroll==0);m_down.SetGrayed(m_scroll+9>=int(m_visible.size()));
-    m_up.SetVisibility(m_visible.size()>9);m_down.SetVisibility(m_visible.size()>9);
+    m_up.SetVisibility(!m_displayOpen&&m_visible.size()>9);m_down.SetVisibility(!m_displayOpen&&m_visible.size()>9);
     m_save.SetGrayed(!m_dirty);m_revert.SetGrayed(!m_dirty);
+    m_chrome.SetVisible(!CL_IsActive()&&!m_displayOpen);RefreshDisplay();
 }
 void CMenuPanoramaSettings::Scroll(int rows)
 {m_scroll+=rows;Refresh();}
@@ -181,7 +212,7 @@ std::string CMenuPanoramaSettings::Value(const Setting &setting) const
         {
             const char *bind=EngFuncs::KEY_GetBinding(key);
             if(bind&&!std::strcmp(bind,setting.key))
-            {if(!result.empty())result+=" / ";result+=EngFuncs::KeynumToString(key);}
+            {if(!result.empty())result+=" / ";result+=KeyLabel(EngFuncs::KeynumToString(key));}
         }
         return result.empty()?"未绑定":result;
     }
@@ -211,7 +242,7 @@ void CMenuPanoramaSettings::Adjust(int index,int direction)
     int count;const Setting *settings=Definitions(count);if(index<0||index>=count)return;
     const Setting &setting=settings[index];if(!Available(setting))return;
     if(setting.kind==Binding){m_capture=index;m_captureKey=-1;return;}
-    if(setting.kind==Resolution){UI_VidModes_Menu();return;}
+    if(setting.kind==Resolution){OpenDisplay();return;}
     Remember(setting.key);
     if(setting.kind==Number)
     {
@@ -266,20 +297,31 @@ void CMenuPanoramaSettings::PaintRow(Row &row)
     const Setting &setting=settings[row.index];const bool enabled=Available(setting);const int width=row.size.w;
     if(row.IsCurrentSelected())Fill(row,0,0,width,48,PackRGBA(255,255,255,17));
     Fill(row,0,47,width,1,PackRGBA(255,255,255,18));
-    Text(row,16,10,width-350,30,setting.label,17,enabled?Ink():Muted());
+    Text(row,16,0,width-350,48,setting.label,17,enabled?Ink():Muted(),false,QM_CENTER);
     const std::string value=m_capture==row.index?"请按下一个按键…":Value(setting);
     if(setting.kind==Number&&enabled)
     {
         const float ratio=bound(0.0f,(EngFuncs::GetCvarFloat(setting.key)-setting.minimum)/(setting.maximum-setting.minimum),1.0f);
         Fill(row,width-272,22,212,3,PackRGBA(180,194,205,70));
         Fill(row,width-272,22,int(212*ratio),3,AccentColor());Fill(row,width-275+int(212*ratio),17,6,13,Ink());
-        Text(row,width-54,9,48,30,value.c_str(),15,Ink(),false,QM_CENTER);
+        Text(row,width-54,0,48,48,value.c_str(),15,Ink(),false,QM_CENTER);
     }
-    else Text(row,width-330,10,312,30,value.c_str(),16,m_capture==row.index?AccentColor():enabled?Ink():Muted(),false,QM_RIGHT);
+    else Text(row,width-330,0,312,48,value.c_str(),16,m_capture==row.index?AccentColor():enabled?Ink():Muted(),false,QM_CENTER);
 }
 
 bool CMenuPanoramaSettings::KeyDown(int key)
 {
+    if(m_displayOpen)
+    {
+        if(UI::Key::IsEscape(key)){CancelDisplay();return true;}
+        if(!m_displayTesting&&(key==K_LEFTARROW||key==K_RIGHTARROW))
+        {
+            const int direction=key==K_LEFTARROW?-1:1;
+            if(ItemAtCursor()==&m_displayMode){CycleDisplayMode(direction);return true;}
+            if(ItemAtCursor()==&m_displayWindow){CycleDisplayWindow(direction);return true;}
+        }
+        return CMenuFramework::KeyDown(key);
+    }
     if(m_capture>=0){m_captureKey=key;return true;}
     for(const auto &row:m_rows)if(row.dragging)return true;
     if(key==K_MWHEELDOWN){Scroll(3);return true;}if(key==K_MWHEELUP){Scroll(-3);return true;}
@@ -335,36 +377,152 @@ void CMenuPanoramaSettings::Revert()
     for(int key=0;key<256;++key)if(m_touchedBindings[key]){EngFuncs::KEY_SetBinding(key,m_originalBindings[key].c_str());m_touchedBindings[key]=false;}
     m_original.clear();m_dirty=false;m_capture=-1;Refresh();
 }
-void CMenuPanoramaSettings::Back(){Save();UI_PanoramaHome();}
+void CMenuPanoramaSettings::Back()
+{
+    Save();
+    if(CL_IsActive())
+    {
+        Hide();if(m_backCallback)m_backCallback();
+    }
+    else UI_PanoramaHome();
+}
+
+void CMenuPanoramaSettings::OpenDisplay()
+{
+    m_modes.clear();m_displayOriginalMode=int(EngFuncs::GetCvarFloat("vid_mode"));
+    m_displayOriginalWindow=bound(0,int(EngFuncs::GetCvarFloat("fullscreen")),2);
+    m_displayOriginalWidth=int(ScreenWidth);m_displayOriginalHeight=int(ScreenHeight);
+    m_displaySelectedMode=-1;
+    for(int i=0;;++i)
+    {
+        const char *mode=EngFuncs::GetModeString(i);if(!mode)break;
+        int width=0,height=0;
+        if(std::sscanf(mode,"%d%*[^0-9]%d",&width,&height)!=2||width<=0||height<=0)continue;
+        if(width==m_displayOriginalWidth&&height==m_displayOriginalHeight)m_displaySelectedMode=int(m_modes.size());
+        m_modes.push_back({i,width,height});
+    }
+    if(m_displaySelectedMode<0)
+    {
+        m_displaySelectedMode=int(m_modes.size());
+        m_modes.push_back({-1,m_displayOriginalWidth,m_displayOriginalHeight});
+    }
+    m_displayInitialMode=m_displaySelectedMode;m_displaySelectedWindow=m_displayOriginalWindow;
+    m_displayOpen=true;m_displayTesting=false;m_displayTestUntil=0;m_capture=-1;
+    Refresh();SetCursorToItem(m_displayWindow);
+}
+
+void CMenuPanoramaSettings::CycleDisplayMode(int direction)
+{
+    if(m_displayTesting||m_modes.empty()||m_displaySelectedWindow==2)return;
+    m_displaySelectedMode=(m_displaySelectedMode+direction+int(m_modes.size()))%int(m_modes.size());RefreshDisplay();
+}
+
+void CMenuPanoramaSettings::CycleDisplayWindow(int direction)
+{
+    if(m_displayTesting)return;
+    m_displaySelectedWindow=(m_displaySelectedWindow+direction+3)%3;RefreshDisplay();
+}
+
+void CMenuPanoramaSettings::RefreshDisplay()
+{
+    m_displayMode.SetVisibility(m_displayOpen&&!m_displayTesting);m_displayWindow.SetVisibility(m_displayOpen&&!m_displayTesting);
+    m_displayApply.SetVisibility(m_displayOpen);m_displayCancel.SetVisibility(m_displayOpen);
+    if(!m_displayOpen)return;
+    char mode[96];
+    if(m_modes.empty())std::snprintf(mode,sizeof(mode),"分辨率：%d × %d",m_displayOriginalWidth,m_displayOriginalHeight);
+    else std::snprintf(mode,sizeof(mode),"分辨率：%d × %d",m_modes[m_displaySelectedMode].width,m_modes[m_displaySelectedMode].height);
+    m_displayMode.SetText(mode);m_displayMode.SetGrayed(m_modes.empty()||m_displaySelectedWindow==2);
+    const char *windowModes[]={"显示模式：窗口","显示模式：全屏","显示模式：无边框"};
+    m_displayWindow.SetText(windowModes[m_displaySelectedWindow]);
+    m_displayApply.SetText(m_displayTesting?"保留并保存":"应用显示设置");
+    m_displayCancel.SetText(m_displayTesting?"恢复原设置":"取消");
+}
+
+void CMenuPanoramaSettings::ApplyDisplay()
+{
+    if(!m_displayOpen)return;
+    if(m_displayTesting)
+    {
+        m_displayTesting=false;m_displayOpen=false;m_displayTestUntil=0;m_dirty=true;
+        Save();Refresh();SetCursorToItem(m_tabs[3]);return;
+    }
+    const bool modeChanged=!m_modes.empty()&&m_displaySelectedWindow!=2&&m_displaySelectedMode!=m_displayInitialMode;
+    const bool windowChanged=m_displaySelectedWindow!=m_displayOriginalWindow;
+    if(!modeChanged&&!windowChanged){CancelDisplay();return;}
+    // Match the native VideoModes menu: apply the window style before the
+    // requested resolution, and retain dimensions for an exact timed restore.
+    m_displayTesting=true;m_displayTestUntil=uiStatic.realTime+10000;
+    if(windowChanged)EngFuncs::CvarSetValue("fullscreen",m_displaySelectedWindow);
+    if(modeChanged)
+    {
+        const VideoMode &mode=m_modes[m_displaySelectedMode];
+        if(mode.index>=0){EngFuncs::ClientCmdF(true,"vid_setmode %i\n",mode.index);EngFuncs::CvarSetValue("vid_mode",mode.index);}
+        else EngFuncs::ClientCmdF(true,"vid_setmode %i %i\n",mode.width,mode.height);
+    }
+    RefreshDisplay();SetCursorToItem(m_displayApply);
+}
+
+void CMenuPanoramaSettings::CancelDisplay()
+{
+    if(!m_displayOpen)return;
+    if(m_displayTesting)
+    {
+        const bool windowFirst=m_displayOriginalWindow==0&&EngFuncs::GetCvarFloat("fullscreen")!=0;
+        if(windowFirst)EngFuncs::CvarSetValue("fullscreen",m_displayOriginalWindow);
+        EngFuncs::ClientCmdF(true,"vid_setmode %i %i\n",m_displayOriginalWidth,m_displayOriginalHeight);
+        if(!windowFirst)EngFuncs::CvarSetValue("fullscreen",m_displayOriginalWindow);
+        EngFuncs::CvarSetValue("vid_mode",m_displayOriginalMode);
+    }
+    m_displayOpen=false;m_displayTesting=false;m_displayTestUntil=0;
+    Refresh();SetCursorToItem(m_tabs[3]);
+}
+
+void CMenuPanoramaSettings::PaintDisplay()
+{
+    const int left=(uiStatic.width-760)/2;
+    Fill(*this,left,185,760,375,PackRGBA(14,22,29,235));
+    Text(*this,left+30,200,700,42,"显示设置",28,Ink(),false,QM_CENTER);
+    if(m_displayTesting)
+    {
+        char text[128];std::snprintf(text,sizeof(text),"是否保留显示设置？%d 秒后自动恢复。",Q_max(0,(m_displayTestUntil-uiStatic.realTime+999)/1000));
+        Text(*this,left+30,280,700,64,text,22,Ink(),false,QM_CENTER);
+        Text(*this,left+30,356,700,40,"保留后将保存当前设置。",16,Muted(),false,QM_CENTER);
+    }
+    else Text(*this,left+30,395,700,34,"点击切换，方向键微调；应用后可在十秒内恢复。",16,Muted(),false,QM_CENTER);
+}
 
 void CMenuPanoramaSettings::Draw()
 {
-    if(CL_IsActive())return;
+    if(m_displayTesting&&uiStatic.realTime>=m_displayTestUntil)CancelDisplay();
     oc2_panorama::DrawBackground();
-    Text(*this,104,43,600,48,"设置",34,Ink());
+    const bool inGame=CL_IsActive();
+    if(inGame)Fill(*this,88,28,uiStatic.width-122,718,PackRGBA(15,21,27,208));
+    Text(*this,104,43,uiStatic.width-154,48,"设置",34,Ink(),false,QM_CENTER);
     Fill(*this,104,99,uiStatic.width-154,1,PackRGBA(255,255,255,35));
-    Fill(*this,104+m_category*180,157,176,3,AccentColor());
+    if(m_displayOpen){PaintDisplay();CMenuFramework::Draw();return;}
+    const int tabWidth=(uiStatic.width-154)/4;
+    Fill(*this,104+m_category*tabWidth,157,tabWidth-4,3,AccentColor());
     if(m_visible.size()>9)
     {
         const int height=459,thumb=Q_max(26,height*9/int(m_visible.size()));
         Fill(*this,uiStatic.width-55,185,3,height,PackRGBA(255,255,255,20));
         Fill(*this,uiStatic.width-55,185+(height-thumb)*m_scroll/Q_max(1,int(m_visible.size())-9),3,thumb,PackRGBA(210,219,226,135));
     }
-    Text(*this,104,654,uiStatic.width-400,26,m_category==0?"滚轮滚动  ·  点击键位后按新键  ·  Delete 清除键位":"滚轮滚动  ·  点击或拖动修改  ·  方向键微调",13,Muted());
-    Text(*this,225,704,uiStatic.width-760,25,m_dirty?"更改已生效，返回时保存。":"设置已保存",13,Muted());
-    m_chrome.Draw();CMenuFramework::Draw();
+    Text(*this,104,650,uiStatic.width-400,30,m_category==0?"滚轮滚动  ·  点击键位后按新键  ·  删除键清除键位":"滚轮滚动  ·  点击或拖动修改  ·  方向键微调",13,Muted(),false,QM_CENTER);
+    Text(*this,225,690,uiStatic.width-760,48,m_dirty?"更改已生效，返回时保存。":"设置已保存",13,Muted(),false,QM_CENTER);
+    if(!inGame)m_chrome.Draw();CMenuFramework::Draw();
     if(m_capture>=0)
     {
         Fill(*this,104,176,uiStatic.width-154,482,PackRGBA(0,0,0,178));
         Text(*this,180,325,uiStatic.width-330,60,"请按下新的按键",28,Ink(),false,QM_CENTER);
         Text(*this,180,391,uiStatic.width-330,35,"Esc 取消；该按键原有操作将被替换。",16,Muted(),false,QM_CENTER);
     }
-    if(m_drawChrome)m_drawChrome(this);
+    if(!inGame&&m_drawChrome)m_drawChrome(this);
 }
 
 void CMenuPanoramaSettings::Dump()
 {
-    Con_Printf("panorama_settings: visible=%d category=%d scroll=%d rows=%u dirty=%d capture=%d\n",int(IsVisible()),m_category,m_scroll,unsigned(m_visible.size()),int(m_dirty),m_capture);
+    Con_Printf("panorama_settings: visible=%d category=%d scroll=%d rows=%u dirty=%d capture=%d display_open=%d display_testing=%d display_mode=%d display_window=%d\n",int(IsVisible()),m_category,m_scroll,unsigned(m_visible.size()),int(m_dirty),m_capture,int(m_displayOpen),int(m_displayTesting),m_displaySelectedMode,m_displaySelectedWindow);
     int count;const Setting *settings=Definitions(count);
     for(int i=0;i<count;++i)
     {

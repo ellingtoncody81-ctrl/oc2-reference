@@ -31,6 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "AnimatedBanner.h"
 #include "MovieBanner.h"
 #include "frontend/ModernMain.h"
+#include "client/TeamSelection.h"
 
 #define ART_MINIMIZE_N	"gfx/shell/min_n"
 #define ART_MINIMIZE_F	"gfx/shell/min_f"
@@ -439,8 +440,7 @@ ADD_MENU3( menu_main, CMenuModernMain, UI_Main_Menu );
 
 void UI_Main_Menu()
 {
-	if( CL_IsActive() ) UI_LegacyMain_Menu();
-	else menu_main->Show();
+	menu_main->Show();
 }
 
 void UI_PanoramaOpenPlay(){ if(menu_main)menu_main->Navigate(0); }
@@ -448,10 +448,12 @@ void UI_PanoramaOpenInventory(){ if(menu_main)menu_main->Navigate(1); }
 void UI_PanoramaOpenSettings(){ if(menu_main)menu_main->Navigate(2); }
 void UI_PanoramaQuit(){ if(menu_main)menu_main->Navigate(3); }
 void UI_PanoramaHome(){ if(menu_main)menu_main->Navigate(-1); }
+void UI_PanoramaPause(){ if(menu_main)menu_main->Navigate(-1); }
 
 static void UI_FrontendDump()
 {
 	if( menu_main ) menu_main->Dump();
+	UI_JoinGame_Dump();
 }
 
 static void UI_FrontendPage()

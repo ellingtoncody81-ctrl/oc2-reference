@@ -4,6 +4,8 @@
 #include "Field.h"
 #include "YesNoMessageBox.h"
 #include "SkinInventory.h"
+#include "PanoramaChrome.h"
+#include "PanoramaInventoryLabels.h"
 #include "../../../../common/oc2_glove_inventory.h"
 #include "keydefs.h"
 
@@ -32,9 +34,7 @@ inline bool SaveConfig(const oc2_gloves::Config &config)
 }
 inline std::string SelectionName(const oc2_gloves::Catalog &catalog,int resource)
 {
-    if(!resource)return "Team default";
-    const auto *entry=oc2_gloves::FindEntry(catalog,resource);
-    return entry?entry->name:"Unavailable saved gloves";
+    return oc2_inventory_labels::GloveFinish(catalog,resource);
 }
 }
 
@@ -44,7 +44,6 @@ public:
     CMenuGloveEditor():CMenuFramework("CMenuGloveEditor"){for(int &id:m_rowIds)id=-1;}
     void Open()
     {
-        if(CL_IsActive())return;
         m_family=0;m_page=0;Reload();
         if(const auto *entry=oc2_gloves::FindEntry(m_catalog,m_draft.resource))
             {const int family=FamilyIndex(entry->collection);if(family>=0)m_family=family;}
@@ -58,34 +57,34 @@ public:
     }
     void Draw() override
     {
-        if(CL_IsActive())return;
         const int w=uiStatic.width,right=Right(),rw=w-right-48,lw=right-72;
         UI_FillRect(0,0,ScreenWidth,ScreenHeight,PackRGBA(9,14,20,250));
         Fill(32,110,w-64,578,PackRGBA(23,33,44,250));
-        Text(48,30,w-96,44,"GLOVES",32,Ink(),true);
-        Text(48,78,w-96,22,"LOCAL LOADOUT   /   shared by both teams",15,Muted());
-        Text(48,124,lw,22,"GLOVE FAMILY",12,Muted());
-        Text(48,270,lw,20,"SEARCH VARIANTS",12,Muted());
-        Text(right,188,rw,22,"SELECTED HANDWEAR",15,Accent(),true);
+        Text(48,30,w-96,44,u8"手套",32,Ink(),true);
+        Text(48,78,w-96,22,u8"双方阵营共用的手套装备",15,Muted());
+        Text(48,124,lw,22,u8"手套类别",12,Muted());
+        Text(48,270,lw,20,u8"搜索款式",12,Muted());
+        Text(right,188,rw,22,u8"已选手套",15,Accent(),true);
         if(const auto *entry=oc2_gloves::FindEntry(m_catalog,m_draft.resource))
         {
             oc2_local_inventory::DrawImage(entry->preview,Pixel(right,230),Size(rw,272).Scale());
-            Text(right,510,rw,22,"TEXTURE PREVIEW",12,Muted());
-            Text(right,540,rw,44,entry->name.c_str(),21,Ink(),true);
-            Text(right,588,rw,24,entry->collection.c_str(),14,Accent());
+            Text(right,510,rw,22,u8"图案预览",12,Muted());
+            const std::string finish=oc2_inventory_labels::GloveFinish(m_catalog,entry->id);
+            Text(right,540,rw,44,finish.c_str(),21,Ink(),true);
+            Text(right,588,rw,24,oc2_inventory_labels::GloveCollection(entry->collection),14,Accent());
         }
         else if(!m_draft.resource)
         {
-            Text(right,282,rw,52,"TEAM DEFAULT",29,Accent(),true);
-            Text(right,354,rw,30,"CT: Hard Knuckle   /   T: Full Finger",17,Ink());
-            Text(right,400,rw,26,"Restores the original gloves and team sleeves.",15,Muted());
+            Text(right,282,rw,52,u8"阵营默认",29,Accent(),true);
+            Text(right,354,rw,30,u8"反恐精英：硬壳手套 / 恐怖分子：全指手套",17,Ink());
+            Text(right,400,rw,26,u8"恢复原版手套与阵营袖子",15,Muted());
         }
-        else Text(right,282,rw,52,"SAVED GLOVES UNAVAILABLE",23,Ink(),true);
-        char page[96];std::snprintf(page,sizeof(page),"%u variants   /   Page %d / %d",unsigned(m_options.size()),m_page+1,Pages());
+        else Text(right,282,rw,52,u8"无法读取已保存的手套",23,Ink(),true);
+        char page[96];std::snprintf(page,sizeof(page),u8"%u 款手套 / 第 %d / %d 页",unsigned(m_options.size()),m_page+1,Pages());
         Text(48,666,lw,20,page,13,Muted());
-        Text(right,654,rw,28,"Choose a variant, then APPLY to equip.",13,Muted());
+        Text(right,654,rw,28,u8"选择款式后，点击应用装备",13,Muted());
         Text(196,700,Q_max(100,w-720),38,m_message.c_str(),13,m_error?PackRGBA(246,133,119,255):Muted());
-        if(m_dirty)Text(w-380,78,332,22,"Unsaved changes",14,Accent(),false,QM_RIGHT);
+        if(m_dirty)Text(w-380,78,332,22,u8"有未保存的更改",14,Accent());
         CMenuFramework::Draw();
     }
     void Dump()
@@ -139,10 +138,9 @@ private:
     int Pages()const{return Q_max(1,(int(m_options.size())+7)/8);}
     Point Pixel(int x,int y)const{return GetRenderPosition()+Point(x,y).Scale();}
     void Fill(int x,int y,int w,int h,unsigned color){UI_FillRect(Pixel(x,y),Size(w,h).Scale(),color);}
-    void Text(int x,int y,int w,int h,const char *text,int height,unsigned color,bool bold=false,unsigned align=QM_LEFT)
+    void Text(int x,int y,int w,int h,const char *text,int height,unsigned color,bool bold=false,unsigned align=QM_CENTER)
     {
-        UI_DrawString(bold?uiStatic.hBoldFont:uiStatic.hDefaultFont,Pixel(x,y),Size(w,h).Scale(),text,color,
-            Q_max(1,int(height*uiStatic.scaleY)),align,ETF_FORCECOL|ETF_NO_WRAP);
+        oc2_panorama::DrawText(Pixel(x,y),Size(w,h).Scale(),text,height,color,bold,align);
     }
     static void DumpItem(CMenuBaseItem &item,bool visible)
     {
@@ -152,7 +150,7 @@ private:
     }
     void Button(CMenuAction &button,const char *label,const char *tag)
     {
-        button.SetNameAndStatus(label,nullptr,tag);button.SetCharSize(QM_SMALLFONT);button.SetTextInsetX(12);
+        button.SetNameAndStatus(label,nullptr,tag);oc2_panorama::CenterButton(button);
         button.bIgnoreColorstring=true;button.eFocusAnimation=QM_HIGHLIGHTIFFOCUS;
         button.colorBase=Ink();button.colorFocus=Accent();
         button.SetBackground(PackRGBA(42,56,70,255),PackRGBA(65,82,98,255));AddItem(button);
@@ -164,22 +162,22 @@ private:
         m_configValid=oc2_local_gloves::LoadConfig(m_saved,configError);
         if(m_catalogValid&&m_configValid)m_configValid=oc2_gloves::ValidateConfig(m_saved,m_catalog,configError);
         m_draft=m_saved;m_dirty=false;m_error=!m_catalogValid||!m_configValid;
-        m_message=!m_catalogValid?error:!m_configValid?configError:"Saved glove selection loaded.";
+        m_message=!m_catalogValid?u8"手套目录无法读取。":!m_configValid?u8"手套存档无法读取。":u8"已读取保存的手套装备。";
     }
     void _Init() override
     {
         for(int i=0;i<FamilyCount;++i)
         {
             std::snprintf(m_familyTags[i],sizeof(m_familyTags[i]),"glove_family_%s",FamilyKey(i));
-            Button(m_families[i],FamilyName(i),m_familyTags[i]);
+            Button(m_families[i],oc2_inventory_labels::GloveFamilyLabel(i),m_familyTags[i]);
             SET_EVENT_MULTI(m_families[i].onReleased,{static_cast<CMenuGloveEditor*>(pSelf->Parent())->Family(pSelf);});
         }
-        Button(m_default,"USE TEAM DEFAULT","glove_default");m_default.onReleased=VoidCb(&CMenuGloveEditor::Default);
-        Button(m_back,"BACK","glove_back");m_back.onReleased=VoidCb(&CMenuGloveEditor::Back);
-        Button(m_revert,"REVERT","glove_revert");m_revert.onReleased=VoidCb(&CMenuGloveEditor::Revert);
-        Button(m_apply,"APPLY","glove_apply");m_apply.onReleased=VoidCb(&CMenuGloveEditor::Apply);
-        Button(m_previous,"< PREVIOUS","glove_previous");m_previous.onReleased=VoidCb(&CMenuGloveEditor::Previous);
-        Button(m_next,"NEXT >","glove_next");m_next.onReleased=VoidCb(&CMenuGloveEditor::Next);
+        Button(m_default,u8"使用阵营默认","glove_default");m_default.onReleased=VoidCb(&CMenuGloveEditor::Default);
+        Button(m_back,u8"返回","glove_back");m_back.onReleased=VoidCb(&CMenuGloveEditor::Back);
+        Button(m_revert,u8"还原","glove_revert");m_revert.onReleased=VoidCb(&CMenuGloveEditor::Revert);
+        Button(m_apply,u8"应用","glove_apply");m_apply.onReleased=VoidCb(&CMenuGloveEditor::Apply);
+        Button(m_previous,u8"< 上一页","glove_previous");m_previous.onReleased=VoidCb(&CMenuGloveEditor::Previous);
+        Button(m_next,u8"下一页 >","glove_next");m_next.onReleased=VoidCb(&CMenuGloveEditor::Next);
         for(int i=0;i<8;++i)
         {
             std::snprintf(m_rowTags[i],sizeof(m_rowTags[i]),"glove_option_%d",i);
@@ -187,7 +185,10 @@ private:
             SET_EVENT_MULTI(m_rows[i].onReleased,{static_cast<CMenuGloveEditor*>(pSelf->Parent())->Select(pSelf);});
         }
         m_search.SetNameAndStatus("",nullptr,"glove_search");m_search.iMaxLength=80;m_search.bAllowColorstrings=false;AddItem(m_search);
-        m_discard.Link(this);m_discard.SetMessage("Discard the unsaved glove selection?");
+        m_discard.Link(this);m_discard.SetMessage(u8"放弃尚未保存的手套选择？");
+        m_discard.SetPositiveButton(u8"放弃更改",PC_OK);m_discard.SetNegativeButton(u8"继续编辑",PC_CANCEL);
+        m_discard.yes.SetPicture("");m_discard.no.SetPicture("");
+        m_discard.yes.eTextAlignment=m_discard.no.eTextAlignment=QM_CENTER;
         m_discard.onPositive=VoidCb(&CMenuGloveEditor::Discard);
         m_discard.yes.szTag="glove_discard_yes";m_discard.no.szTag="glove_discard_no";
     }
@@ -214,7 +215,7 @@ private:
         for(const auto &entry:m_catalog)
         {
             if(entry.collection!=FamilyName(m_family))continue;
-            if(!m_query.empty()&&oc2_local_inventory::Fold(entry.name).find(m_query)==std::string::npos)continue;
+            if(!m_query.empty()&&oc2_local_inventory::Fold(oc2_inventory_labels::GloveSearchText(m_catalog,entry)).find(m_query)==std::string::npos)continue;
             m_options.push_back(entry.id);
         }
         m_page=Q_min(m_page,Pages()-1);
@@ -223,10 +224,9 @@ private:
             const int index=m_page*8+i;const bool visible=index<int(m_options.size());
             m_rows[i].SetVisibility(visible);m_rowIds[i]=visible?m_options[index]:-1;
             if(!visible)continue;
-            const auto *entry=oc2_gloves::FindEntry(m_catalog,m_rowIds[i]);
-            std::string label=entry?entry->name:"Team default";
+            std::string label=oc2_inventory_labels::GloveFinish(m_catalog,m_rowIds[i]);
             const bool selected=m_rowIds[i]==m_draft.resource;
-            if(selected)label="[SELECTED] "+label;
+            if(selected)label=u8"已选择 · "+label;
             m_rows[i].SetText(label.c_str());m_rows[i].colorBase=selected?Accent():Ink();
         }
         for(int i=0;i<FamilyCount;++i)m_families[i].colorBase=m_family==i?Accent():Ink();
@@ -244,7 +244,7 @@ private:
     {
         if(resource&&!oc2_gloves::FindEntry(m_catalog,resource))return;
         oc2_gloves::Equip(m_draft,resource);m_dirty=m_draft.resource!=m_saved.resource;
-        m_error=false;m_message=m_dirty?"Selection changed. Apply to equip.":"This selection is already saved.";RefreshRows();
+        m_error=false;m_message=m_dirty?u8"已选择款式，点击应用装备。":u8"当前款式已保存。";RefreshRows();
     }
     void Default(){Choose(0);}
     void Select(CMenuBaseItem *button)
@@ -259,14 +259,14 @@ private:
         if(!m_dirty||!m_catalogValid||!m_configValid)return;
         oc2_gloves::Config latest;std::string error;
         if(!oc2_local_gloves::LoadConfig(latest,error)||!oc2_gloves::ValidateConfig(latest,m_catalog,error))
-            {m_error=true;m_message=error;return;}
+            {m_error=true;m_message=u8"手套存档无法读取，未保存更改。";return;}
         if(latest.revision!=m_saved.revision||latest.resource!=m_saved.resource||latest.instance!=m_saved.instance)
-            {m_error=true;m_message="Saved gloves changed. Revert to reload before applying.";return;}
+            {m_error=true;m_message=u8"手套存档已发生更改，请还原后重新选择。";return;}
         oc2_gloves::Equip(latest,m_draft.resource);
         latest.revision=latest.revision==std::numeric_limits<unsigned>::max()?1:latest.revision+1;
-        if(!oc2_gloves::ValidateConfig(latest,m_catalog,error)){m_error=true;m_message=error;return;}
-        if(!oc2_local_gloves::SaveConfig(latest)){m_error=true;m_message="Save failed. Selection is still unsaved.";return;}
-        m_saved=m_draft=latest;m_dirty=false;m_error=false;m_message="Gloves equipped for both teams.";RefreshRows();
+        if(!oc2_gloves::ValidateConfig(latest,m_catalog,error)){m_error=true;m_message=u8"手套选择无效，未保存更改。";return;}
+        if(!oc2_local_gloves::SaveConfig(latest)){m_error=true;m_message=u8"保存失败，选择仍保留在编辑页。";return;}
+        m_saved=m_draft=latest;m_dirty=false;m_error=false;m_message=u8"已为双方阵营装备手套。";RefreshRows();
     }
     void Back(){if(m_dirty){m_discard.Show();m_discard.SetCursorToItem(m_discard.no);}else Hide();}
     void Discard(){m_dirty=false;Hide();}
