@@ -864,7 +864,8 @@ int CL_DrawStringf( cl_font_t *font, float x, float y, const rgba_t color, int f
 void CL_UnloadProgs( void );
 qboolean CL_LoadProgs( const char *name );
 void CL_LinkUserMessage( char *pszName, const int svc_num, int iSize );
-void CL_DrawHUD( int state );
+qboolean CL_DrawHUD( int state );
+void CL_DrawScreenFade( void );
 qboolean CL_InitRadarInterface( void );
 void CL_RadarSetCaptureParams( int blurRadius, int cx, int cy, int size );
 void CL_RadarCapturePending( void );
