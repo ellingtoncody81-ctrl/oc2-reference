@@ -129,6 +129,10 @@ HUD_Shutdown
 */
 void DLLEXPORT HUD_Shutdown( void )
 {
+	// Xash unloads menu.dll in SCR_Shutdown before calling client shutdown.
+	// ClearMap must not call HideVGUIMenu through that expired interface when
+	// the player exits with the purchase menu still open.
+	g_pMenu = nullptr;
 	gHUD.Shutdown();
 	Input_Shutdown();
 	Localize_Free();

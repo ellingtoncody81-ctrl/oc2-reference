@@ -1,4 +1,5 @@
 #pragma once
+#include "PanoramaChrome.h"
 #include "Framework.h"
 #include "Action.h"
 #include "Slider.h"
@@ -8,9 +9,19 @@
 #include "../../../../common/oc2_accessories.h"
 #include "../../../../common/oc2_accessory_domains.h"
 #include "SkinInventory.h"
+#include "ProfileInventory.h"
+#include "PanoramaModelView.h"
+#include "PanoramaInventoryLabels.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+
+class CMenuAccessoriesEditor;
+class IMenuCharmPatternPicker
+{
+public:
+    virtual void OpenCharmPattern(int weapon,int skin,int pattern,CMenuAccessoriesEditor *owner)=0;
+};
 
 // The preview and both attachments share one model-unit projection. The saved
 // UV still describes the whole sticker-facing gun, including moving parts.
@@ -24,6 +35,7 @@ public:
     struct Pane {Point p;Size z;float scale=1;Region region;};
     float *u=nullptr,*v=nullptr;bool dragging=false;int weapon=0,selected=0;
     oc2_accessories::WeaponConfig *draft=nullptr;
+    const oc2_inventory::WeaponState *appearance=nullptr;
     unsigned count=0;std::string sticker;
     const oc2_accessory_domains::Domains *domains=nullptr;
     CEventCallback onSelected;
@@ -84,11 +96,11 @@ public:
         for(int i=0;i<6;++i){m_digits[i]=digits[i];m_digitFiles[i]=digitFiles[i];}
         previewValid=true;return true;
     }
-    bool SetPosition(float x,float y)
+    bool SetPosition(float x,float y,bool snap=true)
     {
         if(!u||!v)return false;
         x=Q_max(0.f,Q_min(1.f,x));y=Q_max(0.f,Q_min(1.f,y));
-        SnapToSurface(x,y);
+        if(snap)SnapToSurface(x,y);
         if(*u!=x||*v!=y){*u=x;*v=y;_Event(QM_CHANGED);}
         return true;
     }
@@ -128,26 +140,23 @@ public:
     {
         if(dragging)MovePointer();
         const Point p=GetRenderPosition();const Size z=GetRenderSize();
-        UI_FillRect(p,z,PackRGBA(25,40,54,255));
+        UI_FillRect(p,z,PackRGBA(24,36,46,230));
+        UI_DrawRectangle(p,z,PackRGBA(124,146,161,80));
         for(int i=1;i<4;++i)
         {
-            UI_FillRect(p.x+z.w*i/4,p.y,1,z.h,PackRGBA(72,97,116,100));
-            UI_FillRect(p.x,p.y+z.h*i/4,z.w,1,PackRGBA(72,97,116,100));
+            UI_FillRect(p.x+z.w*i/4,p.y,1,z.h,PackRGBA(124,146,161,35));
+            UI_FillRect(p.x,p.y+z.h*i/4,z.w,1,PackRGBA(124,146,161,35));
         }
-        if(!previewValid)return;
-        char file[96];std::snprintf(file,sizeof(file),"gfx/inventory/previews/weapon_%d.tga",weapon);
-        const HIMAGE image=EngFuncs::PIC_Load(file);Pane panes[2];const int n=Panes(panes);
-        for(int i=0;image&&i<n;++i)
-        {
-            const Region &r=panes[i].region;wrect_t crop;
-            crop.left=int(r.u0*EngFuncs::PIC_Width(image));crop.right=int(r.u1*EngFuncs::PIC_Width(image));
-            crop.top=int(r.v0*EngFuncs::PIC_Height(image));crop.bottom=int(r.v1*EngFuncs::PIC_Height(image));
-            EngFuncs::PIC_Set(image,255,255,255,255);EngFuncs::PIC_DrawTrans(panes[i].p,panes[i].z,&crop);
-        }
-        DrawAttachment(1-selected);DrawAttachment(selected);
+        if(!appearance||!draft)return;
+        m_model.SetInteractive(false);m_model.SetAppearance(*appearance,draft);
+        m_model.SetAccessoryPreview(sticker,count);
+        if(!m_model.DrawAt(p.x,p.y,z.w,z.h))
+            oc2_panorama::DrawText(p,z,u8"3D 预览加载中",16,PackRGBA(160,175,189,255),false,QM_CENTER);
+        DrawSelection();
     }
     void Dump()
     {
+        m_model.Dump("accessory_detail");
         Pane panes[2];const int n=Panes(panes);
         for(int i=0;i<n;++i)
         {
@@ -168,6 +177,7 @@ private:
     struct Box {Point p;Size z;};
     std::array<Preview,24> m_previews{};Attachment m_models[2];Bounds m_stamp,m_digits[6];
     std::string m_frame,m_digitFiles[6];Point m_grab;
+    CMenuPanoramaModelView m_model;
     static bool SafeImage(const std::string &s)
     {return !s.empty()&&s.size()<81&&s.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")==std::string::npos&&s.find("..") == std::string::npos;}
     static bool ReadBounds(std::istringstream &s,Bounds &b)
@@ -220,71 +230,41 @@ private:
         x=bx;y=by;
     }
     void Position(int i,float &x,float &y)const
-    {x=draft?(i?draft->charmU:draft->statU):.5f;y=draft?(i?draft->charmV:draft->statV):.5f;SnapToSurface(x,y);}
+    {x=draft?(i?draft->charmU:draft->statU):.5f;y=draft?(i?draft->charmV:draft->statV):.5f;}
     Point Anchor(int i)const
     {
-        float x,y;Position(i,x,y);Pane panes[2];const int n=Panes(panes);
-        if(!n)return GetRenderPosition();const Pane &p=panes[RegionFor(x)];const Region &r=p.region;
-        return Point(p.p.x+int((x-r.u0)/(r.u1-r.u0)*p.z.w),p.p.y+int((1-y-r.v0)/(r.v1-r.v0)*p.z.h));
+        float u,v;Position(i,u,v);float x=0,y=0,scale=0;
+        if(!m_model.ProjectAccessory(i,u,v,x,y,scale))return GetRenderPosition();
+        return Point(int(std::lround(x)),int(std::lround(y)));
     }
-    Box WorldBox(int i,const Bounds &bounds)const
+    Box AttachmentBox(int i)const
     {
-        float x,y;Position(i,x,y);Pane panes[2];const int n=Panes(panes);const Point pivot=Anchor(i);
-        const float scale=(n?panes[RegionFor(x)].scale:1)*(i&&draft?draft->length:1);
-        const int left=int(std::floor(pivot.x+bounds.x0*scale)),top=int(std::floor(pivot.y-bounds.y1*scale));
-        const int right=int(std::ceil(pivot.x+bounds.x1*scale)),bottom=int(std::ceil(pivot.y-bounds.y0*scale));
-        return {Point(left,top),Size(Q_max(1,right-left),Q_max(1,bottom-top))};
+        float left=0,top=0,right=0,bottom=0;
+        if(!m_model.AttachmentBounds(i,left,top,right,bottom))return {Point(),Size(0,0)};
+        const int x=int(std::floor(left)),y=int(std::floor(top));
+        return {Point(x,y),Size(Q_max(1,int(std::ceil(right))-x),Q_max(1,int(std::ceil(bottom))-y))};
     }
-    Box AttachmentBox(int i)const{return WorldBox(i,m_models[i].bounds);}
     bool HitAttachment(int i)const
     {
-        if(!previewValid)return false;const Box b=AttachmentBox(i);const int tolerance=3;
+        const Box b=AttachmentBox(i);if(b.z.w<=0||b.z.h<=0)return false;const int tolerance=3;
         return UI_CursorInRect(Point(b.p.x-tolerance,b.p.y-tolerance),Size(b.z.w+2*tolerance,b.z.h+2*tolerance));
     }
-    static void DrawImage(const std::string &file,const Box &b,int alpha,bool completePath=false)
+    void DrawSelection()
     {
-        const std::string path=completePath?file:std::string("gfx/inventory/previews/")+file;
-        const HIMAGE image=EngFuncs::PIC_Load(path.c_str());if(!image)return;
-        EngFuncs::PIC_Set(image,255,255,255,alpha);EngFuncs::PIC_DrawTrans(b.p,b.z);
-    }
-    void DrawAttachment(int i)
-    {
-        if(!draft)return;const Box b=AttachmentBox(i);const int alpha=(i?draft->charm:draft->stattrak)?255:145;
-        DrawImage(m_models[i].file,b,alpha);
-        if(i)
-        {
-            if(!sticker.empty())DrawImage(sticker,WorldBox(i,m_stamp),alpha,true);
-            DrawImage(m_frame,b,alpha);
-        }
-        else
-        {
-            char text[7];std::snprintf(text,sizeof(text),"%06u",Q_min(999999u,count));
-            for(int d=0;d<6;++d)
-            {
-                char file[96];std::snprintf(file,sizeof(file),m_digitFiles[d].c_str(),text[d]-'0');
-                DrawImage(file,WorldBox(0,m_digits[d]),alpha);
-            }
-        }
-        if(i==selected)
-        {
-            const int x=b.p.x-2,y=b.p.y-2,w=b.z.w+4,h=b.z.h+4;const unsigned ink=PackRGBA(224,194,119,220);
-            UI_FillRect(x,y,w,1,ink);UI_FillRect(x,y+h-1,w,1,ink);UI_FillRect(x,y,1,h,ink);UI_FillRect(x+w-1,y,1,h,ink);
-        }
+        if(!draft)return;const Box b=AttachmentBox(selected);
+        if(b.z.w<=0||b.z.h<=0)return;
+        const Point p=GetRenderPosition();const Size z=GetRenderSize();
+        const int x=Q_max(p.x,b.p.x-2),y=Q_max(p.y,b.p.y-2);
+        const int right=Q_min(p.x+z.w,b.p.x+b.z.w+2),bottom=Q_min(p.y+z.h,b.p.y+b.z.h+2);
+        const int w=right-x,h=bottom-y;if(w<=0||h<=0)return;
+        const unsigned ink=PackRGBA(224,194,119,220);
+        UI_FillRect(x,y,w,1,ink);UI_FillRect(x,y+h-1,w,1,ink);UI_FillRect(x,y,1,h,ink);UI_FillRect(x+w-1,y,1,h,ink);
     }
     void MovePointer()
     {
-        Pane panes[2];const int n=Panes(panes);if(!n)return;
         const float x=float(uiStatic.cursorX-m_grab.x),y=float(uiStatic.cursorY-m_grab.y);
-        int best=0;float distance=std::numeric_limits<float>::max();
-        for(int i=0;i<n;++i)
-        {
-            const Pane &p=panes[i];const float dx=Q_max(float(p.p.x)-x,Q_max(0.f,x-p.p.x-p.z.w));
-            const float dy=Q_max(float(p.p.y)-y,Q_max(0.f,y-p.p.y-p.z.h)),d=dx*dx+dy*dy;
-            if(d<distance){distance=d;best=i;}
-        }
-        const Pane &p=panes[best];const Region &r=p.region;
-        const float pu=Q_max(0.f,Q_min(1.f,(x-p.p.x)/p.z.w)),pv=Q_max(0.f,Q_min(1.f,(y-p.p.y)/p.z.h));
-        SetPosition(r.u0+pu*(r.u1-r.u0),1-r.v0-pv*(r.v1-r.v0));
+        float nextU=0,nextV=0;
+        if(m_model.UnprojectAccessory(x,y,nextU,nextV))SetPosition(nextU,nextV,false);
     }
 };
 
@@ -292,11 +272,19 @@ class CMenuAccessoriesEditor : public CMenuFramework
 {
 public:
     CMenuAccessoriesEditor():CMenuFramework("CMenuAccessoriesEditor"){}
-    void Open(int weapon)
+    void SetPatternPicker(IMenuCharmPatternPicker *picker){m_patternPicker=picker;}
+    void Open(int weapon,int skin=-1)
     {
-        if(CL_IsActive()||oc2_accessories::Index(weapon)<0)return;
-        m_weapon=weapon;m_tab=0;ReloadData();
+        if(oc2_accessories::Index(weapon)<0)return;
+        m_weapon=weapon;m_skin=skin;m_tab=0;ReloadData();
         CMenuFramework::Show();Sync();SetCursorToItem(m_statTab);
+    }
+    void SelectInventoryPattern(int id)
+    {
+        m_appearance.charm=id;m_patternOverride=id;m_patternChanged=false;
+        m_inventoryPatternFile.clear();m_inventoryPatternName.clear();
+        ResolvePattern();m_draft.charm=id!=-1;m_dirty=true;
+        Sync();Message(u8"已选择挂件图案，点击应用保存当前皮肤设置。");
     }
     bool KeyDown(int key) override
     {
@@ -310,55 +298,60 @@ public:
     }
     void Draw() override
     {
-        if(CL_IsActive())return;
-        const int w=uiStatic.width,left=(w-144)/2,right=left+96;
-        UI_FillRect(0,0,ScreenWidth,ScreenHeight,PackRGBA(9,14,20,250));
-        Fill(32,110,w-64,578,PackRGBA(23,33,44,250));
-        Text(48,30,w-96,44,oc2_accessories::Name(m_weapon),32,Ink(),true);
-        Text(48,78,w-96,22,"LOCAL WEAPON CUSTOMIZATION   /   shared by both teams",15,Muted());
-        Text(48,194,left,22,m_tab?"CHARM POSITION":"STATTRAK POSITION",16,Accent(),true);
-        Text(48,490,left,24,"Drag an attachment. Arrows and sliders also move it.",13,Muted());
-        Text(48,516,left,22,m_weapon==10?"Both inner gun sides are editable. Editing turns it ON.":
-            "Editing turns it ON; you can switch it OFF.",12,Muted());
+        const int w=uiStatic.width,left=Left(),right=Right(),rw=w-right-34;
+        oc2_panorama::DrawBackground();
+        Fill(64,0,w-64,96,PackRGBA(12,18,25,80));Fill(98,95,w-132,1,PackRGBA(190,206,218,80));
+        const std::string heading=std::string(oc2_accessories::Name(m_weapon))+u8"  /  "+
+            oc2_inventory_labels::Finish(m_skinCatalog,m_skin)+u8"  /  挂件与计数器";
+        Text(98,30,w-132,42,heading.c_str(),28,Ink(),true);
+        Fill(84,168,left+28,508,PackRGBA(19,29,38,150));
+        Fill(right-14,168,rw+28,508,PackRGBA(18,28,37,210));
+        Text(98,181,left,30,m_tab?u8"挂件位置 · 实物同比例预览":u8"计数器位置 · 实物同比例预览",20,Accent(),true);
+        Text(98,508,left,24,u8"拖动附件调整位置 · 方向键微调",13,Ink());
+        Text(98,534,left,22,m_weapon==10?u8"双枪内侧整片枪体可调，挂点随承载部件固定":
+            u8"有贴纸一侧的整片枪体可调，挂点随承载部件固定",12,Muted());
         char value[160];
-        std::snprintf(value,sizeof(value),"Horizontal %.0f%%",100*(m_tab?m_draft.charmU:m_draft.statU));
-        Text(48,543,left,24,value,15,Ink());
-        std::snprintf(value,sizeof(value),"Vertical %.0f%%",100*(m_tab?m_draft.charmV:m_draft.statV));
-        Text(48,609,left,24,value,15,Ink());
+        std::snprintf(value,sizeof(value),u8"水平位置  %.0f%%",100*(m_tab?m_draft.charmU:m_draft.statU));
+        Text(98,561,left,24,value,15,Ink());
+        std::snprintf(value,sizeof(value),u8"垂直位置  %.0f%%",100*(m_tab?m_draft.charmV:m_draft.statV));
+        Text(98,611,left,24,value,15,Ink());
         if(!m_tab)
         {
-            Text(right,194,w-right-48,24,"RECORDED KILLS",15,Muted(),true);
+            Text(right,181,rw,30,u8"累计击杀",20,Accent(),true);
             if(m_countsValid)std::snprintf(value,sizeof(value),"%06u",m_count);
-            else std::snprintf(value,sizeof(value),"Unavailable");
-            Text(right,235,w-right-48,70,value,46,Accent(),true);
-            Text(right,380,w-right-48,28,"Counts enemy kills with StatTrak on.",16,Ink());
-            Text(right,420,w-right-48,28,"Reset clears this weapon only.",15,Muted());
-            Text(right,482,w-right-48,28,"Apply saves settings; counters stay separate.",15,Muted());
+            else std::snprintf(value,sizeof(value),u8"无法读取");
+            Text(right,242,rw,70,value,46,Accent(),true);
+            Fill(right+24,390,rw-48,1,PackRGBA(190,206,218,60));
+            Text(right,414,rw,28,u8"启用计数器后，记录敌方击杀",16,Ink());
+            Text(right,454,rw,28,u8"重置仅清空当前武器的计数",15,Muted());
+            Text(right,494,rw,28,u8"位置与开关点击应用后保存",15,Muted());
+            Text(right,534,rw,28,u8"击杀记录独立保留",15,Muted());
         }
         else
         {
-            Text(right,194,w-right-48,22,m_patternOverride<0?"CHARM UNEQUIPPED IN SKINS":m_patternOverride?"SKIN PATTERN OVERRIDE ACTIVE":"CHARM STICKER",15,Accent(),true);
-            const oc2_accessories::Sticker *sticker=SelectedSticker();
-            if(sticker)
+            Text(right,181,rw,30,m_patternChanged?u8"挂件图案 · 待应用":m_patternOverride<0?u8"挂件当前已卸下":m_patternOverride?u8"正在使用库存图案":u8"挂件图案",20,Accent(),true);
+            const std::string pattern=PatternFile();
+            if(!pattern.empty())
             {
-                const std::string path=std::string(oc2_accessories::kStickerDirectory)+sticker->file;
-                const HIMAGE image=EngFuncs::PIC_Load(path.c_str());
-                if(image){EngFuncs::PIC_Set(image,255,255,255,255);EngFuncs::PIC_DrawTrans(Pixel(right,230),Size(92,92).Scale());}
-                Text(right+108,230,w-right-156,42,sticker->name.c_str(),18,Ink(),true);
+                const HIMAGE image=EngFuncs::PIC_Load(pattern.c_str());
+                if(image){EngFuncs::PIC_Set(image,255,255,255,255);EngFuncs::PIC_DrawTrans(Pixel(right,224),Size(92,92).Scale());}
+                const std::string patternName=PatternName();
+                Text(right+108,224,rw-108,42,patternName.c_str(),18,Ink(),true);
             }
-            Text(right,323,w-right-48,24,"Import image filename",13,Muted());
-            if(!m_patternOverride)Text(right,397,w-right-48,24,"PNG, TGA or BMP. No folders or commands.",12,Muted());
-            static const char *names[4]={"Swing amplitude (degrees)","Length","Stiffness","Damping"};
+            Text(right,323,rw,24,u8"导入自定义图案 · 输入图片文件名",13,Muted());
+            if(!m_patternOverride||m_patternChanged)Text(right,397,rw,24,u8"支持 PNG、TGA、BMP 图片",12,Muted());
+            static const char *names[4]={u8"摆动幅度（度）",u8"挂件长度",u8"回弹强度",u8"摆动阻尼"};
             const float values[4]={m_draft.amplitude,m_draft.length,m_draft.stiffness,m_draft.damping};
             for(int i=0;i<4;++i)
             {
                 std::snprintf(value,sizeof(value),"%s  %.2f",names[i],values[i]);
-                Text(right,430+i*56,w-right-48,24,value,14,Ink());
+                Text(right,430+i*56,rw,24,value,14,Ink());
             }
         }
-        Text(200,700,Q_max(100,w-840),36,m_message.c_str(),14,m_error?PackRGBA(246,133,119,255):Muted());
-        if(m_dirty)Text(w-440,75,392,22,"Unsaved changes",14,Accent(),false,QM_RIGHT);
-        UpdatePreview();CMenuFramework::Draw();
+        Fill(64,704,w-64,64,PackRGBA(9,14,20,125));
+        Text(98,678,w-132,24,m_message.c_str(),13,m_error?PackRGBA(246,133,119,255):Ink());
+        if(m_dirty)Text(w-310,75,276,22,u8"有未保存的更改",13,Accent());
+        UpdatePreview();m_chrome.Draw();CMenuFramework::Draw();
         // Sliders can change during Draw; reflect the live pad after it paints.
         if(m_pad.dragging)SyncPositionSliders();
     }
@@ -375,7 +368,9 @@ public:
             m_count,int(m_countsValid),m_revision,int(m_error),int(m_resetDialog.IsVisible()),int(m_discardDialog.IsVisible()),
             filenameHex,m_importStatus,unsigned(m_catalog.size()));
         Con_Printf("%s",line);
-        Con_Printf("accessory_pattern_source: override=%d source=%s\n",m_patternOverride,m_patternOverride<0?"unequipped":m_patternOverride?"skin_loadout":"accessories");
+        Con_Printf("accessory_profile: weapon=%d skin=%d\n",m_weapon,m_skin);
+        Con_Printf("accessory_pattern_source: override=%d source=%s\n",m_patternOverride,m_patternOverride<0?"unequipped":m_patternOverride?"skin_profile":"accessories");
+        Con_Printf("accessory_pattern_draft: changed=%d applies_with_settings=1\n",int(m_patternChanged));
         Con_Printf("accessory_regions: loaded=%d stat_allowed=%d charm_allowed=%d dual_sides=%d\n",
             int(m_domains.valid),int(oc2_accessory_domains::Allowed(m_domains,m_weapon,m_draft.statU,m_draft.statV)),
             int(oc2_accessory_domains::Allowed(m_domains,m_weapon,m_draft.charmU,m_draft.charmV)),int(m_weapon==10));
@@ -392,12 +387,13 @@ private:
     static unsigned Ink(){return PackRGBA(234,239,243,255);}
     static unsigned Muted(){return PackRGBA(160,175,189,255);}
     static unsigned Accent(){return PackRGBA(224,194,119,255);}
+    int Left()const{return (uiStatic.width-164)*59/100;}
+    int Right()const{return 122+Left();}
     Point Pixel(int x,int y)const{return GetRenderPosition()+Point(x,y).Scale();}
     void Fill(int x,int y,int w,int h,unsigned color){UI_FillRect(Pixel(x,y),Size(w,h).Scale(),color);}
-    void Text(int x,int y,int w,int h,const char *text,int height,unsigned color,bool bold=false,unsigned align=QM_LEFT)
+    void Text(int x,int y,int w,int h,const char *text,int height,unsigned color,bool bold=false,unsigned align=QM_CENTER)
     {
-        UI_DrawString(bold?uiStatic.hBoldFont:uiStatic.hDefaultFont,Pixel(x,y),Size(w,h).Scale(),text,color,
-            Q_max(1,int(height*uiStatic.scaleY)),align,ETF_FORCECOL|ETF_NO_WRAP);
+        oc2_panorama::DrawText(Pixel(x,y),Size(w,h).Scale(),text,height,color,bold,align);
     }
     static void DumpItem(CMenuBaseItem &item,bool visible)
     {
@@ -407,9 +403,9 @@ private:
     }
     void Button(CMenuAction &b,const char *name,const char *tag)
     {
-        b.SetNameAndStatus(name,nullptr,tag);b.SetCharSize(QM_SMALLFONT);b.SetTextInsetX(12);
+        b.SetNameAndStatus(name,nullptr,tag);oc2_panorama::CenterButton(b);
         b.eFocusAnimation=QM_HIGHLIGHTIFFOCUS;b.bIgnoreColorstring=true;b.colorBase=Ink();b.colorFocus=Accent();
-        b.SetBackground(PackRGBA(42,56,70,255),PackRGBA(65,82,98,255));AddItem(b);
+        b.SetBackground(PackRGBA(36,48,59,228),PackRGBA(58,75,89,245));AddItem(b);
     }
     static bool Read(const char *path,std::string &text)
     {
@@ -432,11 +428,14 @@ private:
         if(Read(oc2_accessory_domains::kPath,regionText))oc2_accessory_domains::Parse(regionText.c_str(),m_domains,regionError);
         std::string previewText;
         m_pad.LoadPreview(Read("gfx/inventory/previews/editor_previews.dat",previewText)?previewText.c_str():nullptr);
-        oc2_accessories::Config config=oc2_accessories::DefaultConfig();
-        std::string text,error;bool valid=true;
-        if(Read(oc2_accessories::kConfigPath,text))valid=oc2_accessories::ParseConfig(text.c_str(),config,error);
-        else if(EngFuncs::FileExists(oc2_accessories::kConfigPath,true))valid=false;
-        m_configValid=valid;m_revision=config.revision;m_draft=*oc2_accessories::Find(config,m_weapon);m_dirty=false;
+        oc2_local_profiles::State state;std::string text,error;
+        bool valid=oc2_local_profiles::Load(state,error);
+        m_skinCatalog.clear();
+        valid=oc2_local_inventory::LoadCatalog(m_skinCatalog,error)&&valid;
+        if(m_skin<0){const auto *equipped=oc2_inventory::Find(state.loadout,m_weapon);m_skin=equipped?equipped->skin:0;}
+        const auto profile=oc2_local_profiles::Resolve(state,m_weapon,m_skin);
+        m_configValid=valid;m_revision=state.loadout.revision;m_draft=profile.accessories;m_appearance=profile.appearance;
+        m_dirty=false;m_patternChanged=false;
         oc2_accessories::Counts counts=oc2_accessories::DefaultCounts();
         m_countsValid=true;
         if(Read(oc2_accessories::kCountsPath,text))m_countsValid=oc2_accessories::ParseCounts(text.c_str(),counts,error);
@@ -446,11 +445,20 @@ private:
         if(Read(oc2_accessories::kCatalogPath,text))m_catalogValid=oc2_accessories::ParseCatalog(text.c_str(),m_catalog,error);
         else if(EngFuncs::FileExists(oc2_accessories::kCatalogPath,true))m_catalogValid=false;
         ScanStickers();
-        oc2_inventory::Config loadout;std::string loadoutError;
-        m_patternOverride=oc2_local_inventory::LoadConfig(loadout,loadoutError)?oc2_inventory::Find(loadout,m_weapon)->charm:0;
-        Message(!valid||!m_catalogValid?"Invalid saved file. Restore it before saving.":
-            !m_countsValid?"Counter file unavailable or invalid. It was left unchanged.":"Saved settings loaded.",
+        m_patternOverride=m_appearance.charm;
+        m_inventoryPatternFile.clear();m_inventoryPatternName.clear();
+        ResolvePattern();
+        Message(!valid||!m_catalogValid?u8"存档无法读取，请先恢复有效文件。":
+            !m_countsValid?u8"击杀记录无法读取，已保留原文件。":u8"已读取保存的附件设置。",
             !valid||!m_catalogValid||!m_countsValid);
+    }
+    void ResolvePattern()
+    {
+        if(m_patternOverride>0)if(const auto *entry=oc2_inventory::FindEntry(m_skinCatalog,m_patternOverride))
+        {
+            m_inventoryPatternFile=entry->file;
+            m_inventoryPatternName=oc2_inventory_labels::Sticker(m_skinCatalog,m_patternOverride);
+        }
     }
     bool AddSticker(const std::string &file,bool report=false)
     {
@@ -484,21 +492,37 @@ private:
         for(const auto &s:m_catalog)if(s.id==m_draft.sticker)return &s;
         return nullptr;
     }
+    std::string PatternFile()const
+    {
+        if(!m_patternChanged&&m_patternOverride>0&&!m_inventoryPatternFile.empty())return m_inventoryPatternFile;
+        const auto *sticker=SelectedSticker();return sticker?std::string(oc2_accessories::kStickerDirectory)+sticker->file:std::string();
+    }
+    std::string PatternName()const
+    {
+        if(!m_patternChanged&&m_patternOverride>0&&!m_inventoryPatternName.empty())return m_inventoryPatternName;
+        for(std::size_t i=0;i<m_catalog.size();++i)if(m_catalog[i].id==m_draft.sticker)
+            return std::string(u8"挂件图案 · 序号")+std::to_string(i+1);
+        return u8"未选择图案";
+    }
     void _Init() override
     {
-        Button(m_statTab,"STAT TRAK","accessory_tab_stat");m_statTab.onReleased=VoidCb(&CMenuAccessoriesEditor::StatTab);
-        Button(m_charmTab,"CHARM","accessory_tab_charm");m_charmTab.onReleased=VoidCb(&CMenuAccessoriesEditor::CharmTab);
-        Button(m_statToggle,"StatTrak OFF","accessory_stat_toggle");m_statToggle.onReleased=VoidCb(&CMenuAccessoriesEditor::ToggleStat);
-        Button(m_charmToggle,"Charm OFF","accessory_charm_toggle");m_charmToggle.onReleased=VoidCb(&CMenuAccessoriesEditor::ToggleCharm);
-        Button(m_apply,"APPLY","accessory_apply");m_apply.onReleased=VoidCb(&CMenuAccessoriesEditor::Apply);
-        Button(m_revert,"REVERT","accessory_revert");m_revert.onReleased=VoidCb(&CMenuAccessoriesEditor::Revert);
-        Button(m_defaults,"USE DEFAULTS","accessory_defaults");m_defaults.onReleased=VoidCb(&CMenuAccessoriesEditor::UseDefaults);
-        Button(m_back,"BACK","accessory_back");m_back.onReleased=VoidCb(&CMenuAccessoriesEditor::Back);
-        Button(m_reset,"RESET COUNT","accessory_reset");m_reset.onReleased=VoidCb(&CMenuAccessoriesEditor::ConfirmReset);
-        Button(m_prevSticker,"< PREVIOUS","accessory_sticker_previous");m_prevSticker.onReleased=VoidCb(&CMenuAccessoriesEditor::PreviousSticker);
-        Button(m_nextSticker,"NEXT >","accessory_sticker_next");m_nextSticker.onReleased=VoidCb(&CMenuAccessoriesEditor::NextSticker);
-        Button(m_import,"ADD IMAGE","accessory_import");m_import.onReleased=VoidCb(&CMenuAccessoriesEditor::ImportSticker);
-        Button(m_useAccessoryPattern,"USE ACCESSORIES SETTING","accessory_use_pattern");m_useAccessoryPattern.onReleased=VoidCb(&CMenuAccessoriesEditor::UseAccessoryPattern);
+        m_chrome.Init(*this,1);
+        Button(m_statTab,u8"计数器位置","accessory_tab_stat");m_statTab.onReleased=VoidCb(&CMenuAccessoriesEditor::StatTab);
+        Button(m_charmTab,u8"挂件位置与图案","accessory_tab_charm");m_charmTab.onReleased=VoidCb(&CMenuAccessoriesEditor::CharmTab);
+        Button(m_statToggle,u8"计数器：关闭","accessory_stat_toggle");m_statToggle.onReleased=VoidCb(&CMenuAccessoriesEditor::ToggleStat);
+        Button(m_charmToggle,u8"挂件：关闭","accessory_charm_toggle");m_charmToggle.onReleased=VoidCb(&CMenuAccessoriesEditor::ToggleCharm);
+        Button(m_apply,u8"应用并保存","accessory_apply");m_apply.onReleased=VoidCb(&CMenuAccessoriesEditor::Apply);
+        Button(m_revert,u8"还原","accessory_revert");m_revert.onReleased=VoidCb(&CMenuAccessoriesEditor::Revert);
+        Button(m_defaults,u8"恢复默认","accessory_defaults");m_defaults.onReleased=VoidCb(&CMenuAccessoriesEditor::UseDefaults);
+        Button(m_back,u8"返回检视","accessory_back");m_back.onReleased=VoidCb(&CMenuAccessoriesEditor::Back);
+        Button(m_reset,u8"重置当前武器计数","accessory_reset");m_reset.onReleased=VoidCb(&CMenuAccessoriesEditor::ConfirmReset);
+        Button(m_prevSticker,u8"< 上一款","accessory_sticker_previous");m_prevSticker.onReleased=VoidCb(&CMenuAccessoriesEditor::PreviousSticker);
+        Button(m_nextSticker,u8"下一款 >","accessory_sticker_next");m_nextSticker.onReleased=VoidCb(&CMenuAccessoriesEditor::NextSticker);
+        Button(m_import,u8"添加图片","accessory_import");m_import.onReleased=VoidCb(&CMenuAccessoriesEditor::ImportSticker);
+        Button(m_useAccessoryPattern,u8"改用本页挂件图案","accessory_use_pattern");m_useAccessoryPattern.onReleased=VoidCb(&CMenuAccessoriesEditor::UseAccessoryPattern);
+        Button(m_choosePattern,u8"选择挂件图案","accessory_choose_pattern");m_choosePattern.onReleased=VoidCb(&CMenuAccessoriesEditor::ChoosePattern);
+        m_apply.colorBase=PackRGBA(20,26,31,255);m_apply.colorFocus=PackRGBA(8,12,17,255);
+        m_apply.SetBackground(Accent(),PackRGBA(239,216,160,255));
         m_filename.SetNameAndStatus("",nullptr,"accessory_filename");m_filename.iMaxLength=80;m_filename.bAllowColorstrings=false;
         AddItem(m_filename);m_pad.SetNameAndStatus("",nullptr,"accessory_pad");AddItem(m_pad);
         m_pad.onChanged=VoidCb(&CMenuAccessoriesEditor::PositionEdited);
@@ -511,27 +535,34 @@ private:
             m_sliders[i].SetCharSize(QM_SMALLFONT);AddItem(m_sliders[i]);
             SET_EVENT_MULTI(m_sliders[i].onChanged,{static_cast<CMenuAccessoriesEditor*>(pSelf->Parent())->SliderChanged(pSelf);});
         }
-        m_resetDialog.Link(this);m_resetDialog.SetMessage("Reset this weapon's saved kill counter to zero?");
+        m_resetDialog.Link(this);m_resetDialog.SetMessage(u8"将当前武器的累计击杀重置为零？");
+        m_resetDialog.SetPositiveButton(u8"确认重置",PC_OK);m_resetDialog.SetNegativeButton(u8"取消",PC_CANCEL);
+        m_resetDialog.yes.SetPicture("");m_resetDialog.no.SetPicture("");
+        m_resetDialog.yes.eTextAlignment=m_resetDialog.no.eTextAlignment=QM_CENTER;
         m_resetDialog.onPositive=VoidCb(&CMenuAccessoriesEditor::ResetCount);
         m_resetDialog.yes.szTag="accessory_reset_yes";m_resetDialog.no.szTag="accessory_reset_no";
-        m_discardDialog.Link(this);m_discardDialog.SetMessage("Discard this weapon's unsaved changes?");
+        m_discardDialog.Link(this);m_discardDialog.SetMessage(u8"放弃当前武器尚未保存的更改？");
+        m_discardDialog.SetPositiveButton(u8"放弃更改",PC_OK);m_discardDialog.SetNegativeButton(u8"继续编辑",PC_CANCEL);
+        m_discardDialog.yes.SetPicture("");m_discardDialog.no.SetPicture("");
+        m_discardDialog.yes.eTextAlignment=m_discardDialog.no.eTextAlignment=QM_CENTER;
         m_discardDialog.onPositive=VoidCb(&CMenuAccessoriesEditor::Discard);
         m_discardDialog.yes.szTag="accessory_discard_yes";m_discardDialog.no.szTag="accessory_discard_no";
     }
     void _VidInit() override
     {
-        const int w=uiStatic.width,left=(w-144)/2,right=left+96,rw=w-right-48;
-        m_statTab.SetRect(48,126,166,44);m_charmTab.SetRect(226,126,166,44);
-        m_statToggle.SetRect(right,126,(rw-12)/2,44);m_charmToggle.SetRect(right+(rw+12)/2,126,(rw-12)/2,44);
-        m_pad.SetRect(48,230,left,250);m_sliders[0].SetRect(48,578,left,22);m_sliders[1].SetRect(48,644,left,22);
-        m_reset.SetRect(right,320,Q_min(220,rw),42);
-        m_prevSticker.SetRect(right+108,278,(rw-120)/2,42);
-        m_nextSticker.SetRect(right+114+(rw-120)/2,278,(rw-120)/2,42);
-        m_filename.SetRect(right,363,rw-142,30);m_import.SetRect(w-178,357,130,38);
-        m_useAccessoryPattern.SetRect(right,397,rw,28);
+        m_chrome.Layout();const int w=uiStatic.width,left=Left(),right=Right(),rw=w-right-34;
+        m_statTab.SetRect(98,112,(left-10)/2,42);m_charmTab.SetRect(108+(left-10)/2,112,(left-10)/2,42);
+        m_statToggle.SetRect(right,112,(rw-10)/2,42);m_charmToggle.SetRect(right+(rw+10)/2,112,(rw-10)/2,42);
+        m_pad.SetRect(98,224,left,276);m_sliders[0].SetRect(114,587,left-32,20);m_sliders[1].SetRect(114,637,left-32,20);
+        m_reset.SetRect(right+24,330,rw-48,42);
+        m_choosePattern.SetRect(right+108,274,rw-108,42);
+        m_prevSticker.SetRect(right+108,274,(rw-120)/2,42);
+        m_nextSticker.SetRect(right+120+(rw-120)/2,274,(rw-120)/2,42);
+        m_filename.SetRect(right,358,rw-120,30);m_import.SetRect(w-144,352,110,38);
+        m_useAccessoryPattern.SetRect(right,394,rw,28);
         for(int i=0;i<4;++i)m_sliders[i+2].SetRect(right,466+i*56,rw,20);
-        m_back.SetRect(48,700,128,36);m_revert.SetRect(w-410,700,140,36);m_apply.SetRect(w-250,700,202,36);
-        m_defaults.SetRect(w-620,700,190,36);
+        m_back.SetRect(98,718,134,36);m_revert.SetRect(w-310,718,112,36);m_apply.SetRect(w-184,718,150,36);
+        m_defaults.SetRect(w-454,718,130,36);
         Sync();
     }
     void SyncPositionSliders()
@@ -541,22 +572,22 @@ private:
     }
     void SyncEnableLabels()
     {
-        m_statToggle.SetText(m_draft.stattrak?"StatTrak ON":"StatTrak OFF");
-        m_charmToggle.SetText(m_draft.charm?"Charm ON":"Charm OFF");
+        m_statToggle.SetText(m_draft.stattrak?u8"计数器：开启":u8"计数器：关闭");
+        m_charmToggle.SetText(m_draft.charm?u8"挂件：开启":u8"挂件：关闭");
     }
     void EditedAttachment(bool charm)
     {
         (charm?m_draft.charm:m_draft.stattrak)=true;
         m_dirty=true;SyncEnableLabels();
-        Message(charm?"Charm ON. Apply to save.":"StatTrak ON. Apply to save.");
+        Message(charm?u8"挂件已启用，点击应用保存。":u8"计数器已启用，点击应用保存。");
     }
     void PositionEdited(){EditedAttachment(m_tab!=0);SyncPositionSliders();}
     void PreviewSelected(){m_tab=m_pad.selected;Sync();}
     void UpdatePreview()
     {
         m_pad.draft=&m_draft;m_pad.count=m_count;m_pad.selected=m_tab;
-        const oc2_accessories::Sticker *sticker=SelectedSticker();
-        m_pad.sticker=sticker?std::string(oc2_accessories::kStickerDirectory)+sticker->file:std::string();
+        m_appearance.charm=m_patternChanged?0:m_patternOverride;m_pad.appearance=&m_appearance;
+        m_pad.sticker=PatternFile();
     }
     void Sync()
     {
@@ -565,9 +596,10 @@ private:
         m_pad.u=m_tab?&m_draft.charmU:&m_draft.statU;m_pad.v=m_tab?&m_draft.charmV:&m_draft.statV;m_pad.weapon=m_weapon;
         m_pad.domains=&m_domains;
         UpdatePreview();
-        m_reset.SetVisibility(!m_tab);m_prevSticker.SetVisibility(m_tab);m_nextSticker.SetVisibility(m_tab);
+        m_reset.SetVisibility(!m_tab);m_prevSticker.SetVisibility(false);m_nextSticker.SetVisibility(false);
+        m_choosePattern.SetVisibility(m_tab);m_choosePattern.SetGrayed(!m_patternPicker||!m_configValid);
         m_filename.SetVisibility(m_tab);m_import.SetVisibility(m_tab);
-        m_useAccessoryPattern.SetVisibility(m_tab&&m_patternOverride!=0);
+        m_useAccessoryPattern.SetVisibility(m_tab&&m_patternOverride!=0&&!m_patternChanged);
         for(int i=2;i<6;++i)m_sliders[i].SetVisibility(m_tab);
         SyncPositionSliders();m_sliders[2].SetCurrentValue(m_draft.amplitude);m_sliders[3].SetCurrentValue(m_draft.length);
         m_sliders[4].SetCurrentValue(m_draft.stiffness);m_sliders[5].SetCurrentValue(m_draft.damping);
@@ -591,56 +623,59 @@ private:
     void StatTab(){m_pad.dragging=false;m_tab=0;Sync();}
     void CharmTab(){m_pad.dragging=false;m_tab=1;Sync();}
     void ToggleStat(){m_draft.stattrak=!m_draft.stattrak;m_dirty=true;Sync();}
-    void ToggleCharm(){m_draft.charm=!m_draft.charm;m_dirty=true;Sync();}
+    void ToggleCharm()
+    {
+        m_draft.charm=!m_draft.charm;
+        if(m_draft.charm&&m_patternOverride<0){m_patternOverride=0;m_appearance.charm=0;}
+        m_dirty=true;Sync();
+    }
     void SelectSticker(int direction)
     {
         if(m_catalog.empty())return;
         int i=0;for(std::size_t n=0;n<m_catalog.size();++n)if(m_catalog[n].id==m_draft.sticker)i=int(n);
         i=(i+direction+int(m_catalog.size()))%int(m_catalog.size());m_draft.sticker=m_catalog[i].id;
-        EditedAttachment(true);
+        m_patternChanged=true;EditedAttachment(true);Sync();
     }
     void PreviousSticker(){SelectSticker(-1);}
     void NextSticker(){SelectSticker(1);}
+    void ChoosePattern()
+    {
+        m_pad.dragging=false;
+        if(m_patternPicker)m_patternPicker->OpenCharmPattern(m_weapon,m_skin,m_patternChanged?0:m_patternOverride,this);
+    }
     void ImportSticker()
     {
         const std::string file=m_filename.GetBuffer();
-        if(!m_catalogValid){m_importStatus="catalog_invalid";Message("Sticker catalog is invalid.",true);return;}
-        if(!AddSticker(file,true)){Message("Image not found, unsafe name, unsupported image or ID collision.",true);return;}
-        if(!Write(oc2_accessories::kCatalogPath,oc2_accessories::SerializeCatalog(m_catalog)))
-            {m_importStatus="catalog_write_failed";Message("Could not save sticker catalog.",true);return;}
-        m_catalogDirty=false;
+        if(!m_catalogValid){m_importStatus="catalog_invalid";Message(u8"图案目录无法读取。",true);return;}
+        if(!AddSticker(file,true)){Message(u8"图片无法载入，请检查文件名和格式。",true);return;}
         for(const auto &s:m_catalog)if(s.file==file)m_draft.sticker=s.id;
-        m_importStatus="registered";EditedAttachment(true);Message("Image added; Charm ON. Apply to save.");
+        m_patternChanged=true;m_importStatus="registered";EditedAttachment(true);Sync();Message(u8"已选择新图片，点击应用保存图案与附件设置。");
     }
     void UseAccessoryPattern()
     {
-        oc2_inventory::Config latest;oc2_inventory::Catalog catalog;std::string error;
-        if(!oc2_local_inventory::LoadConfig(latest,error)||!oc2_local_inventory::LoadCatalog(catalog,error)||
-            !oc2_inventory::ValidateConfig(latest,catalog,error)){Message(error,true);return;}
-        auto *state=oc2_inventory::Find(latest,m_weapon);if(!state)return;
-        state->charm=0;latest.revision=latest.revision==std::numeric_limits<unsigned>::max()?1:latest.revision+1;
-        if(!oc2_local_inventory::SaveConfig(latest)){Message("Could not restore the Accessories pattern setting.",true);return;}
-        m_patternOverride=0;Sync();Message("Accessories pattern restored. Apply saves the draft below.");
+        m_patternChanged=true;m_dirty=true;Sync();Message(u8"已选择本页图案，点击应用保存。");
     }
     void Apply()
     {
         if(!m_configValid||!m_catalogValid||!oc2_accessories::Valid(m_draft))
-            {Message("Invalid configuration; nothing was saved.",true);return;}
-        oc2_accessories::Config latest=oc2_accessories::DefaultConfig();std::string text,error;
-        const bool loaded=Read(oc2_accessories::kConfigPath,text);
-        if((loaded&&!oc2_accessories::ParseConfig(text.c_str(),latest,error))||
-            (!loaded&&EngFuncs::FileExists(oc2_accessories::kConfigPath,true)))
-            {Message(error.empty()?"Saved configuration could not be read.":error,true);return;}
+            {Message(u8"设置无效，未保存更改。",true);return;}
+        oc2_local_profiles::State latest;std::string error;
+        if(!oc2_local_profiles::Load(latest,error))
+            {Message(u8"皮肤设置存档无法读取，未保存更改。",true);return;}
+        auto profile=oc2_local_profiles::Resolve(latest,m_weapon,m_skin);
+        profile.accessories=m_draft;
+        profile.appearance.charm=m_patternChanged?0:m_patternOverride;
         if(m_catalogDirty&&!Write(oc2_accessories::kCatalogPath,oc2_accessories::SerializeCatalog(m_catalog)))
-            {Message("Could not save sticker catalog.",true);return;}
-        *oc2_accessories::Find(latest,m_weapon)=m_draft;
-        latest.revision=latest.revision==std::numeric_limits<unsigned>::max()?1:latest.revision+1;
-        if(!Write(oc2_accessories::kConfigPath,oc2_accessories::SerializeConfig(latest)))
-            {Message("Save failed. Your changes are still unsaved.",true);return;}
-        m_revision=latest.revision;m_dirty=false;m_catalogDirty=false;
-        char status[96];std::snprintf(status,sizeof(status),"Saved: StatTrak %s / Charm %s.",
-            m_draft.stattrak?"ON":"OFF",m_draft.charm?"ON":"OFF");Message(status);
-        if(m_patternOverride)Message("Saved. Skin pattern override remains; use USE ACCESSORIES SETTING to restore it.");
+            {Message(u8"无法保存图案目录。",true);return;}
+        if(!oc2_local_profiles::SaveProfile(profile,m_skinCatalog,error))
+            {Message(u8"保存失败，当前皮肤的草稿仍保留。",true);return;}
+        m_appearance=profile.appearance;
+        if(m_patternChanged)m_patternOverride=0;
+        m_patternChanged=false;
+        ++m_revision;m_dirty=false;m_catalogDirty=false;
+        char status[160];std::snprintf(status,sizeof(status),u8"已保存：计数器%s / 挂件%s。",
+            m_draft.stattrak?u8"开启":u8"关闭",m_draft.charm?u8"开启":u8"关闭");Message(status);
+        Sync();
     }
     void UseDefaults()
     {
@@ -651,7 +686,7 @@ private:
         oc2_accessory_domains::NearestAllowed(m_domains,m_weapon,next.charmU,next.charmV);
         const int sticker=m_draft.sticker;
         m_draft=next;m_draft.stattrak=true;m_draft.charm=true;m_draft.sticker=sticker;
-        m_pad.dragging=false;m_dirty=true;Sync();Message("Defaults: both ON. Apply to save.");
+        m_pad.dragging=false;m_dirty=true;Sync();Message(u8"已恢复默认位置并启用附件，点击应用保存。");
     }
     void Revert(){m_pad.dragging=false;ReloadData();Sync();}
     void Back()
@@ -663,7 +698,7 @@ private:
     void Discard(){m_dirty=false;Hide();}
     void ConfirmReset()
     {
-        if(!m_countsValid){Message("Counter unavailable. Restore the saved file before resetting.",true);return;}
+        if(!m_countsValid){Message(u8"击杀记录无法读取，请先恢复有效存档。",true);return;}
         m_resetDialog.Show();m_resetDialog.SetCursorToItem(m_resetDialog.no);
     }
     void ResetCount()
@@ -672,21 +707,24 @@ private:
         const bool loaded=Read(oc2_accessories::kCountsPath,text);
         if((loaded&&!oc2_accessories::ParseCounts(text.c_str(),latest,error))||
             (!loaded&&EngFuncs::FileExists(oc2_accessories::kCountsPath,true)))
-            {m_countsValid=false;Message(error.empty()?"Saved counters could not be read.":error,true);return;}
+            {m_countsValid=false;Message(u8"击杀存档无法读取，未重置计数。",true);return;}
         latest.values[oc2_accessories::Index(m_weapon)]=0;
         if(!Write(oc2_accessories::kCountsPath,oc2_accessories::SerializeCounts(latest)))
-            {Message("Counter could not be saved.",true);return;}
-        m_count=0;m_countsValid=true;Message("This weapon's saved counter was reset.");
+            {Message(u8"无法保存击杀记录。",true);return;}
+        m_count=0;m_countsValid=true;Message(u8"已重置当前武器的累计击杀。");
     }
-    int m_weapon=1,m_tab=0,m_patternOverride=0;unsigned m_count=0,m_revision=1;
-    bool m_dirty=false,m_error=false,m_configValid=true,m_countsValid=true,m_catalogValid=true,m_catalogDirty=false;
-    std::string m_message;
+    int m_weapon=1,m_skin=-1,m_tab=0,m_patternOverride=0;unsigned m_count=0,m_revision=1;
+    bool m_dirty=false,m_error=false,m_configValid=true,m_countsValid=true,m_catalogValid=true,m_catalogDirty=false,m_patternChanged=false;
+    std::string m_message,m_inventoryPatternFile,m_inventoryPatternName;
     const char *m_importStatus="idle";
     oc2_accessories::WeaponConfig m_draft;
+    oc2_inventory::WeaponState m_appearance;
+    oc2_inventory::Catalog m_skinCatalog;
     oc2_accessories::Catalog m_catalog;
     oc2_accessory_domains::Domains m_domains;
     CMenuAction m_statTab,m_charmTab,m_statToggle,m_charmToggle,m_apply,m_revert,m_defaults,m_back,m_reset;
-    CMenuAction m_prevSticker,m_nextSticker,m_import,m_useAccessoryPattern;
-    CMenuSlider m_sliders[6];CMenuField m_filename;CMenuAccessoryPad m_pad;
+    CMenuAction m_prevSticker,m_nextSticker,m_import,m_useAccessoryPattern,m_choosePattern;
+    CMenuSlider m_sliders[6];CMenuField m_filename;CMenuAccessoryPad m_pad;CMenuPanoramaChrome m_chrome;
     CMenuYesNoMessageBox m_resetDialog,m_discardDialog;
+    IMenuCharmPatternPicker *m_patternPicker=nullptr;
 };

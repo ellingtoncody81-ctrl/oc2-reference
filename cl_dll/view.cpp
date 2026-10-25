@@ -22,6 +22,7 @@
 #include "view_ads_motion.h"
 #include "viewmodel_settings.h"
 #include "weapon_spread.h"
+#include "oc2_legs.h"
 
 #include "entity_state.h"
 #include "cl_entity.h"
@@ -197,6 +198,8 @@ extern int g_iPlayerFlags;
 
 static view_ads::State s_ADS;
 static float s_ADSWorldFov=90.0f,s_ADSObservedTime=-1.0f;
+
+float V_CurrentADSWorldFOV() { return s_ADSWorldFov; }
 static float s_ADSScreenX=0,s_ADSScreenY=0,s_ADSScreenRadius=0;
 static float s_ADSFrontX=0,s_ADSFrontY=0;
 static bool s_ADSFrontValid=false;
@@ -353,7 +356,7 @@ bool V_DrawADSCrosshair()
 	const int x=ScreenWidth/2,y=ScreenHeight/2;
 	const int red=s_ADS.weapon==8?60:255,green=s_ADS.weapon==8?255:55;
 	FillRGBA(x-dot,y-dot,dot*2+1,dot*2+1,red,green,50,alpha/4);
-	FillRGBA(x-dot/2,y-dot/2,max(1,dot),max(1,dot),red,green,50,alpha);
+	FillRGBABlend(x-dot/2,y-dot/2,max(1,dot),max(1,dot),red,green,50,alpha);
 	s_ADSDotVisible=true;
 	return true;
 }
@@ -411,6 +414,7 @@ static void V_PositionADS(ref_params_s *params,cl_entity_s *view,const view_ads_
     vec3_t wantedAngles={atan2f(aimed[2][0],horizontal)*180.0f/M_PI,
         atan2f(aimed[1][0],aimed[0][0])*180.0f/M_PI,
         atan2f(aimed[2][1],aimed[2][2])*180.0f/M_PI};
+	vec3_t anchoredOrigin,anchoredAngles;
 
 	for(int axis=0;axis<3;++axis)
 	{
@@ -418,6 +422,7 @@ static void V_PositionADS(ref_params_s *params,cl_entity_s *view,const view_ads_
 			right[axis]*profile->center[1]*hand-up[axis]*profile->center[2];
 		view->origin[axis]+=(target-view->origin[axis])*weight;
 		const float staticOrigin=view->origin[axis];
+		anchoredOrigin[axis]=staticOrigin;
 		view->origin[axis]+=motion.position[axis]*weight;
 		s_ADSMotionPosition[axis]=view->origin[axis]-staticOrigin;
 		float wanted=wantedAngles[axis];
@@ -426,8 +431,41 @@ static void V_PositionADS(ref_params_s *params,cl_entity_s *view,const view_ads_
 		while(delta<-180)delta+=360;
 		view->angles[axis]+=delta*weight;
 		const float staticAngle=view->angles[axis];
+		anchoredAngles[axis]=staticAngle;
 		view->angles[axis]+=motion.angles[axis]*weight;
 		s_ADSMotionAngles[axis]=view->angles[axis]-staticAngle;
+	}
+	if(profile->radius>0.0f)
+	{
+		// The dot is the shooting ray at screen center. Keep the optic's
+		// calibrated center on that ray while its body bobs and rotates around
+		// it. Studio negates entity pitch before AngleMatrix; use that same
+		// transform for the measured model-space sight center.
+		vec3_t beforeAngles,afterAngles;
+		VectorCopy(anchoredAngles,beforeAngles);
+		VectorCopy(view->angles,afterAngles);
+		beforeAngles[PITCH]=-beforeAngles[PITCH];
+		afterAngles[PITCH]=-afterAngles[PITCH];
+		float before[3][4],after[3][4];
+		AngleMatrix(beforeAngles,before);
+		AngleMatrix(afterAngles,after);
+		Vector sightShift;
+		for(int axis=0;axis<3;++axis)
+		{
+			sightShift[axis]=view->origin[axis]-anchoredOrigin[axis];
+			for(int local=0;local<3;++local)
+				sightShift[axis]+=(after[axis][local]-before[axis][local])*profile->center[local];
+		}
+		const float side=DotProduct(sightShift,right),rise=DotProduct(sightShift,up);
+		for(int axis=0;axis<3;++axis)
+		{
+			view->origin[axis]-=right[axis]*side+up[axis]*rise;
+			s_ADSMotionPosition[axis]=view->origin[axis]-anchoredOrigin[axis];
+		}
+		// The pivot correction also counts toward the established ADS bound.
+		view_ads_motion::Limit(s_ADSMotionPosition,0.12f);
+		for(int axis=0;axis<3;++axis)
+			view->origin[axis]=anchoredOrigin[axis]+s_ADSMotionPosition[axis];
 	}
 	// Report the actual float deltas surviving the final ADS placement, rather
 	// than upstream StepBob values that used to be overwritten at gain=1.
@@ -1627,7 +1665,7 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 	// common stair/eye compensation must not become an ADS sight displacement.
 	const float adsSway[3]={effects.sway_offset.x,effects.sway_offset.y,effects.sway_offset.z};
 	const float adsSpeed=gHUD.cl_bobstyle && gHUD.cl_bobstyle->value==view_bob::kStyleModern?
-		s_BobState.last_speed:sqrtf(pparams->simvel[0]*pparams->simvel[0]+pparams->simvel[1]*pparams->simvel[1]);
+		s_BobState.speed_in:sqrtf(pparams->simvel[0]*pparams->simvel[0]+pparams->simvel[1]*pparams->simvel[1]);
 	const view_ads_motion::Motion adsMotion=view_ads_motion::Dampen(adsBob,adsSway,
 		effects.land_dip,effects.mouse_roll,flMaxSpeed>0?adsSpeed/flMaxSpeed:0);
 	if( gHUD.viewmodel_bob_debug && gHUD.viewmodel_bob_debug->value && bVmActive && !pparams->paused )
@@ -2584,6 +2622,7 @@ void DLLEXPORT V_CalcRefdef( struct ref_params_s *pparams )
 	{
 		V_CalcNormalRefdef ( pparams );
 	}
+	OC2_LegsRefdef(pparams);
 }
 
 /*

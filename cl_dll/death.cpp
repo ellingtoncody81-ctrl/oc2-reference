@@ -28,6 +28,7 @@
 #include "match_ui.h"
 #include "weapon_hud_layout.h"
 #include "hud_readability.h"
+#include "oc2_ragdoll.h"
 #include "../common/oc2_knife_icons.h"
 #include <cmath>
 
@@ -467,6 +468,9 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	const char *weaponName = reader.ReadString();
 	strlcpy( killedwith, "d_", sizeof( killedwith ) );
 	strlcat( killedwith, weaponName, sizeof( killedwith ) );
+	// ClCorpse arrives after the server's death animation. Start physical
+	// simulation from the last live pose at the actual kill event instead.
+	OC2_RagdollSpawnDeath(victim, killer);
 
 	//if (gViewPort)
 	//	gViewPort->DeathMsg( killer, victim );

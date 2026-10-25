@@ -138,6 +138,13 @@ void CMenuField::Clear( void )
 CMenuField::Key
 =================
 */
+bool CMenuField::KeyUp( int key )
+{
+	// A click positions the text cursor. Consume its paired release so the
+	// holder cannot broadcast it to a previously hovered action button.
+	return UI::Key::IsLeftMouse( key );
+}
+
 bool CMenuField::KeyDown( int key )
 {
 	bool handled = false;

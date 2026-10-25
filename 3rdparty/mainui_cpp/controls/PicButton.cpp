@@ -226,6 +226,19 @@ CMenuPicButton::Draw
 */
 void CMenuPicButton::Draw( )
 {
+	bool localizedText = false;
+	for( const unsigned char *p = (const unsigned char *)szName; p && *p; ++p )
+		if( *p >= 0x80 ) { localizedText = true; break; }
+	if( localizedText )
+	{
+		const bool focused = (iFlags & (QMF_HASMOUSEFOCUS|QMF_HASKEYBOARDFOCUS)) != 0;
+		const bool disabled = (iFlags & QMF_GRAYED) != 0;
+		UI_FillRect( m_scPos, m_scSize, PackRGBA( focused ? 73 : 37, focused ? 91 : 52, focused ? 107 : 64, 235 ));
+		UI_DrawString( uiStatic.hSmallFont, m_scPos, m_scSize, szName,
+			disabled ? PackRGBA(140,150,158,255) : PackRGBA(245,247,250,255),
+			g_FontMgr->GetFontTall( uiStatic.hSmallFont ), QM_CENTER, ETF_FORCECOL|ETF_NO_WRAP );
+		return;
+	}
 	int state = BUTTON_NOFOCUS;
 
 	if( iFlags & (QMF_HASMOUSEFOCUS|QMF_HASKEYBOARDFOCUS))

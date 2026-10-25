@@ -23,6 +23,7 @@
 #include "pm_materials.h"
 
 #include "eventscripts.h"
+#include "oc2_ragdoll.h"
 #include "ev_hldm.h"
 
 #include "r_efx.h"
@@ -71,7 +72,7 @@ char EV_HLDM_PlayTextureSound( int idx, pmtrace_t *ptr, const Vector &vecSrc, co
 		// hit body
 		chTextureType = CHAR_TEX_FLESH;
 	}
-	else if ( entity == 0 )
+	else if ( entity == 0 || entity > gEngfuncs.GetMaxClients() )
 	{
 		// get texture from entity or world (world is ent(0))
 		pTextureName = (char *)gEngfuncs.pEventAPI->EV_TraceTexture( ptr->ent, vecSrc, vecEnd );
@@ -104,6 +105,9 @@ char EV_HLDM_PlayTextureSound( int idx, pmtrace_t *ptr, const Vector &vecSrc, co
 			chTextureType = PM_FindTextureType( szbuffer );
 		}
 	}
+
+	if (isSky)
+		return chTextureType;
 
 	switch (chTextureType)
 	{
@@ -572,21 +576,25 @@ void EV_HLDM_FireBullets(int idx,
 						 float *forward, float *right, float *up,
 						 int cShots,
 						 float *vecSrc, float *vecDirShooting, float *vecSpread,
-						 float flDistance, int iBulletType, int iPenetration)
+						 float flDistance, int iBulletType, int iPenetration,
+						 int muzzleAttachment)
 {
 	int i;
 	pmtrace_t tr;
 	int iShot;
-	int iPenetrationPower;
+	int basePenetrationPower;
 	float flPenetrationDistance;
 	bool isSky;
 
-	EV_DescribeBulletTypeParameters( iBulletType, iPenetrationPower, flPenetrationDistance );
+	EV_DescribeBulletTypeParameters( iBulletType, basePenetrationPower, flPenetrationDistance );
+	static unsigned int tracerCount[33] = {};
 
 	for ( iShot = 1; iShot <= cShots; iShot++ )
 	{
 		Vector vecShotSrc = vecSrc;
 		int iShotPenetration = iPenetration;
+		int iPenetrationPower = basePenetrationPower;
+		float remainingDistance = flDistance;
 		Vector vecDir, vecEnd;
 
 		if ( iBulletType == BULLET_PLAYER_BUCKSHOT )
@@ -621,6 +629,7 @@ void EV_HLDM_FireBullets(int idx,
 
 		// Now add in all of the players.
 		gEngfuncs.pEventAPI->EV_SetSolidPlayers ( idx - 1 );
+		bool firstTrace = true;
 
 		while (iShotPenetration != 0)
 		{
@@ -631,12 +640,25 @@ void EV_HLDM_FireBullets(int idx,
 
 			gEngfuncs.pEventAPI->EV_PlayerTrace( vecShotSrc, vecEnd, 0, -1, &tr );
 
-			float flCurrentDistance = tr.fraction * flDistance;
-
-			if( flCurrentDistance == 0.0f )
+			if (firstTrace)
 			{
-				break;
+				firstTrace = false;
+				// CS:GO emits tracers from the visible muzzle toward the first
+				// ballistic trace, independently of later penetration impacts.
+				const int frequency = iBulletType == BULLET_PLAYER_BUCKSHOT ? 0 :
+					(iPenetration >= 3 ? 1 : 3);
+				if (frequency && idx >= 1 && idx <= 32 &&
+					(tracerCount[idx]++ % frequency) == 0)
+				{
+					Vector tracerStart = Vector(vecSrc) + Vector(0, 0, -4) +
+						Vector(right) * 2 + Vector(forward) * 16;
+					EV_FireWeaponTracer(idx, muzzleAttachment, tracerStart, tr.endpos);
+				}
 			}
+			if (tr.fraction >= 1.0f)
+				break;
+
+			float flCurrentDistance = tr.fraction * remainingDistance;
 
 			if ( flCurrentDistance > flPenetrationDistance )
 				iShotPenetration = 0;
@@ -677,23 +699,27 @@ void EV_HLDM_FireBullets(int idx,
 			// do damage, paint decals
 			EV_HLDM_DecalGunshot( &tr, iBulletType, 0, r_smoke, g_smoke, b_smoke, true, bSparks, cTextureType, isSky );
 
-			if(/* iBulletType == BULLET_PLAYER_BUCKSHOT ||*/ iShotPenetration <= 0 )
+			if (iShotPenetration <= 0)
 			{
 				break;
 			}
 
-			flDistance = (flDistance - flCurrentDistance) * 0.5;
-			VectorMA( tr.endpos, iPenetration, vecDir, vecShotSrc );
-			VectorMA( vecShotSrc, flDistance, vecDir, vecEnd );
+			const physent_t *hit = gEngfuncs.pEventAPI->EV_GetPhysent(tr.ent);
+			const bool solidBrush = hit && hit->solid == SOLID_BSP;
+			if (!solidBrush) iPenetrationPower = 42;
+			remainingDistance = (remainingDistance - flCurrentDistance) * (solidBrush ? 0.5f : 0.75f);
+			if (remainingDistance <= 0.0f) break;
+			VectorMA( tr.endpos, iPenetrationPower, vecDir, vecShotSrc );
+			VectorMA( vecShotSrc, remainingDistance, vecDir, vecEnd );
 
 			// trace back, so we will have a decal on the other side of solid area
 			pmtrace_t trOriginal;
 
-			if( gEngfuncs.PM_PointContents( vecShotSrc, NULL ) != CONTENTS_SOLID )
+			if (solidBrush && gEngfuncs.PM_PointContents( vecShotSrc, NULL ) != CONTENTS_SOLID)
 			{
 				gEngfuncs.pEventAPI->EV_SetTraceHull( 2 );
 				gEngfuncs.pEventAPI->EV_PlayerTrace(vecShotSrc, vecSrc, 0, -1, &trOriginal);
-				if( !trOriginal.startsolid )
+				if( !trOriginal.startsolid && trOriginal.fraction < 1.0f )
 					EV_HLDM_DecalGunshot( &trOriginal, iBulletType, 0, r_smoke, g_smoke, b_smoke, true, bSparks, cTextureType, isSky );
 			}
 		}
@@ -727,8 +753,24 @@ void HitBody( TEMPENTITY *ent, pmtrace_s *ptr )
 }
 
 TEMPENTITY *g_DeadPlayerModels[64];
+int g_DeadPlayerTags[64];
+static int g_NextDeadPlayerTag = 0;
 
-void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAnimTime, int iSequence, int iBody)
+void OC2_CorpseForget(tempent_s *corpse)
+{
+	if (!corpse) return;
+	for (int i = 0; i < 64; ++i)
+	{
+		if (g_DeadPlayerModels[i] == corpse &&
+			g_DeadPlayerTags[i] == corpse->entity.curstate.iuser3)
+		{
+			g_DeadPlayerModels[i] = NULL;
+			g_DeadPlayerTags[i] = 0;
+		}
+	}
+}
+
+void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAnimTime, int iSequence, int iBody, int playerIndex)
 {
 	int modelIdx = gEngfuncs.pEventAPI->EV_FindModelIndex(pModel);
 	Vector null(0, 0, 0);
@@ -736,6 +778,8 @@ void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAn
 
 	if( model )
 	{
+		if (g_NextDeadPlayerTag >= 0x7ffffffe) g_NextDeadPlayerTag = 0;
+		model->entity.curstate.iuser3 = ++g_NextDeadPlayerTag;
 		model->flags = (FTENT_CLIENTCUSTOM|FTENT_PERSIST|FTENT_SPRANIMATE|FTENT_FADEOUT|FTENT_COLLIDEWORLD|FTENT_BODYTRACE);
 		model->frameMax = 255.0f;
 		model->entity.curstate.framerate = 1.0f;
@@ -751,14 +795,34 @@ void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAn
 		model->hitcallback = HitBody;
 		model->bounceFactor = 0.0f;
 		model->die = gEngfuncs.GetClientTime() + gEngfuncs.pfnGetCvarFloat("cl_corpsestay") + 9.0f;
+		if (OC2_RagdollRegister(model, playerIndex))
+		{
+			// Bone physics owns motion; the temp-entity gravity/animation would
+			// otherwise move the model a second time underneath the same bones.
+			model->flags &= ~(FTENT_SPRANIMATE|FTENT_COLLIDEWORLD|FTENT_BODYTRACE|FTENT_BODYGRAVITY);
+			model->callback = NULL;
+			model->hitcallback = NULL;
+		}
 		//model->entity.curstate.renderfx = kRenderFxDeadPlayer;
 		//model->entity.curstate.fuser4 = gHUD.m_flTime;
 
+		const float now = gEngfuncs.GetClientTime();
+		for ( int i = 0; i < 64; i++ )
+		{
+			TEMPENTITY *old = g_DeadPlayerModels[i];
+			if (old && (old->entity.curstate.iuser3 != g_DeadPlayerTags[i] ||
+				old->die < now))
+			{
+				g_DeadPlayerModels[i] = NULL;
+				g_DeadPlayerTags[i] = 0;
+			}
+		}
 		for ( int i = 0; i < 64; i++ )
 		{
 			if ( !g_DeadPlayerModels[i] )
 			{
 				g_DeadPlayerModels[i] = model;
+				g_DeadPlayerTags[i] = model->entity.curstate.iuser3;
 				break;
 			}
 		}

@@ -6,7 +6,7 @@
 namespace weapon_pickup
 {
 constexpr int kSlots = 32;
-constexpr float kDuration = 1.8f;
+constexpr float kDuration = 4.0f;
 struct Item
 {
 	bool pending = false;
@@ -50,10 +50,10 @@ inline float Strength(const Item &item, float time)
 {
 	const float elapsed = time-item.start;
 	if (item.start < 0 || !std::isfinite(elapsed) || elapsed < 0 || elapsed >= kDuration) return 0;
-	const float fade = 1.0f-elapsed/kDuration;
+	const float fade = elapsed<2.8f?1.0f:(kDuration-elapsed)/1.2f;
 	const float entrance = elapsed < 0.10f ? elapsed/0.10f : 1.0f;
-	// Two soft bright pulses, then a continuous fade. No hard on/off blink.
-	const float wave = 0.65f+0.35f*std::cos(elapsed*7.0f);
+	// Hold a bright icon through several soft pulses, then fade smoothly.
+	const float wave = 0.75f+0.25f*std::cos(elapsed*9.42477796f);
 	return entrance*fade*wave;
 }
 }

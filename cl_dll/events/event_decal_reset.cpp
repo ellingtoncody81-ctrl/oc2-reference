@@ -28,14 +28,17 @@
 #include <math.h>
 #include "events.h"
 #include "cl_dll.h"
+#include "oc2_ragdoll.h"
 
 // HACKHACK: This is very unreliable way to get round time
 float g_flRoundTime = 0.0f;
 
 extern TEMPENTITY *g_DeadPlayerModels[64];
+extern int g_DeadPlayerTags[64];
 
 void EV_DecalReset(event_args_s *args)
 {
+	OC2_RagdollClear();
 	gRenderAPI.R_ClearAllDecals( false );
 
 	g_flRoundTime = gEngfuncs.GetClientTime();
@@ -44,11 +47,13 @@ void EV_DecalReset(event_args_s *args)
 	{
 		for ( int i = 0; i < 64; i++ )
 		{
-			if ( g_DeadPlayerModels[i] )
+			if ( g_DeadPlayerModels[i] && g_DeadPlayerTags[i] != 0 &&
+				g_DeadPlayerModels[i]->entity.curstate.iuser3 == g_DeadPlayerTags[i] )
 			{
 				g_DeadPlayerModels[i]->die = 0.0f;
-				g_DeadPlayerModels[i] = NULL;
 			}
+			g_DeadPlayerModels[i] = NULL;
+			g_DeadPlayerTags[i] = 0;
 		}
 	}
 }

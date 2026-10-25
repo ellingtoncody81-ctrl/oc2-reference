@@ -69,7 +69,11 @@
 // Some of these are HL/TFC specific?
 void EV_GetGunPosition( struct event_args_s *args, Vector &pos, const Vector &origin );
 void EV_GetDefaultShellInfo( struct event_args_s *args, float *origin, float *velocity, float *ShellVelocity, float *ShellOrigin, float *forward, float *right, float *up, float forwardScale, float upScale, float rightScale, bool bReverseDirection = false );
-void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAnimTime, int iSequence, int iBody);
+bool EV_GetViewModelAttachmentPoint( int player, int attachment, float *worldPoint );
+void EV_FireWeaponTracer( int player, int attachment, const float *fallbackStart, const float *end );
+void EV_FlushViewModelTracers( struct cl_entity_s *view );
+void EV_ClearViewModelTracers();
+void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAnimTime, int iSequence, int iBody, int playerIndex);
 
 
 // Very simple and little functions that can be inlined

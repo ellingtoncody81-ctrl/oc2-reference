@@ -30,6 +30,7 @@
 #include <string.h>
 #include "strl.h"
 #include "eventscripts.h"
+#include "oc2_ragdoll.h"
 
 #include "draw_util.h"
 
@@ -503,6 +504,8 @@ int CHudHealth :: MsgFunc_ClCorpse(const char *pszName, int iSize, void *pbuf)
 	classID		= reader.ReadByte();
 	teamID		= reader.ReadByte();
 	playerID	= reader.ReadByte();
+	if (OC2_RagdollSuppressDelayedCorpse(playerID, origin))
+		return 0;
 
 	if( !gHUD.cl_minmodels->value )
 	{
@@ -532,7 +535,7 @@ int CHudHealth :: MsgFunc_ClCorpse(const char *pszName, int iSize, void *pbuf)
 
 		strlcpy( szModel, sPlayerModelFiles[modelidx], sizeof( szModel ) );
 	}
-	CreateCorpse( origin, angles, szModel, delay, seq, classID );
+	CreateCorpse( origin, angles, szModel, delay, seq, classID, playerID );
 	return 0;
 }
 

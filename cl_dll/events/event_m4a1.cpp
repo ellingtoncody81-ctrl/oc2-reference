@@ -97,5 +97,5 @@ void EV_FireM4A1( event_args_t *args )
 		forward, right,	up,
 		1, vecSrc, vecAiming,
 		vSpread, oc2_weapon::Get(oc2_weapon::M4A1S).range, BULLET_PLAYER_556MM,
-		2 );
+		2, args->bparam1 ? 0 : 2 );
 }

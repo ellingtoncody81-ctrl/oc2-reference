@@ -30,6 +30,8 @@ Measurements taken from the decompiled binary:
 #include "hud/radar_modern.h"
 
 #include <math.h>
+#include <cmath>
+#include <ctype.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -133,6 +135,10 @@ int CHudRadarModern::Init( void )
 	m_flLastCapture     = 0;
 	m_flLastBombPlanted = 0;
 	m_iPlayerNum        = 0;
+	m_iObjectiveCount   = 0;
+	m_szObjectiveMap[0] = 0;
+	m_bObjectivesLoaded = false;
+	m_pObjectiveEntities = NULL;
 
 	// defaults lifted verbatim from the mobile build's CHudRadarModern ctor
 	s_cl_newradar_size    = CVAR_CREATE( "cl_newradar_size", "0.175", FCVAR_ARCHIVE );
@@ -229,15 +235,24 @@ void CHudRadarModern::LoadSprites( void )
 	for( i = 0; i < 11; i++ )
 	{
 		int index = HUD_GetSpriteIndexByName( s_radarSpriteNames[i] );
-		if( !index )
+		delete s_spr[i];
+		s_spr[i] = new CClientSprite();
+		if( index )
 		{
-			gEngfuncs.Con_Printf( "GetSpriteIndex: %s sprite not found\n",
-				s_radarSpriteNames[i] );
+			s_spr[i]->SetSpriteByName( s_radarSpriteNames[i] );
 			continue;
 		}
-
-		delete s_spr[i];
-		s_spr[i] = new CClientSprite( s_radarSpriteNames[i] );
+		// These stock radar sprites ship as separate .spr files and are not
+		// listed in hud.txt. Load them directly before falling back to shapes.
+		char path[96];
+		snprintf( path, sizeof( path ), "sprites/%s.spr", s_radarSpriteNames[i] );
+		s_spr[i]->spr = SPR_Load( path );
+		if( s_spr[i]->spr )
+		{
+			s_spr[i]->rect.left = s_spr[i]->rect.top = 0;
+			s_spr[i]->rect.right = SPR_Width( s_spr[i]->spr, 0 );
+			s_spr[i]->rect.bottom = SPR_Height( s_spr[i]->spr, 0 );
+		}
 	}
 
 	m_bSpritesLoaded = true;
@@ -604,6 +619,155 @@ void CHudRadarModern::LoadOverview( const char *pszMapName )
 	}
 }
 
+static char RadarSiteLabel( const char *name )
+{
+	if( !name || !name[0] ) return 0;
+	char lower[64];
+	size_t i = 0;
+	for( ; i + 1 < sizeof( lower ) && name[i]; ++i )
+		lower[i] = (char)tolower( (unsigned char)name[i] );
+	lower[i] = 0;
+	for( i = 0; lower[i]; ++i )
+	{
+		if( ( lower[i] == 'a' || lower[i] == 'b' ) &&
+			( i == 0 || !isalnum( (unsigned char)lower[i - 1] ) ) &&
+			!isalnum( (unsigned char)lower[i + 1] ) )
+			return (char)toupper( (unsigned char)lower[i] );
+	}
+	const size_t length = strlen( lower );
+	if( length && ( lower[length - 1] == 'a' || lower[length - 1] == 'b' ) &&
+		( strstr( lower, "target" ) || strstr( lower, "crates" ) ) )
+		return (char)toupper( (unsigned char)lower[length - 1] );
+	return 0;
+}
+
+void CHudRadarModern::LoadObjectives( const char *mapName )
+{
+	if( !mapName || !mapName[0] ) return;
+	if( strcmp( m_szObjectiveMap, mapName ) )
+	{
+		strncpy( m_szObjectiveMap, mapName, sizeof( m_szObjectiveMap ) - 1 );
+		m_szObjectiveMap[sizeof( m_szObjectiveMap ) - 1] = 0;
+		m_iObjectiveCount = 0;
+		m_bObjectivesLoaded = false;
+		m_pObjectiveEntities = NULL;
+	}
+	cl_entity_t *worldEntity = gEngfuncs.GetEntityByIndex( 0 );
+	if( !worldEntity || !worldEntity->model || !worldEntity->model->entities ) return;
+	model_t *world = worldEntity->model;
+	if( m_bObjectivesLoaded && m_pObjectiveEntities == world->entities ) return;
+	m_iObjectiveCount = 0;
+	m_pObjectiveEntities = world->entities;
+	char *data = world->entities;
+	char token[1024];
+	Vector ctSpawns[64];
+	int ctSpawnCount = 0;
+	bool hasHostages = false;
+	for( int entity = 0; entity < 4096 && data; ++entity )
+	{
+		data = gEngfuncs.COM_ParseFile( data, token );
+		if( !data || token[0] != '{' ) break;
+		char classname[64] = {}, model[64] = {}, origin[96] = {}, target[64] = {};
+		bool closed = false;
+		for( int key = 0; key < 128 && data; ++key )
+		{
+			data = gEngfuncs.COM_ParseFile( data, token );
+			if( !data ) break;
+			if( token[0] == '}' ) { closed = true; break; }
+			char name[64];
+			strncpy( name, token, sizeof( name ) - 1 );
+			name[sizeof( name ) - 1] = 0;
+			data = gEngfuncs.COM_ParseFile( data, token );
+			if( !data || token[0] == '}' ) break;
+			char *dst = NULL;
+			size_t capacity = 0;
+			if( !strcmp( name, "classname" ) ) { dst = classname; capacity = sizeof( classname ); }
+			else if( !strcmp( name, "model" ) ) { dst = model; capacity = sizeof( model ); }
+			else if( !strcmp( name, "origin" ) ) { dst = origin; capacity = sizeof( origin ); }
+			else if( !strcmp( name, "target" ) ) { dst = target; capacity = sizeof( target ); }
+			if( dst ) { strncpy( dst, token, capacity - 1 ); dst[capacity - 1] = 0; }
+		}
+		if( !closed ) break;
+		if( !strcmp( classname, "hostage_entity" ) ) { hasHostages = true; continue; }
+		const bool bomb = !strcmp( classname, "func_bomb_target" ) || !strcmp( classname, "info_bomb_target" );
+		const bool rescue = !strcmp( classname, "func_hostage_rescue" ) || !strcmp( classname, "info_hostage_rescue" );
+		const bool ctSpawn = !strcmp( classname, "info_player_start" );
+		if( !bomb && !rescue && !ctSpawn ) continue;
+		Vector center;
+		if( model[0] == '*' && model[1] >= '0' && model[1] <= '9' && world->submodels )
+		{
+			const int index = atoi( model + 1 );
+			if( index <= 0 || index >= world->numsubmodels ) continue;
+			for( int axis = 0; axis < 3; ++axis )
+				center[axis] = ( world->submodels[index].mins[axis] + world->submodels[index].maxs[axis] ) * 0.5f;
+		}
+		else if( sscanf( origin, "%f %f %f", &center[0], &center[1], &center[2] ) != 3 )
+			continue;
+		if( !std::isfinite( center[0] ) || !std::isfinite( center[1] ) || !std::isfinite( center[2] ) ) continue;
+		if( ctSpawn )
+		{
+			if( ctSpawnCount < 64 ) ctSpawns[ctSpawnCount++] = center;
+			continue;
+		}
+		// Several brush triggers may make up one named plant site.
+		if( bomb && target[0] )
+		{
+			bool grouped = false;
+			for( int i = 0; i < m_iObjectiveCount; ++i )
+				if( m_Objectives[i].bomb && !strcmp( m_Objectives[i].group, target ) )
+				{
+					Objective &site = m_Objectives[i];
+					for( int axis = 0; axis < 3; ++axis )
+						site.origin[axis] = ( site.origin[axis] * site.sources + center[axis] ) / ( site.sources + 1 );
+					++site.sources;
+					grouped = true;
+					break;
+				}
+			if( grouped ) continue;
+		}
+		if( m_iObjectiveCount >= 32 ) continue;
+		Objective &site = m_Objectives[m_iObjectiveCount++];
+		site.origin = center;
+		site.bomb = bomb;
+		site.label = bomb ? RadarSiteLabel( target ) : 0;
+		strncpy( site.group, target, sizeof( site.group ) - 1 );
+		site.group[sizeof( site.group ) - 1] = 0;
+		site.sources = 1;
+	}
+	bool hasRescue = false;
+	for( int i = 0; i < m_iObjectiveCount; ++i )
+		if( !m_Objectives[i].bomb ) hasRescue = true;
+	// The server uses CT spawn points as 256-unit rescue circles when a
+	// hostage map has no explicit rescue entity (for example cs_assault).
+	if( hasHostages && !hasRescue && ctSpawnCount )
+	{
+		for( int i = 0; i < ctSpawnCount; ++i )
+		{
+			bool grouped = false;
+			for( int j = 0; j < m_iObjectiveCount; ++j )
+			{
+				Objective &site = m_Objectives[j];
+				if( strcmp( site.group, "#ctspawn" ) ) continue;
+				const Vector delta = site.origin - ctSpawns[i];
+				if( DotProduct( delta, delta ) > 512.0f * 512.0f ) continue;
+				for( int axis = 0; axis < 3; ++axis )
+					site.origin[axis] = ( site.origin[axis] * site.sources + ctSpawns[i][axis] ) / ( site.sources + 1 );
+				++site.sources;
+				grouped = true;
+				break;
+			}
+			if( grouped || m_iObjectiveCount >= 32 ) continue;
+			Objective &site = m_Objectives[m_iObjectiveCount++];
+			site.origin = ctSpawns[i];
+			site.bomb = false;
+			site.label = 0;
+			strcpy( site.group, "#ctspawn" );
+			site.sources = 1;
+		}
+	}
+	m_bObjectivesLoaded = true;
+}
+
 /*
 ========================
 DrawRadarDisc
@@ -932,6 +1096,13 @@ void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 	int r = 255;
 	int g = 220;
 	int b = 0;
+	if( m_iPlayerNum > 0 && m_iPlayerNum <= MAX_PLAYERS &&
+		g_PlayerExtraInfo[m_iPlayerNum].teamnumber == TEAM_TERRORIST &&
+		g_PlayerExtraInfo[m_iPlayerNum].has_c4 )
+	{
+		g = 70;
+		b = 30;
+	}
 
 	// Always draw the geometry, never rely on a sprite being present: the
 	// whole point of this marker is to show where the player sits on the
@@ -1120,7 +1291,7 @@ void CHudRadarModern::DrawRadarMask( int cx, int cy, int radius )
 	gEngfuncs.pTriAPI->End();
 }
 
-void CHudRadarModern::DrawRadarFrame( int cx, int cy, int radius, int r, int g, int b, int a )
+void CHudRadarModern::DrawRadarFrame( int cx, int cy, int radius, int r, int g, int b, int a, bool additive )
 {
 	// A ring, not a rectangle. The disc underneath is round and the map tiles
 	// are clipped to the circle, so four straight edges left the corners of the
@@ -1139,7 +1310,7 @@ void CHudRadarModern::DrawRadarFrame( int cx, int cy, int radius, int r, int g, 
 		gRenderAPI.GL_Bind( 0, gHUD.m_WhiteTex );
 	}
 
-	gEngfuncs.pTriAPI->RenderMode( kRenderTransAdd );
+	gEngfuncs.pTriAPI->RenderMode( additive ? kRenderTransAdd : kRenderTransTexture );
 	gEngfuncs.pTriAPI->CullFace( TRI_NONE );
 	gEngfuncs.pTriAPI->Color4ub( r, g, b, a );
 
@@ -1178,11 +1349,13 @@ Blinks red at 2 Hz, matching ((int)(time*2) & 1) ? 0xff : 100.
 */
 void CHudRadarModern::DrawWarningFrame( int cx, int cy, int radius, float flTime )
 {
-	if( !( gHUD.m_iWeaponBits & (1<<WEAPON_SUIT) ) )
+	const extra_player_info_t &bomb = g_PlayerExtraInfo[33];
+	if( bomb.dead || !bomb.radarflashes || bomb.playerclass != 1 ||
+		( bomb.origin[0] == 0 && bomb.origin[1] == 0 && bomb.origin[2] == 0 ) )
 		return;
 
 	int iAlpha = ( (int)( flTime * 2 ) & 1 ) == 0 ? 255 : 100;
-	DrawRadarFrame( cx, cy, radius, 255, 0, 0, iAlpha );
+	DrawRadarFrame( cx, cy, radius, 255, 0, 0, iAlpha, false );
 }
 
 /*
@@ -1350,11 +1523,15 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	// iplayerred and this matches that convention; SPR_Set modulates whatever
 	// is bound, so the RGB passed here is what actually shows, the slot only
 	// picks a shape.
-	int r = bFriend ? 0   : 255;
-	int g = bFriend ? 120 : 0;
-	int b = bFriend ? 255 : 0;
+	const bool c4Carrier = bFriend &&
+		g_PlayerExtraInfo[m_iPlayerNum].teamnumber == TEAM_TERRORIST &&
+		g_PlayerExtraInfo[i].has_c4;
+	int r = c4Carrier ? 255 : ( bFriend ? 0 : 255 );
+	int g = c4Carrier ? 70 : ( bFriend ? 120 : 0 );
+	int b = c4Carrier ? 30 : ( bFriend ? 255 : 0 );
 
-	CClientSprite *pSprite = bFriend ? s_spr[SPR_PLAYER_BLUE] : s_spr[SPR_PLAYER_RED];
+	CClientSprite *pSprite = c4Carrier ? s_spr[SPR_PLAYER_C4] :
+		( bFriend ? s_spr[SPR_PLAYER_BLUE] : s_spr[SPR_PLAYER_RED] );
 
 	int x, y;
 	// NOT g_PlayerExtraInfo[i].origin: nothing in this client ever writes
@@ -1375,13 +1552,123 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	if( pSprite && pSprite->spr )
 	{
 		SPR_Set( pSprite->spr, r, g, b );
-		SPR_DrawAdditive( x - BLIP_SIZE / 2, y - BLIP_SIZE / 2, 0, &pSprite->rect );
+		SPR_DrawAdditive( x - pSprite->rect.Width() / 2,
+			y - pSprite->rect.Height() / 2, 0, &pSprite->rect );
 		return;
 	}
 
 	// no sprite -> the mobile build draws a 20x20 solid square
 	FillRGBA( x - BLIP_SIZE / 2, y - BLIP_SIZE / 2, BLIP_SIZE, BLIP_SIZE,
 		r, g, b, 255 );
+}
+
+bool CHudRadarModern::ObjectivePoint( const Vector &world, int halfSize, int &x, int &y )
+{
+	if( !m_bOverviewValid || m_flPixelsPerTile <= 0.0f || m_iRadius <= halfSize ) return false;
+	int radius;
+	if( CalcPoint( world, x, y, radius ) ) return false;
+	const int dx = x - m_iCenterX, dy = y - m_iCenterY;
+	const int inset = radius - halfSize;
+	return dx * dx + dy * dy <= inset * inset;
+}
+
+void CHudRadarModern::DrawObjectives( int localTeam )
+{
+	for( int i = 0; i < m_iObjectiveCount; ++i )
+	{
+		const Objective &site = m_Objectives[i];
+		if( !site.bomb && localTeam != TEAM_CT ) continue;
+		int x, y;
+		if( !ObjectivePoint( site.origin, 8, x, y ) ) continue;
+		FillRGBA( x - 7, y - 7, 14, 14, 0, 0, 0, 210 );
+		if( site.bomb )
+		{
+			FillRGBA( x - 5, y - 5, 10, 10, 230, 165, 40, 230 );
+			if( site.label == 'A' || site.label == 'B' )
+			{
+				const int index = HUD_GetSpriteIndexByName( site.label == 'A' ? "radar_a" : "radar_b" );
+				if( index )
+				{
+					HSPRITE sprite = HUD_GetSprite( index );
+					wrect_t rect = HUD_GetSpriteRect( index );
+					if( sprite )
+					{
+						SPR_Set( sprite, 255, 255, 255 );
+						SPR_DrawAdditive( x - rect.Width() / 2, y - rect.Height() / 2, 0, &rect );
+					}
+				}
+			}
+		}
+		else
+		{
+			FillRGBA( x - 5, y - 5, 10, 10, 35, 205, 195, 230 );
+			FillRGBA( x - 2, y - 2, 4, 4, 255, 255, 255, 240 );
+		}
+	}
+}
+
+void CHudRadarModern::DrawBomb( int localTeam, float flTime )
+{
+	const extra_player_info_t &bomb = g_PlayerExtraInfo[33];
+	if( bomb.dead || !bomb.radarflashes ||
+		( bomb.playerclass == 0 && localTeam != TEAM_TERRORIST ) ||
+		( bomb.origin[0] == 0 && bomb.origin[1] == 0 && bomb.origin[2] == 0 ) ) return;
+	const bool planted = bomb.playerclass == 1;
+	CClientSprite *sprite = s_spr[planted ? SPR_C4 : SPR_BACKPACK];
+	const int halfSize = sprite && sprite->spr ? max( sprite->rect.Width(), sprite->rect.Height() ) / 2 : 8;
+	int x, y;
+	if( !ObjectivePoint( bomb.origin, halfSize, x, y ) ) return;
+	const bool bright = ( (int)( flTime * 2.0f ) & 1 ) == 0;
+	const int r = 255, g = planted ? ( bright ? 50 : 110 ) : ( bright ? 190 : 110 );
+	const int backing = max( 7, halfSize + 1 );
+	FillRGBABlend( x - backing, y - backing, backing * 2, backing * 2,
+		8, 10, 12, 210 );
+	if( sprite && sprite->spr )
+	{
+		SPR_Set( sprite->spr, r, g, 30 );
+		SPR_DrawAdditive( x - sprite->rect.Width() / 2,
+			y - sprite->rect.Height() / 2, 0, &sprite->rect );
+	}
+	else
+	{
+		FillRGBABlend( x - 5, y - 5, 10, 10, r, g, 30, 255 );
+		if( planted )
+		{
+			FillRGBABlend( x - 3, y - 3, 2, 2, 255, 255, 255, 255 );
+			FillRGBABlend( x + 1, y + 1, 2, 2, 255, 255, 255, 255 );
+		}
+	}
+}
+
+void CHudRadarModern::DrawHostages( int localTeam, float flTime )
+{
+	if( localTeam != TEAM_CT ) return;
+	for( int i = 1; i <= MAX_HOSTAGES; ++i )
+	{
+		const hostage_info_t &hostage = g_HostageInfo[i];
+		if( !hostage.radarflashes ) continue;
+		// HostageK is sent for both death and rescue, without an outcome byte.
+		// Show a short neutral terminal state, then remove the old position.
+		if( hostage.dead && ( flTime < hostage.radarflashtime || flTime - hostage.radarflashtime > 1.5f ) ) continue;
+		CClientSprite *sprite = s_spr[SPR_HOSTAGE];
+		const int halfSize = sprite && sprite->spr ? max( sprite->rect.Width(), sprite->rect.Height() ) / 2 : 7;
+		int x, y;
+		if( !ObjectivePoint( Vector( hostage.origin[0], hostage.origin[1], hostage.origin[2] ), halfSize, x, y ) ) continue;
+		const int r = hostage.dead ? 175 : 75;
+		const int g = hostage.dead ? 175 : 215;
+		const int b = hostage.dead ? 175 : 255;
+		if( sprite && sprite->spr )
+		{
+			SPR_Set( sprite->spr, r, g, b );
+			SPR_DrawAdditive( x - sprite->rect.Width() / 2,
+				y - sprite->rect.Height() / 2, 0, &sprite->rect );
+		}
+		else
+		{
+			FillRGBA( x - 6, y - 6, 12, 12, 0, 0, 0, 220 );
+			FillRGBA( x - 4, y - 4, 8, 8, r, g, b, 255 );
+		}
+	}
 }
 
 /*
@@ -1434,6 +1721,7 @@ int CHudRadarModern::Draw( float flTime )
 	// ---- overview background: re-read only when the map changes,
 	//        exactly like the mobile build's Reset()
 	LoadOverview( gEngfuncs.pfnGetLevelName() );
+	LoadObjectives( gEngfuncs.pfnGetLevelName() );
 
 	// ---- how much of the map the window covers, and the resulting scale
 	if( s_cl_radar_view )
@@ -1537,11 +1825,14 @@ int CHudRadarModern::Draw( float flTime )
 	{
 		// no sprite: outline in the configured colour so the position and
 		// size are still verifiable on screen
-		DrawRadarFrame( m_iCenterX, m_iCenterY, m_iRadius, r, g, b, a );
+		DrawRadarFrame( m_iCenterX, m_iCenterY, m_iRadius, r, g, b, a, true );
 	}
 
 	// ---- circular mask
 	DrawRadarMask( m_iCenterX, m_iCenterY, m_iRadius );
+	const int localTeam = m_iPlayerNum > 0 && m_iPlayerNum <= MAX_PLAYERS ?
+		g_PlayerExtraInfo[m_iPlayerNum].teamnumber : 0;
+	DrawObjectives( localTeam );
 
 	// ---- the local player, pinned to the centre
 	DrawSelfMarker( m_iCenterX, m_iCenterY, m_iRadius );
@@ -1551,6 +1842,8 @@ int CHudRadarModern::Draw( float flTime )
 
 	for( int i = 1; i < 32; i++ )
 		DrawPlayerBlip( m_iCenterX, m_iCenterY, m_iRadius, i, flTime );
+	DrawHostages( localTeam, flTime );
+	DrawBomb( localTeam, flTime );
 
 	// ---- warning frame while alive with a bomb in hand
 	DrawWarningFrame( m_iCenterX, m_iCenterY, m_iRadius, flTime );

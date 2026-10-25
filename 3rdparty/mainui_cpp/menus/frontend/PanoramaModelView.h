@@ -15,10 +15,15 @@ public:
     void SetGloves(int resourceId);
     void SetAppearance(const oc2_inventory::WeaponState &state,
         const oc2_accessories::WeaponConfig *accessories=nullptr);
+    void SetAccessoryPreview(const std::string &pattern,unsigned count);
+    bool ProjectAccessory(int kind,float u,float v,float &screenX,float &screenY,float &pixelsPerUnit) const;
+    bool UnprojectAccessory(float screenX,float screenY,float &u,float &v) const;
+    bool AttachmentBounds(int kind,float &left,float &top,float &right,float &bottom) const;
     void SetInteractive(bool interactive);
     void ReloadConfiguration();
     void ResetView();
     void Dump(const char *tag) const;
+    void DumpStyle(const char *surface,int index) const;
     void VidInit() override;
     void Draw() override;
     bool DrawAt(int x,int y,int width,int height);

@@ -27,6 +27,8 @@
 #include "particleman.h"
 #include "particleman_internal.h"
 #include "../dlls/wpn_shared/oc2_weapon_params.h"
+#include "oc2_legs.h"
+#include "oc2_ragdoll.h"
 
 static weapon_fire_feedback::State s_weaponFireFeedback;
 
@@ -36,7 +38,11 @@ void HUD_CommitWeaponFlash()
 	if (oc2_weapon::FromId(id)) s_weaponFireFeedback.Commit(id,gEngfuncs.GetClientTime());
 }
 
-void HUD_ClearWeaponFlash() { s_weaponFireFeedback.Clear(); }
+void HUD_ClearWeaponFlash()
+{
+	s_weaponFireFeedback.Clear();
+	EV_ClearViewModelTracers();
+}
 
 void HUD_WeaponFireFeedbackDump()
 {
@@ -251,6 +257,7 @@ void DLLEXPORT HUD_CreateEntities( void )
 	// Add in any game specific objects
 
 	GetClientVoiceHud()->CreateEntities();
+	OC2_LegsCreateEntity();
 }
 
 /*
@@ -359,6 +366,14 @@ The entity's studio model description indicated an event was
 fired during this frame, handle the event by it's tag ( e.g., muzzleflash, sound )
 =========================
 */
+static void HUD_ModelMuzzleFlash(cl_entity_t *entity, int attachment, const char *options)
+{
+	Vector point(entity->attachment[attachment]);
+	if (entity == gEngfuncs.GetViewModel())
+		EV_GetViewModelAttachmentPoint(0, attachment, point);
+	gEngfuncs.pEfxAPI->R_MuzzleFlash(point, atoi(options));
+}
+
 void DLLEXPORT HUD_StudioEvent( const struct mstudioevent_s *event, struct cl_entity_s *entity )
 {
     // Authorization is retained for the final live bullet even with clip==0.
@@ -377,19 +392,19 @@ void DLLEXPORT HUD_StudioEvent( const struct mstudioevent_s *event, struct cl_en
 	switch( event->event )
 	{
 	case 5001:
-		gEngfuncs.pEfxAPI->R_MuzzleFlash( (float *)&entity->attachment[0], atoi( event->options) );
+		HUD_ModelMuzzleFlash(entity, 0, event->options);
 		// CL_MuzzleFlash( entity, (float *)&entity->attachment[0], atoi( event->options) );
 		break;
 	case 5011:
-		gEngfuncs.pEfxAPI->R_MuzzleFlash( (float *)&entity->attachment[1], atoi( event->options) );
+		HUD_ModelMuzzleFlash(entity, 1, event->options);
 		// CL_MuzzleFlash( entity, (float *)&entity->attachment[1], atoi( event->options) );
 		break;
 	case 5021:
-		gEngfuncs.pEfxAPI->R_MuzzleFlash( (float *)&entity->attachment[2], atoi( event->options) );
+		HUD_ModelMuzzleFlash(entity, 2, event->options);
 		// CL_MuzzleFlash( entity, (float *)&entity->attachment[2], atoi( event->options) );
 		break;
 	case 5031:
-		gEngfuncs.pEfxAPI->R_MuzzleFlash( (float *)&entity->attachment[3], atoi( event->options) );
+		HUD_ModelMuzzleFlash(entity, 3, event->options);
 		// CL_MuzzleFlash( entity, (float *)&entity->attachment[3], atoi( event->options) );
 		break;
 	case 5002:
@@ -810,6 +825,7 @@ void DLLEXPORT HUD_TempEntUpdate (
 	}
 
 finish:
+	OC2_RagdollTick(client_time);
 	// Restore state info
 	gEngfuncs.pEventAPI->EV_PopPMStates();
 }

@@ -8,11 +8,10 @@ Transcribed from CS:GO's own source, not from a re-implementation:
     3311-3500  CalcViewModelBobHelper()
     3505-3529  AddViewModelBobHelper()
 
-The bob this reproduces is the original; GoldClient and NextClient are both
-later forks of it and each drifts from CS:GO in ways that are visible:
-GoldClient adds an exponential speed smoother, a health>=45 gate and a 1.35
-cycle multiplier, and folds the final placement scale into the output. Those
-are NOT reproduced here.
+The waveform follows the original. GoldSrc adapters smooth velocity steps,
+keep the stride phase rate limited by the user's follow setting, and let
+amplitude react to the smoothed velocity. These are separate from the Source
+waveform constants.
 
 Pure math: no engine types, no globals, no cvars. The caller supplies the
 weapon profile and the accuracy numbers, so this file can be checked offline
@@ -57,7 +56,8 @@ namespace view_bob
 		float air_scale;   // airborne multiplier, CS:GO uses 0.2
 		float air_speed;   // slew rate toward it, 0 = instant like CS:GO
 
-		// Low-pass on the speed before anything else reads it, in units of 1/s.
+		// Low-pass on the speed before amplitude and stride phase read it, in
+		// units of 1/s.
 		// CS:GO's GetLocalVelocity() is predicted and arrives once per rendered
 		// frame; here it is the raw server velocity whenever the server has not
 		// enabled prediction (engine/client/dll_int/cl_pmove.c:1008 copies
@@ -77,11 +77,10 @@ namespace view_bob
 		// is a sticky state and never flickers like that. 0 disables.
 		float ground_delay;
 
-		// How fast the smoothed speed may chase the real one, in units per
-		// second. CS:GO uses 640, which at 60 fps allows 10.7 units of catch-up
-		// a frame -- that ceiling is what bounds the frame-to-frame jump in
-		// bob_offset, and therefore in the phase rate. Lower it to calm a
-		// stutter, at the cost of a slower start and stop.
+		// How fast the smoothed speed may advance the stride phase, in units
+		// per second. CS:GO uses 640. Lower values still calm phase changes;
+		// the visible amplitude follows the low-passed velocity above so a
+		// preferred low phase limit does not make the weapon respond late.
 		float speed_follow;
 	};
 
@@ -144,7 +143,7 @@ namespace view_bob
 	{
 		float bob_time;        // m_flBobTime
 		float last_bob_time;   // m_flLastBobTime
-		float last_speed;      // m_flLastSpeed
+		float last_speed;      // phase speed after the Source follow limit
 		float gun_acc_pos;     // current weapon's m_flGunAccuracyPosition
 		float weapon_acc_pos[32]; // OC2 weapon IDs 0..31, retained across switches
 		int active_weapon_id;

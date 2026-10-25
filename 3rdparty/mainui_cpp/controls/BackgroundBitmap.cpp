@@ -65,7 +65,8 @@ void CMenuBackgroundBitmap::VidInit()
 
 void CMenuBackgroundBitmap::DrawInGameBackground()
 {
-	UI_FillRect( m_scPos, m_scSize, uiColorBlack );
+	// The pause shell overlays the running scene, like the CS:GO pause state.
+	UI_FillRect( m_scPos, m_scSize, PackRGBA( 0, 0, 0, 24 ));
 }
 
 void CMenuBackgroundBitmap::DrawColor()
