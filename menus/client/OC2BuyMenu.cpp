@@ -30,7 +30,7 @@ Rect Area(float x,float y,float w,float h)
 
 const float columnX[] = {.02f,.13f,.24f,.39f,.55f};
 const float columnW[] = {.10f,.10f,.14f,.15f,.10f};
-const char *columnName[] = {"EQUIPMENT","PISTOLS","MID-TIER","RIFLES","GRENADES"};
+const char *columnName[] = {"装备","手枪","微冲 / 重型","步枪","投掷物"};
 
 class COc2BuyMenu : public CClientWindow
 {
@@ -77,15 +77,15 @@ public:
 			// Full-height actor framing from the reference. The main world pass
 			// still renders its viewmodel; this scene adds only the preview actor.
 			int(ScreenWidth*.67f),int(ScreenHeight*.12f),int(ScreenWidth*.33f),int(ScreenHeight*.88f)))
-			Text("COUNTER-STRIKE",Area(.70f,.45f,.27f,.07f),28,PackRGBA(220,220,220,255),QM_CENTER);
+			Text("反恐精英",Area(.70f,.45f,.27f,.07f),28,PackRGBA(220,220,220,255),QM_CENTER);
 
 		Fill(Area(.01f,.133333f,.65f,.711111f),PackRGBA(0,0,0,100));
 		char info[128];
-		std::snprintf(info,sizeof(info),"%s   $%d",state.team==2?"COUNTER-TERRORISTS":"TERRORISTS",state.money);
+		std::snprintf(info,sizeof(info),"%s   $%d",state.team==2?"反恐精英":"恐怖分子",state.money);
 		Text(info,Area(.02f,.065f,.43f,.04f),28,PackRGBA(255,255,255,255));
-		if (state.seconds>=0) std::snprintf(info,sizeof(info),"BUY TIME  %d:%02d",state.seconds/60,state.seconds%60);
-		else std::snprintf(info,sizeof(info),"%s",state.seconds==-1?"BUY TIME  UNLIMITED":"BUY MENU");
-		Text(info,Area(.44f,.065f,.21f,.04f),20,PackRGBA(220,220,220,255),QM_RIGHT);
+		if (state.seconds>=0) std::snprintf(info,sizeof(info),"购买时间  %d:%02d",state.seconds/60,state.seconds%60);
+		else std::snprintf(info,sizeof(info),"%s",state.seconds==-1?"购买时间不限":"购买菜单");
+		Text(info,Area(.44f,.065f,.21f,.04f),20,PackRGBA(220,220,220,255),QM_CENTER);
 
 		for (int col=0;col<5;++col)
 		{
@@ -115,13 +115,13 @@ public:
 		}
 
 		Fill(Area(.43f,.866667f,.23f,.111111f),PackRGBA(0,0,0,110));
-		DrawButton(-2,"gfx/weaponbuy/close.tga",Area(.44f,.888889f,.10f,.066667f),true);
-		DrawButton(-3,"gfx/weaponbuy/buy.tga",Area(.55f,.888889f,.10f,.066667f),hasSelection&&selected.enabled);
+		DrawButton(-2,Area(.44f,.888889f,.10f,.066667f),true);
+		DrawButton(-3,Area(.55f,.888889f,.10f,.066667f),hasSelection&&selected.enabled);
 		if (hasSelection)
 		{
 			std::snprintf(info,sizeof(info),"%s   $%d",selected.name,selected.price);
 			Text(info,Area(.02f,.89f,.39f,.035f),22,PackRGBA(255,255,255,255));
-			Text(selected.enabled?"Click BUY or press Enter":selected.reason,Area(.02f,.93f,.39f,.028f),18,
+			Text(selected.enabled?"点击购买或按回车键":selected.reason,Area(.02f,.93f,.39f,.028f),18,
 				selected.enabled?PackRGBA(210,210,210,255):PackRGBA(230,170,110,255));
 		}
 	}
@@ -297,14 +297,15 @@ private:
 		const int width=std::max(2,int(track.w*oc2_buy_scroll::visibleRows/count));
 		const int x=track.x+int((track.w-width)*scroll[col].position/oc2_buy_scroll::State::Maximum(count));
 		Fill({x,track.y,width,std::max(2,track.h)},PackRGBA(224,198,130,220));
-		Text("SCROLL",Area(columnX[col],.845f,columnW[col],.023f),14,PackRGBA(215,215,215,220),QM_CENTER);
+		Text("滚轮滚动",Area(columnX[col],.845f,columnW[col],.023f),14,PackRGBA(215,215,215,220),QM_CENTER);
 	}
-	void Text(const char *text,Rect rect,int height,unsigned int color,uint align=QM_LEFT)
+	void Text(const char *text,Rect rect,int height,unsigned int color,uint align=QM_CENTER)
 	{
 		const int pixels=std::max(10,int(height*ScreenHeight/1080.0f));
 		if (!fonts.count(pixels) || g_FontMgr->GetFontTall(fonts[pixels])<=0)
-			fonts[pixels]=CFontBuilder("Trebuchet MS",pixels,400).Create();
-		UI_DrawString(fonts[pixels],rect.x,rect.y,rect.w,rect.h,text,color,pixels,align,ETF_NO_WRAP);
+			fonts[pixels]=CFontBuilder("Microsoft YaHei UI",pixels,500).Create();
+		const int actualHeight=std::max(1,g_FontMgr->GetFontTall(fonts[pixels]));
+		UI_DrawString(fonts[pixels],rect.x,rect.y,rect.w,rect.h,text,color,actualHeight,align,ETF_NO_WRAP|ETF_FORCECOL);
 	}
 	HIMAGE Picture(const char *name)
 	{
@@ -342,23 +343,22 @@ private:
 		}
 		unsigned int textColor=PackRGBA(tint,tint,tint,255);
 		int pad=std::max(5,int(ScreenHeight/135.0f));
-		Text(item.name,{r.x+pad,r.y+2,r.w-pad*2,int(r.h*.19f)},18,textColor,QM_RIGHT);
+		Text(item.name,{r.x+pad,r.y+2,r.w-pad*2,int(r.h*.19f)},18,textColor,QM_CENTER);
 		char cost[32]; std::snprintf(cost,sizeof(cost),"$%d",item.price);
 		Text(cost,{r.x+pad,r.y+int(r.h*.81f),r.w-pad*2,int(r.h*.18f)},18,textColor,QM_RIGHT);
 		if (item.owned || item.count>0)
 		{
 			char owned[32];
 			if (item.limit>1) std::snprintf(owned,sizeof(owned),"%d / %d",item.count,item.limit);
-			else std::snprintf(owned,sizeof(owned),"OWNED");
+			else std::snprintf(owned,sizeof(owned),"已拥有");
 			Text(owned,{r.x+pad,r.y+int(r.h*.81f),int(r.w*.65f),int(r.h*.18f)},14,PackRGBA(225,198,126,255));
 		}
 	}
-	void DrawButton(int id,const char *name,Rect r,bool enabled)
+	void DrawButton(int id,Rect r,bool enabled)
 	{
-		HIMAGE pic=Picture(name); int value=enabled?255:100;
+		const int value=enabled?255:100;
 		Fill(r,PackRGBA(0,0,0,230));
-		if (pic) { EngFuncs::PIC_Set(pic,value,value,value,255); EngFuncs::PIC_DrawTrans(r.x,r.y,r.w,r.h); }
-		else Text(id==-2?"CLOSE":"BUY",r,28,PackRGBA(value,value,value,255),QM_CENTER);
+		Text(id==-2?"关闭":"购买",r,28,PackRGBA(value,value,value,255),QM_CENTER);
 		if (hover==id && enabled) UI_DrawRectangleExt(r.x,r.y,r.w,r.h,PackRGBA(237,199,97,255),2);
 	}
 	int Hit(int x,int y) const

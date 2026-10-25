@@ -16,7 +16,7 @@ public:
     void SetChrome(void (*draw)(CMenuBaseWindow *)) { m_drawChrome=draw; }
     void SelectMap(const char *name);
 private:
-    struct Map { std::string name, title, radar; };
+    struct Map { std::string name, title, radar, overview; };
     class Card : public CMenuAction
     {
     public:

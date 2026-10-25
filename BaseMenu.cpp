@@ -595,8 +595,7 @@ void UI_CloseMenu( void )
 	uiStatic.menu.Clean();
 
 //	EngFuncs::KEY_ClearStates ();
-	if( !uiStatic.client.IsActive() )
-		EngFuncs::KEY_SetDest( KEY_GAME );
+	EngFuncs::KEY_SetDest( uiStatic.client.IsActive() ? KEY_MENU : KEY_GAME );
 }
 
 void UI_CloseClientMenu( void )
@@ -1164,6 +1163,10 @@ void UI_Init( void )
 	ui_prefer_won_background = EngFuncs::CvarRegister( "ui_prefer_won_background", "0", FCVAR_ARCHIVE );
 	ui_background_stretch = EngFuncs::CvarRegister( "ui_background_stretch", "0", FCVAR_ARCHIVE );
 	ui_logohorizontal = EngFuncs::CvarRegister( "ui_logohorizontal", "0", FCVAR_ARCHIVE );
+
+	// Register before startup config.cfg runs; the first main-menu Show is later.
+	EngFuncs::CvarRegister( "cl_lobby_agent", "0", FCVAR_ARCHIVE );
+	EngFuncs::CvarRegister( "cl_lobby_weapon", "28", FCVAR_ARCHIVE );
 
 	// show cl_predict dialog
 	EngFuncs::CvarRegister( "menu_mp_firsttime2", "1", FCVAR_ARCHIVE );
