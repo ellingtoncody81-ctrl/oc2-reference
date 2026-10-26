@@ -150,7 +150,7 @@ git -C <上游仓> cherry-pick <原提交号>
 
 1. 提交链：只保留作者为 `ellingtoncody81-ctrl <ellingtoncody81@gmail.com>` 的提交，按原拓扑顺序重写为链式
 2. 目录树：每个提交的树只保留**你自己改动过的路径**（逐提交累积），上游原封不动的文件全部剔除
-3. 体积：原 `oc2-reference`（含上游全历史）112.4 MB → 精简版约 1 MB
+3. 体积：原 `oc2-reference`（含上游全历史）112.4 MB → 精简版约 1.5 MB
 
 ## 未包含
 
