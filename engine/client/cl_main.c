@@ -332,6 +332,7 @@ static void CL_CheckClientState( void )
 		cls.changelevel = false;		// changelevel is done
 		cls.changedemo = false;		// changedemo is done
 		cl.first_frame = true;		// first rendering frame
+		SCR_LoadingEnd(); // the first valid full signon, not a timer, ends loading
 
 		CL_UpdateLogo();
 
@@ -1530,10 +1531,6 @@ static void CL_Connect_f( void )
 	Con_Printf( "server %s\n", server );
 	CL_Disconnect();
 
-	// TESTTEST: a see console during connection
-	UI_SetActiveMenu( false );
-	Key_SetKeyDest( key_console );
-
 	cls.state = ca_connecting;
 	cls.net_protocol = proto;
 	Q_strncpy( cls.servername, server, sizeof( cls.servername ));
@@ -1543,6 +1540,7 @@ static void CL_Connect_f( void )
 	memset( &cls.bandwidth_test, 0, sizeof( cls.bandwidth_test ));
 	cls.spectator = false;
 	cls.signon = 0;
+	SCR_LoadingBegin( NULL, cls.servername );
 }
 
 /*
@@ -1776,7 +1774,10 @@ This is also called on Host_Error, so it shouldn't cause any errors
 void CL_Disconnect( void )
 {
 	if( cls.state == ca_disconnected )
+	{
+		SCR_LoadingEnd();
 		return;
+	}
 
 	cls.connect_time = 0;
 	cls.changedemo = false;
@@ -1804,6 +1805,7 @@ void CL_Disconnect( void )
 	memset( &cls.bandwidth_test, 0, sizeof( cls.bandwidth_test ));
 	cls.signon = 0;
 	cls.net_protocol = PROTO_CURRENT;
+	SCR_LoadingEnd();
 
 	// back to menu in non-developer mode
 	if( host_developer.value || cls.key_dest == key_menu )
@@ -1932,6 +1934,7 @@ static void CL_Reconnect_f( void )
 	if( cls.state == ca_connected )
 	{
 		CL_Reconnect( false );
+		if( !SCR_IsLoading() ) SCR_LoadingBegin( NULL, cls.servername );
 		return;
 	}
 
@@ -1947,6 +1950,7 @@ static void CL_Reconnect_f( void )
 		cls.state = ca_connecting;
 		cls.signon = 0;
 		cls.net_protocol = proto; // don't change protocol
+		SCR_LoadingBegin( NULL, cls.servername );
 
 		Con_Printf( "reconnecting...\n" );
 	}
@@ -1979,9 +1983,6 @@ static void CL_Retry_f( void )
 	Con_Printf( "Commencing connection retry to %s\n", cls.servername );
 	CL_Disconnect();
 
-	UI_SetActiveMenu( false );
-	Key_SetKeyDest( key_console );
-
 	cls.state = ca_connecting;
 	cls.connect_time = MAX_HEARTBEAT; // CL_CheckForResend() will fire immediately
 	cls.max_fragment_size = FRAGMENT_MAX_SIZE;
@@ -1989,6 +1990,7 @@ static void CL_Retry_f( void )
 	memset( &cls.bandwidth_test, 0, sizeof( cls.bandwidth_test ));
 	cls.spectator = false;
 	cls.signon = 0;
+	SCR_LoadingBegin( NULL, cls.servername );
 }
 
 /*
@@ -3290,6 +3292,13 @@ void CL_ProcessFile( qboolean successfully_received, const char *filename )
 
 		for( p = cl.resourcesneeded.pNext; p != &cl.resourcesneeded; p = p->pNext )
 			host.downloadcount++;
+		if( SCR_IsLoading() && host.downloadcount )
+		{
+			int available = 0;
+			for( p = cl.resourcesonhand.pNext; p && p != &cl.resourcesonhand; p = p->pNext )
+				available++;
+			SCR_LoadingProgress( "download", available, available + host.downloadcount, filename );
+		}
 
 		if( cl.resourcesneeded.pNext == &cl.resourcesneeded )
 		{
@@ -3455,6 +3464,13 @@ static qboolean CL_ShouldRescanFilesystem( void )
 qboolean CL_PrecacheResources( void )
 {
 	resource_t	*pRes;
+	int total = 0, completed = 0;
+	for( pRes = cl.resourcesonhand.pNext; pRes && pRes != &cl.resourcesonhand; pRes = pRes->pNext )
+	{
+		total++;
+		if( FBitSet( pRes->ucFlags, RES_PRECACHED )) completed++;
+	}
+	SCR_LoadingProgress( "resources", completed, total, "" );
 
 	// if we downloaded new WAD files or any other archives they must be added to searchpath
 	if( CL_ShouldRescanFilesystem( ))
@@ -3469,8 +3485,10 @@ qboolean CL_PrecacheResources( void )
 		if( pRes->type != t_model || pRes->nIndex != WORLD_INDEX )
 			continue;
 
+		SCR_LoadingProgress( "resources", completed, total, pRes->szFileName );
 		cl.models[pRes->nIndex] = Mod_LoadWorld( pRes->szFileName, true );
 		SetBits( pRes->ucFlags, RES_PRECACHED );
+		SCR_LoadingProgress( "resources", ++completed, total, pRes->szFileName );
 		cl.nummodels = 1;
 		break;
 	}
@@ -3483,6 +3501,7 @@ qboolean CL_PrecacheResources( void )
 
 		if( pRes->type == t_model && pRes->szFileName[0] == '*' )
 		{
+			SCR_LoadingProgress( "resources", completed, total, pRes->szFileName );
 			cl.models[pRes->nIndex] = Mod_ForName( pRes->szFileName, false, false );
 			cl.nummodels = Q_max( cl.nummodels, pRes->nIndex + 1 );
 			SetBits( pRes->ucFlags, RES_PRECACHED );
@@ -3497,6 +3516,7 @@ qboolean CL_PrecacheResources( void )
 					return false;
 				}
 			}
+			SCR_LoadingProgress( "resources", ++completed, total, pRes->szFileName );
 		}
 	}
 
@@ -3509,6 +3529,7 @@ qboolean CL_PrecacheResources( void )
 		if( FBitSet( pRes->ucFlags, RES_PRECACHED ))
 			continue;
 
+		SCR_LoadingProgress( "resources", completed, total, pRes->szFileName );
 		switch( pRes->type )
 		{
 		case t_sound:
@@ -3594,6 +3615,7 @@ qboolean CL_PrecacheResources( void )
 		}
 
 		SetBits( pRes->ucFlags, RES_PRECACHED );
+		SCR_LoadingProgress( "resources", ++completed, total, pRes->szFileName );
 	}
 
 	// make sure modelcount is in-range

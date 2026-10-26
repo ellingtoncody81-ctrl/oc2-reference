@@ -19,9 +19,16 @@ GNU General Public License for more details.
 #include "qfont.h"
 #include "input.h"
 #include "library.h"
+#include "platform/platform.h"
 
 CVAR_DEFINE_AUTO( scr_centertime, "2.5", 0, "centerprint hold time" );
 CVAR_DEFINE_AUTO( scr_loading, "0", 0, "loading bar progress" );
+static CVAR_DEFINE_AUTO( scr_loading_active, "0", 0, "map loading presentation is active" );
+static CVAR_DEFINE_AUTO( scr_loading_map, "", 0, "map being loaded" );
+static CVAR_DEFINE_AUTO( scr_loading_stage, "", 0, "current map loading operation" );
+static CVAR_DEFINE_AUTO( scr_loading_current, "0", 0, "completed resources in current operation" );
+static CVAR_DEFINE_AUTO( scr_loading_total, "0", 0, "resource count, zero when unknown" );
+static CVAR_DEFINE_AUTO( scr_loading_item, "", 0, "resource being processed" );
 CVAR_DEFINE_AUTO( scr_download, "-1", 0, "downloading bar progress" );
 CVAR_DEFINE( scr_viewsize, "viewsize", "120", FCVAR_ARCHIVE, "screen size (quake only)" );
 CVAR_DEFINE_AUTO( cl_testlights, "0", FCVAR_CHEAT, "test dynamic lights" );
@@ -486,6 +493,81 @@ static qboolean SCR_DrawPlaque( void )
 	return false;
 }
 
+qboolean SCR_IsLoading( void )
+{
+	return scr_loading_active.value != 0.0f;
+}
+
+// Loading can run synchronously while world/model storage is being replaced.
+// Draw only the dedicated 2D menu path, never V_RenderView or client HUD callbacks.
+static void SCR_DrawLoadingScreen( qboolean force )
+{
+	static double lastUpdate;
+	double now = Platform_DoubleTime();
+	if( !SCR_IsLoading() || !ref.initialized || host.status == HOST_SLEEP )
+		return;
+	if( !force && now - lastUpdate < 0.05 )
+		return;
+	lastUpdate = now;
+	// Process input/window events, but never execute queued commands inside a
+	// resource load. Explicit console toggles remain available during precache.
+	Platform_RunEvents();
+	ref.dllFuncs.R_BeginFrame( false );
+	ref.dllFuncs.R_AllowFog( false );
+	ref.dllFuncs.R_Set2DMode( true );
+	ref.dllFuncs.FillRGBA( kRenderNormal, 0, 0, refState.width, refState.height, 13, 20, 27, 255 );
+	UI_UpdateMenu( now );
+	Con_DrawConsole(); // only an explicitly opened console is drawn
+	if( cls.scrshot_action == scrshot_normal || cls.scrshot_action == scrshot_snapshot )
+		SCR_MakeScreenShot();
+	ref.dllFuncs.R_AllowFog( true );
+	ref.dllFuncs.R_EndFrame();
+}
+
+void SCR_LoadingProgress( const char *stage, int current, int total, const char *item )
+{
+	qboolean changed;
+	if( !SCR_IsLoading() )
+		return;
+	changed = Q_strcmp( scr_loading_stage.string, stage ) != 0;
+	total = Q_max( 0, total );
+	current = total ? bound( 0, current, total ) : 0;
+	Cvar_Set( "scr_loading_stage", stage );
+	Cvar_SetValue( "scr_loading_current", current );
+	Cvar_SetValue( "scr_loading_total", total );
+	Cvar_Set( "scr_loading_item", item ? item : "" );
+	// This is a resource-count fraction, never a time estimate or a signon guess.
+	Cvar_SetValue( "scr_loading", total ? 100.0f * current / total : -1.0f );
+	SCR_DrawLoadingScreen( changed || ( total && current == total ));
+}
+
+void SCR_LoadingBegin( const char *map, const char *server )
+{
+	if( !gameui.hInstance )
+		return;
+	Cvar_Set( "scr_loading_map", map ? map : "" );
+	Cvar_SetValue( "scr_loading_active", 1 );
+	UI_SetActiveMenu( false );
+	UI_ConnectionProgress_Connect( server );
+	SCR_LoadingProgress( server ? "connect" : "server", 0, 0, "" );
+}
+
+void SCR_LoadingMap( const char *map )
+{
+	Cvar_Set( "scr_loading_map", map ? map : "" );
+}
+
+void SCR_LoadingEnd( void )
+{
+	qboolean console = cls.key_dest == key_console;
+	if( !SCR_IsLoading() )
+		return;
+	Cvar_SetValue( "scr_loading_active", 0 );
+	UI_ConnectionProgress_Disconnect();
+	if( console ) Key_SetKeyDest( key_console );
+	SCR_EndLoadingPlaque();
+}
+
 /*
 ================
 SCR_BeginLoadingPlaque
@@ -495,6 +577,16 @@ void SCR_BeginLoadingPlaque( qboolean is_background )
 {
 	S_StopAllSounds( true );
 	cl.audio_prepped = false;			// don't play ambients
+
+	if( !is_background && gameui.hInstance )
+	{
+		SCR_LoadingBegin( GameState->levelName, NULL );
+		cl.video_prepped = false;
+		cl.background = false;
+		cls.draw_changelevel = false;
+		cls.disable_screen = host.realtime;
+		return;
+	}
 
 	if( cls.key_dest == key_menu && !cls.changedemo && !is_background )
 	{
@@ -672,6 +764,12 @@ text to the screen.
 void SCR_UpdateScreen( void )
 {
 	qboolean screen_redraw = true; // assume screen has been redrawn
+
+	if( SCR_IsLoading() )
+	{
+		SCR_DrawLoadingScreen( true );
+		return;
+	}
 
 	if( !V_PreRender( )) return;
 
@@ -916,6 +1014,12 @@ void SCR_Init( void )
 	Cvar_RegisterVariable( &cl_levelshot_name );
 	Cvar_RegisterVariable( &cl_allow_levelshots );
 	Cvar_RegisterVariable( &scr_loading );
+	Cvar_RegisterVariable( &scr_loading_active );
+	Cvar_RegisterVariable( &scr_loading_map );
+	Cvar_RegisterVariable( &scr_loading_stage );
+	Cvar_RegisterVariable( &scr_loading_current );
+	Cvar_RegisterVariable( &scr_loading_total );
+	Cvar_RegisterVariable( &scr_loading_item );
 	Cvar_RegisterVariable( &scr_download );
 	Cvar_RegisterVariable( &cl_testlights );
 	Cvar_RegisterVariable( &cl_envshot_size );

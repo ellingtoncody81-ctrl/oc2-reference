@@ -8,21 +8,21 @@
 
 typedef struct { int line, begin, end; unsigned int serial; } con_window_row_t;
 typedef struct { unsigned int code; int width, texture; } con_window_glyph_t;
+typedef struct { string command, display; } con_window_candidate_t;
 typedef struct
 {
 	int x, y, w, h, fontHeight, rowHeight;
 	int screenWidth, screenHeight;
-	int titleY, toolsY, logY, logH, inputY, statusY, fieldX, fieldW;
+	int titleH, logX, logY, logW, logH, inputY, entryH, fieldX, fieldW, submitX;
 	int mouseX, mouseY, capture, startX, startY, oldX, oldY, oldW, oldH;
-	int focus, returnDest, severity, rows, first, shown, cacheWidth, candidateCount, candidate;
+	int scrollGrab;
+	int focus, returnDest, rows, first, shown, cacheWidth, candidateCount, candidate;
+	int selectionAByte, selectionBByte;
 	unsigned int generation, cachedGeneration, selectionA, selectionB;
-	qboolean initialized, historyMenu;
-	field_t filter;
+	qboolean initialized, historyMenu, completionVisible;
 	con_window_row_t row[CON_WINDOW_ROWS];
-	string candidates[CON_WINDOW_CANDIDATES];
-	string partial, status;
-	char lastExport[MAX_QPATH];
-	double statusUntil;
+	con_window_candidate_t candidates[CON_WINDOW_CANDIDATES];
+	string partial;
 	con_window_glyph_t glyphs[CON_WINDOW_GLYPHS];
 #if XASH_WIN32
 	HDC dc;
@@ -180,9 +180,7 @@ static int Con_WindowText( int x, int y, const char *s, int bytes, int maxWidth,
 	return width;
 }
 
-static const rgba_t con_window_white = { 220, 228, 232, 255 };
-static const rgba_t con_window_muted = { 147, 162, 171, 255 };
-static const rgba_t con_window_accent = { 116, 205, 226, 255 };
+static const rgba_t con_window_white = { 216, 222, 211, 255 };
 
 static qboolean Con_WindowInside( int x, int y, int w, int h )
 {
@@ -199,13 +197,16 @@ static void Con_WindowLayout( void )
 {
 	con_window_t *v = &con_window;
 	Con_WindowFont( bound( 14, Q_rint( refState.height / 60.0f ), 24 ));
-	v->rowHeight = v->fontHeight + 6;
+	v->rowHeight = v->fontHeight + 4;
 	if( !v->initialized )
 	{
-		v->w = refState.width * 0.72f;
-		v->h = refState.height * 0.72f;
-		v->x = (refState.width - v->w) / 2;
-		v->y = (refState.height - v->h) / 2;
+		// CSSO GameConsole::Initialize: most of the right half of the screen.
+		int offsetX = Q_rint( refState.height * (16.0f / 480.0f) );
+		int offsetY = Q_rint( refState.height * (64.0f / 480.0f) );
+		v->w = refState.width / 2;
+		v->h = refState.height - 2 * offsetY;
+		v->x = refState.width / 2 - offsetX;
+		v->y = offsetY;
 		v->returnDest = key_menu;
 		v->candidate = -1;
 		v->initialized = true;
@@ -220,56 +221,29 @@ static void Con_WindowLayout( void )
 	}
 	v->screenWidth = refState.width;
 	v->screenHeight = refState.height;
-	v->w = bound( Q_min( 560, refState.width ), v->w, refState.width );
-	v->h = bound( Q_min( 320, refState.height ), v->h, refState.height );
+	v->w = bound( Q_min( 320, refState.width ), v->w, refState.width );
+	v->h = bound( Q_min( 180, refState.height ), v->h, refState.height );
 	v->x = bound( 0, v->x, refState.width - v->w );
 	v->y = bound( 0, v->y, refState.height - v->h );
-	v->titleY = v->y;
-	v->toolsY = v->y + v->rowHeight + 16;
-	v->inputY = v->y + v->h - v->rowHeight * 2 - 22;
-	v->statusY = v->y + v->h - v->rowHeight - 6;
-	v->logY = v->toolsY + v->rowHeight + 15;
-	v->logH = Q_max( v->rowHeight, v->inputY - v->logY - 10 );
+	// ConsolePanel: inset history, then a single Entry/Submit row at the bottom.
+	v->titleH = Q_max( 28, v->rowHeight + 10 );
+	v->entryH = Q_max( 24, v->rowHeight + 4 );
+	v->inputY = v->y + v->h - v->entryH - 8;
+	v->logX = v->x + 12;
+	v->logW = v->w - 24;
+	v->logY = v->y + v->titleH + 12;
+	v->logH = Q_max( v->rowHeight, v->inputY - v->logY - 8 );
 	v->shown = Q_max( 1, v->logH / v->rowHeight );
-	v->fieldX = v->x + 64;
-	v->fieldW = v->w - 224;
+	v->submitX = v->x + v->w - 83;
+	v->fieldX = v->x + 16;
+	v->fieldW = v->submitX - v->fieldX - 16;
 	con.input.widthInChars = Q_max( 8, v->fieldW / Q_max( 1, v->fontHeight / 2 ));
-	v->filter.widthInChars = Q_max( 8, (v->w - 326) / Q_max( 1, v->fontHeight / 2 ));
-}
-
-static void Con_WindowMessage( const char *message )
-{
-	Q_strncpy( con_window.status, message, sizeof( con_window.status ));
-	con_window.statusUntil = host.realtime + 5.0;
-}
-
-static int Con_WindowPlain( char *out, int size, const char *in )
-{
-	int n = 0;
-	for( int i = 0; in[i] && n < size - 1; i++ )
-	{
-		if( IsColorString( in + i )) { i++; continue; }
-		if( (byte)in[i] >= 32 || in[i] == '\t' ) out[n++] = in[i];
-	}
-	out[n] = 0;
-	return n;
-}
-
-static qboolean Con_WindowMatch( const con_lineinfo_t *line )
-{
-	char plain[MAX_PRINT_MSG];
-	if( !line->start || *line->start == '\1' ) return false;
-	Con_WindowPlain( plain, sizeof( plain ), line->start );
-	if( con_window.severity == 1 && !Q_stristr( plain, "warn" ) && !Q_stristr( plain, "警告" )) return false;
-	if( con_window.severity == 2 && !Q_stristr( plain, "error" ) && !Q_stristr( plain, "fail" ) &&
-		!Q_stristr( plain, "fatal" ) && !Q_stristr( plain, "错误" )) return false;
-	return !con_window.filter.buffer[0] || Q_stristr( plain, con_window.filter.buffer ) != NULL;
 }
 
 static void Con_WindowRows( void )
 {
 	con_window_t *v = &con_window;
-	int width = v->w - 48;
+	int width = v->logW - 24;
 	if( v->cachedGeneration == v->generation && v->cacheWidth == width )
 	{
 		con.backscroll = bound( 0, con.backscroll, Q_max( 0, v->rows - v->shown ));
@@ -287,7 +261,7 @@ static void Con_WindowRows( void )
 	for( int i = 0; i < CON_LINES_COUNT; i++ )
 	{
 		con_lineinfo_t *line = &CON_LINES( i );
-		if( !Con_WindowMatch( line )) continue;
+		if( !line->start || *line->start == '\1' ) continue;
 		int begin = 0, at = 0, pixels = 0;
 		do
 		{
@@ -333,60 +307,36 @@ static void Con_WindowRows( void )
 	v->cacheWidth = width;
 }
 
-static void Con_WindowSelection( qboolean all )
+static void Con_WindowSelection( void )
 {
 	con_window_t *v = &con_window;
-	if( !all && (!v->selectionA || !v->selectionB) )
-	{
-		Con_WindowMessage( "请先在日志中拖选要复制的行" );
-		return;
-	}
+	if( !v->selectionA || !v->selectionB ) return;
 	char *text = Mem_Malloc( host.mempool, CON_TEXTSIZE + CON_MAXLINES * 2 + 1 );
-	int bytes = 0, count = 0;
-	unsigned int low = Q_min( v->selectionA, v->selectionB ), high = Q_max( v->selectionA, v->selectionB );
+	int bytes = 0, first = v->selectionAByte, last = v->selectionBByte;
+	unsigned int low = v->selectionA, high = v->selectionB;
+	if( low > high || (low == high && first > last) )
+	{ unsigned int swap = low; low = high; high = swap; int at = first; first = last; last = at; }
 	for( int i = 0; i < CON_LINES_COUNT; i++ )
 	{
 		con_lineinfo_t *line = &CON_LINES( i );
-		if( !Con_WindowMatch( line ) || (!all && (line->serial < low || line->serial > high)) ) continue;
-		bytes += Con_WindowPlain( text + bytes, CON_TEXTSIZE + CON_MAXLINES * 2 + 1 - bytes, line->start );
-		text[bytes++] = '\r'; text[bytes++] = '\n';
-		count++;
+		if( !line->start || *line->start == '\1' || line->serial < low || line->serial > high ) continue;
+		int end = line->serial == high ? Q_min( last, Q_strlen( line->start )) : Q_strlen( line->start );
+		for( int at = line->serial == low ? first : 0; at < end; at++ )
+		{
+			if( IsColorString( line->start + at )) { at++; continue; }
+			if( (byte)line->start[at] >= 32 || line->start[at] == '\t' ) text[bytes++] = line->start[at];
+		}
+		if( line->serial < high ) { text[bytes++] = '\r'; text[bytes++] = '\n'; }
 	}
 	text[bytes] = 0;
-	if( count ) Platform_SetClipboardText( text );
+	if( bytes ) Platform_SetClipboardText( text );
 	Mem_Free( text );
-	Con_WindowMessage( count ? (all ? "已复制全部筛选结果" : "已复制选中的日志行") : "当前没有可复制的日志行" );
-}
-
-static void Con_WindowExport( void )
-{
-	char path[64], plain[MAX_PRINT_MSG];
-	file_t *file = NULL;
-	qboolean written = true;
-	for( int i = 0; i < 10000; i++ )
-	{
-		Q_snprintf( path, sizeof( path ), "console/console_%04d.txt", i );
-		if( !g_fsapi.FileExists( path, true )) { file = FS_Open( path, "wb", true ); break; }
-	}
-	if( !file ) { Con_WindowMessage( "日志导出失败：无法创建新文件" ); return; }
-	for( int i = 0; i < CON_LINES_COUNT; i++ )
-	{
-		con_lineinfo_t *line = &CON_LINES( i );
-		if( !Con_WindowMatch( line )) continue;
-		int length = Con_WindowPlain( plain, sizeof( plain ), line->start );
-		if( FS_Write( file, plain, length ) != length || FS_Write( file, "\r\n", 2 ) != 2 )
-		{ written = false; break; }
-	}
-	FS_Close( file );
-	if( !written ) { Con_WindowMessage( "日志写入失败，已保留未完成的文件" ); return; }
-	Q_strncpy( con_window.lastExport, path, sizeof( con_window.lastExport ));
-	Q_snprintf( con_window.status, sizeof( con_window.status ), "已导出筛选结果：%s", path );
-	con_window.statusUntil = host.realtime + 8.0;
 }
 
 static void Con_WindowClose( void )
 {
 	con_window.capture = 0;
+	con_window.completionVisible = false;
 	con.showlines = con.vislines = 0;
 	if( con_window.returnDest == key_menu || cls.state != ca_active || Con_BackgroundMapActive() )
 	{
@@ -398,7 +348,7 @@ static void Con_WindowClose( void )
 
 static int Con_WindowCandidateSort( const void *a, const void *b )
 {
-	return Q_stricmp( a, b );
+	return Q_stricmp( ((const con_window_candidate_t *)a)->command, ((const con_window_candidate_t *)b)->command );
 }
 
 static void Con_WindowAddCandidate( const char *key, const void *value, const void *buffer, void *opaque )
@@ -407,9 +357,14 @@ static void Con_WindowAddCandidate( const char *key, const void *value, const vo
 	const char *prefix = v->partial;
 	while( *prefix == '\\' || *prefix == '/' ) prefix++;
 	if( key[0] == '@' || Q_strnicmp( key, prefix, Q_strlen( prefix ))) return;
-	for( int i = 0; i < v->candidateCount; i++ ) if( !Q_stricmp( key, v->candidates[i] )) return;
+	for( int i = 0; i < v->candidateCount; i++ ) if( !Q_stricmp( key, v->candidates[i].command )) return;
 	if( v->candidateCount < CON_WINDOW_CANDIDATES )
-		Q_strncpy( v->candidates[v->candidateCount++], key, sizeof( string ));
+	{
+		con_window_candidate_t *item = &v->candidates[v->candidateCount++];
+		Q_strncpy( item->command, key, sizeof( item->command ));
+		if( opaque ) Q_snprintf( item->display, sizeof( item->display ), "%s %s", key, (const char *)value );
+		else Q_strncpy( item->display, key, sizeof( item->display ));
+	}
 }
 
 static void Con_WindowCompletion( void )
@@ -418,25 +373,31 @@ static void Con_WindowCompletion( void )
 	v->candidate = -1;
 	v->candidateCount = 0;
 	Q_strncpy( v->partial, con.input.buffer, sizeof( v->partial ));
+	v->historyMenu = !v->partial[0];
 	if( v->historyMenu )
 	{
-		for( int i = con.history.next - 1; i >= Q_max( 0, con.history.next - CON_HISTORY ) && v->candidateCount < CON_WINDOW_CANDIDATES; i-- )
-			Q_strncpy( v->candidates[v->candidateCount++], con.history.lines[i % CON_HISTORY].buffer, sizeof( string ));
+		for( int i = Q_max( 0, con.history.next - CON_HISTORY ); i < con.history.next && v->candidateCount < CON_WINDOW_CANDIDATES; i++ )
+		{
+			con_window_candidate_t *item = &v->candidates[v->candidateCount++];
+			Q_strncpy( item->command, con.history.lines[i % CON_HISTORY].buffer, sizeof( item->command ));
+			Q_strncpy( item->display, item->command, sizeof( item->display ));
+		}
 	}
 	else if( v->partial[0] && !Q_strpbrk( v->partial, " \t;\n\r\"" ) )
 	{
 		Cmd_LookupCmds( NULL, NULL, Con_WindowAddCandidate );
-		Cvar_LookupVars( 0, NULL, NULL, Con_WindowAddCandidate );
-		qsort( v->candidates, v->candidateCount, sizeof( string ), Con_WindowCandidateSort );
+		Cvar_LookupVars( 0, NULL, v, Con_WindowAddCandidate );
+		qsort( v->candidates, v->candidateCount, sizeof( v->candidates[0] ), Con_WindowCandidateSort );
 	}
+	v->completionVisible = v->candidateCount > 0;
 }
 
 static void Con_WindowAcceptCandidate( int candidate )
 {
 	con_window_t *v = &con_window;
 	if( candidate < 0 || candidate >= v->candidateCount ) return;
-	Q_strncpy( con.input.buffer, v->candidates[candidate], sizeof( con.input.buffer ));
-	if( !v->historyMenu ) Q_strncat( con.input.buffer, " ", sizeof( con.input.buffer ));
+	Q_strncpy( con.input.buffer, v->candidates[candidate].command, sizeof( con.input.buffer ));
+	if( !Q_strchr( con.input.buffer, ' ' )) Q_strncat( con.input.buffer, " ", sizeof( con.input.buffer ));
 	con.input.cursor = Q_strlen( con.input.buffer );
 	con.input.scroll = 0;
 	v->candidate = candidate;
@@ -479,22 +440,60 @@ static void Con_WindowPlaceCaret( field_t *field, int fieldX )
 
 static void Con_WindowButton( int x, int y, int w, const char *label, qboolean active )
 {
-	qboolean hover = Con_WindowInside( x, y, w, con_window.rowHeight + 4 );
-	Con_WindowFill( x, y, w, con_window.rowHeight + 4, active ? 35 : 26,
-		active || hover ? 72 : 36, active || hover ? 88 : 44, 242 );
+	qboolean hover = Con_WindowInside( x, y, w, con_window.entryH );
+	Con_WindowFill( x, y, w, con_window.entryH, 79, 84, 86, 255 );
+	Con_WindowFill( x + 1, y + 1, w - 2, con_window.entryH - 2,
+		hover || active ? 64 : 44, hover || active ? 69 : 49, hover || active ? 71 : 51, 255 );
 	int width = Con_WindowText( 0, 0, label, -1, w, con_window_white, false );
-	Con_WindowText( x + (w - width) / 2, y + 2, label, -1, w, con_window_white, true );
+	Con_WindowText( x + (w - width) / 2, y + (con_window.entryH - con_window.fontHeight) / 2 - 1,
+		label, -1, w, con_window_white, true );
 }
 
 static int Con_WindowCandidateCount( void )
 {
-	return Q_min( con_window.candidateCount, Q_min( 6, Q_max( 1,
-		(con_window.inputY - con_window.logY) / con_window.rowHeight - 1 )));
+	return Q_min( con_window.candidateCount, Q_min( 10, Q_max( 1,
+		(refState.height - 8) / con_window.rowHeight )));
 }
 
 static int Con_WindowCandidateFirst( void )
 {
 	return Q_max( 0, con_window.candidate - Con_WindowCandidateCount() + 1 );
+}
+
+static void Con_WindowCandidateRect( int *x, int *y, int *w, int *h )
+{
+	con_window_t *v = &con_window;
+	*x = v->fieldX - 4;
+	*w = v->fieldW + 8;
+	*h = Con_WindowCandidateCount() * v->rowHeight + 4;
+	// Source's nonfocusable Menu opens below the entry and flips at the screen edge.
+	*y = v->inputY + v->entryH;
+	if( *y + *h > refState.height ) *y = v->inputY - *h;
+	*y = Q_max( 0, *y );
+}
+
+static int Con_WindowRowByte( const con_window_row_t *row, int mouseX )
+{
+	const char *text = CON_LINES( row->line ).start;
+	int at = row->begin, pixels = con_window.logX + 4;
+	while( at < row->end )
+	{
+		if( IsColorString( text + at )) { at += 2; continue; }
+		int bytes;
+		unsigned int code = Con_WindowDecode( text + at, &bytes );
+		con_window_glyph_t *g = Con_WindowGlyph( code, false );
+		int width = code == '\t' ? con_window.fontHeight * 2 : (g ? g->width : con_window.fontHeight);
+		if( mouseX < pixels + width / 2 ) break;
+		pixels += width;
+		at += bytes;
+	}
+	return at;
+}
+
+static int Con_WindowScrollThumb( void )
+{
+	con_window_t *v = &con_window;
+	return Q_min( v->logH, Q_max( 24, v->logH * Q_min( v->shown, v->rows ) / Q_max( 1, v->rows )));
 }
 
 static void Con_WindowDraw( void )
@@ -503,59 +502,59 @@ static void Con_WindowDraw( void )
 	Con_WindowLayout();
 	Con_WindowRows();
 	Con_WindowFill( v->x + 6, v->y + 8, v->w, v->h, 0, 0, 0, 90 );
-	Con_WindowFill( v->x, v->y, v->w, v->h, 13, 19, 25, 238 );
-	Con_WindowFill( v->x, v->y, v->w, v->rowHeight + 12, 27, 39, 48, 248 );
-	Con_WindowFill( v->x, v->y, v->w, 2, 82, 159, 180, 255 );
-	Con_WindowText( v->x + 14, v->y + 6, "开发者控制台", -1, v->w - 100, con_window_white, true );
-	Con_WindowButton( v->x + v->w - 42, v->y + 5, 32, "×", false );
-	int searchW = v->w - 318;
-	Con_WindowFill( v->x + 12, v->toolsY, searchW, v->rowHeight + 4, 9, 14, 19, 245 );
-	if( !v->filter.buffer[0] && v->focus != 1 )
-		Con_WindowText( v->x + 20, v->toolsY + 2, "搜索日志  Ctrl+F", -1, searchW - 12, con_window_muted, true );
-	else Con_WindowDrawField( &v->filter, v->x + 20, v->toolsY + 2, searchW - 16, v->focus == 1 );
-	Con_WindowButton( v->x + v->w - 298, v->toolsY, 60, v->severity == 1 ? "警告" : v->severity == 2 ? "错误" : "全部", v->severity != 0 );
-	Con_WindowButton( v->x + v->w - 230, v->toolsY, 94, "复制结果", false );
-	Con_WindowButton( v->x + v->w - 128, v->toolsY, 54, "导出", false );
-	Con_WindowButton( v->x + v->w - 66, v->toolsY, 54, "清空", false );
-	Con_WindowFill( v->x + 12, v->logY - 3, v->w - 24, v->logH + 4, 7, 12, 17, 185 );
+	Con_WindowFill( v->x, v->y, v->w, v->h, 75, 80, 82, 255 );
+	Con_WindowFill( v->x + 1, v->y + 1, v->w - 2, v->h - 2, 31, 36, 40, 241 );
+	Con_WindowFill( v->x + 1, v->y + 1, v->w - 2, v->titleH, 42, 47, 51, 250 );
+	Con_WindowText( v->x + 12, v->y + 6, "控制台", -1, v->w - 70, con_window_white, true );
+	Con_WindowButton( v->x + v->w - 34, v->y + 4, 26, "×", false );
+	Con_WindowFill( v->logX - 1, v->logY - 1, v->logW + 2, v->logH + 2, 10, 14, 17, 255 );
+	Con_WindowFill( v->logX, v->logY, v->logW, v->logH, 16, 21, 25, 236 );
 	v->first = Q_max( 0, v->rows - con.backscroll - v->shown );
+	unsigned int low = v->selectionA, high = v->selectionB;
+	int firstByte = v->selectionAByte, lastByte = v->selectionBByte;
+	if( low > high || (low == high && firstByte > lastByte) )
+	{ unsigned int swap = low; low = high; high = swap; int at = firstByte; firstByte = lastByte; lastByte = at; }
 	for( int i = v->first; i < Q_min( v->rows, v->first + v->shown ); i++ )
 	{
 		con_window_row_t *row = &v->row[i];
 		con_lineinfo_t *line = &CON_LINES( row->line );
 		int y = v->logY + (i - v->first) * v->rowHeight;
-		if( v->selectionA && line->serial >= Q_min( v->selectionA, v->selectionB ) && line->serial <= Q_max( v->selectionA, v->selectionB ))
-			Con_WindowFill( v->x + 14, y, v->w - 44, v->rowHeight, 44, 85, 107, 195 );
-		Con_WindowText( v->x + 20, y, line->start + row->begin, row->end - row->begin, v->w - 48, con_window_white, true );
+		if( low && line->serial >= low && line->serial <= high )
+		{
+			int a = line->serial == low ? Q_max( row->begin, firstByte ) : row->begin;
+			int b = line->serial == high ? Q_min( row->end, lastByte ) : row->end;
+			if( b > a )
+			{
+				int x = Con_WindowText( 0, 0, line->start + row->begin, a - row->begin, 65536, con_window_white, false );
+				int width = Con_WindowText( 0, 0, line->start + a, b - a, 65536, con_window_white, false );
+				Con_WindowFill( v->logX + 4 + x, y, width, v->rowHeight, 72, 98, 117, 240 );
+			}
+		}
+		Con_WindowText( v->logX + 4, y, line->start + row->begin, row->end - row->begin, v->logW - 24, con_window_white, true );
 	}
-	if( !v->rows ) Con_WindowText( v->x + 24, v->logY + 12, "没有匹配的日志", -1, v->w - 48, con_window_muted, true );
-	int trackX = v->x + v->w - 25;
-	Con_WindowFill( trackX, v->logY, 10, v->logH, 25, 34, 42, 200 );
-	int thumb = Q_max( 24, v->logH * Q_min( v->shown, v->rows ) / Q_max( 1, v->rows ));
+	int trackX = v->logX + v->logW - 14;
+	Con_WindowFill( trackX, v->logY, 14, v->logH, 33, 38, 42, 245 );
+	int thumb = Con_WindowScrollThumb();
 	int thumbY = v->logY + (v->logH - thumb) * v->first / Q_max( 1, v->rows - v->shown );
-	Con_WindowFill( trackX + 2, thumbY, 6, thumb, 100, 137, 151, 230 );
-	Con_WindowText( v->x + 16, v->inputY + 4, "命令", -1, 42, con_window_muted, true );
-	Con_WindowFill( v->fieldX - 6, v->inputY, v->fieldW + 12, v->rowHeight + 6, 5, 11, 16, 250 );
-	Con_WindowFill( v->fieldX - 6, v->inputY + v->rowHeight + 5, v->fieldW + 12, 1, 70, 137, 157, 255 );
+	Con_WindowFill( trackX + 2, thumbY, 10, thumb, 96, 105, 111, 255 );
+	Con_WindowFill( v->fieldX - 5, v->inputY - 1, v->fieldW + 10, v->entryH + 2, 9, 13, 16, 255 );
+	Con_WindowFill( v->fieldX - 4, v->inputY, v->fieldW + 8, v->entryH, 16, 21, 25, 255 );
 	Con_WindowDrawField( &con.input, v->fieldX, v->inputY + 3, v->fieldW, v->focus == 0 );
-	Con_WindowButton( v->x + v->w - 144, v->inputY, 60, "历史", v->historyMenu );
-	Con_WindowButton( v->x + v->w - 76, v->inputY, 64, "执行", false );
-	if( v->focus == 0 && v->candidateCount && con_showcompletion.value )
+	Con_WindowButton( v->submitX, v->inputY, 64, "提交", false );
+	if( v->focus == 0 && v->completionVisible && v->candidateCount && con_showcompletion.value )
 	{
 		int first = Con_WindowCandidateFirst(), count = Con_WindowCandidateCount();
-		int top = v->inputY - (count + 1) * v->rowHeight - 6;
-		Con_WindowFill( v->fieldX - 6, top, v->fieldW + 12, (count + 1) * v->rowHeight, 19, 31, 40, 252 );
-		Con_WindowText( v->fieldX, top + 2, v->historyMenu ? "历史记录 · 点击填入" : "命令补全 · Tab / Shift+Tab", -1, v->fieldW, con_window_accent, true );
+		int x, top, w, h; Con_WindowCandidateRect( &x, &top, &w, &h );
+		Con_WindowFill( x, top, w, h, 78, 84, 89, 255 );
+		Con_WindowFill( x + 1, top + 1, w - 2, h - 2, 30, 35, 39, 255 );
 		for( int i = 0; i < count; i++ )
 		{
-			int y = top + (i + 1) * v->rowHeight;
-			if( first + i == v->candidate ) Con_WindowFill( v->fieldX - 4, y, v->fieldW + 8, v->rowHeight, 40, 79, 98, 255 );
-			Con_WindowText( v->fieldX, y, v->candidates[first + i], -1, v->fieldW, con_window_white, true );
+			int y = top + 2 + i * v->rowHeight;
+			if( first + i == v->candidate || Con_WindowInside( x, y, w, v->rowHeight ))
+				Con_WindowFill( x + 1, y, w - 2, v->rowHeight, 72, 98, 117, 255 );
+			Con_WindowText( v->fieldX, y, v->candidates[first + i].display, -1, v->fieldW, con_window_white, true );
 		}
 	}
-	const char *status = v->statusUntil > host.realtime ? v->status :
-		(v->focus == 1 ? "筛选仅影响日志显示 · Enter 返回命令" : "拖选日志行 · Ctrl+C 复制选中行 · Ctrl+S 导出");
-	Con_WindowText( v->x + 14, v->statusY, status, -1, v->w - 32, con_window_muted, true );
 	Con_WindowFill( v->x + v->w - 12, v->y + v->h - 4, 8, 1, 112, 150, 165, 255 );
 	Con_WindowFill( v->x + v->w - 8, v->y + v->h - 8, 4, 1, 112, 150, 165, 255 );
 	ref.dllFuncs.Color4ub( 255, 255, 255, 255 );
@@ -583,10 +582,10 @@ void Con_MouseMove( int x, int y )
 	else if( v->capture > 0 && v->capture < 16 )
 	{
 		int left = v->oldX, right = left + v->oldW, top = v->oldY, bottom = top + v->oldH;
-		if( v->capture & 1 ) left = bound( 0, v->oldX + x - v->startX, right - Q_min( 560, refState.width ));
-		if( v->capture & 2 ) right = bound( left + Q_min( 560, refState.width ), v->oldX + v->oldW + x - v->startX, refState.width );
-		if( v->capture & 4 ) top = bound( 0, v->oldY + y - v->startY, bottom - Q_min( 320, refState.height ));
-		if( v->capture & 8 ) bottom = bound( top + Q_min( 320, refState.height ), v->oldY + v->oldH + y - v->startY, refState.height );
+		if( v->capture & 1 ) left = bound( 0, v->oldX + x - v->startX, right - Q_min( 320, refState.width ));
+		if( v->capture & 2 ) right = bound( left + Q_min( 320, refState.width ), v->oldX + v->oldW + x - v->startX, refState.width );
+		if( v->capture & 4 ) top = bound( 0, v->oldY + y - v->startY, bottom - Q_min( 180, refState.height ));
+		if( v->capture & 8 ) bottom = bound( top + Q_min( 180, refState.height ), v->oldY + v->oldH + y - v->startY, refState.height );
 		v->x = left; v->y = top; v->w = right - left; v->h = bottom - top;
 		Con_WindowLayout();
 	}
@@ -597,16 +596,19 @@ void Con_MouseMove( int x, int y )
 		if( y > v->logY + v->logH ) con.backscroll = Q_max( 0, con.backscroll - 1 );
 		v->first = Q_max( 0, v->rows - con.backscroll - v->shown );
 		int row = v->first + bound( 0, (y - v->logY) / v->rowHeight, v->shown - 1 );
-		if( row < v->rows ) v->selectionB = CON_LINES( v->row[row].line ).serial;
+		if( row < v->rows )
+		{ v->selectionB = v->row[row].serial; v->selectionBByte = Con_WindowRowByte( &v->row[row], x ); }
 	}
 	else if( v->capture == 64 )
 	{
 		Con_WindowRows();
-		con.backscroll = Q_max( 0, v->rows - v->shown ) * (v->logY + v->logH - bound( v->logY, y, v->logY + v->logH )) / Q_max( 1, v->logH );
+		int travel = v->logH - Con_WindowScrollThumb();
+		int top = bound( 0, y - v->logY - v->scrollGrab, travel );
+		con.backscroll = Q_max( 0, v->rows - v->shown ) * (travel - top) / Q_max( 1, travel );
 	}
 	int edge = Con_WindowResizeEdges();
 	Platform_SetCursorType( edge & 3 ? (edge & 12 ? ((edge == 5 || edge == 10) ? dc_sizenwse : dc_sizenesw) : dc_sizewe) :
-		edge & 12 ? dc_sizens : Con_WindowInside( v->x + 8, v->y + 6, v->w - 60, v->rowHeight + 4 ) ? dc_sizeall : dc_arrow );
+		edge & 12 ? dc_sizens : Con_WindowInside( v->x + 8, v->y + 6, v->w - 50, v->titleH - 6 ) ? dc_sizeall : dc_arrow );
 }
 
 void Con_MouseEvent( int key, qboolean down )
@@ -618,40 +620,44 @@ void Con_MouseEvent( int key, qboolean down )
 	Con_WindowLayout(); Con_WindowRows();
 	int x, y; Platform_GetMousePos( &x, &y ); Con_MouseMove( x, y );
 	v->startX = x; v->startY = y; v->oldX = v->x; v->oldY = v->y; v->oldW = v->w; v->oldH = v->h;
-	v->capture = Con_WindowResizeEdges();
-	if( v->capture ) return;
-	if( Con_WindowInside( v->x + v->w - 42, v->y + 5, 32, v->rowHeight + 4 )) { Con_WindowClose(); return; }
-	if( Con_WindowInside( v->x, v->y, v->w, v->rowHeight + 12 )) { v->capture = 16; return; }
-	if( Con_WindowInside( v->x + 12, v->toolsY, v->w - 318, v->rowHeight + 4 ))
-	{ v->focus = 1; Con_WindowPlaceCaret( &v->filter, v->x + 20 ); return; }
-	if( Con_WindowInside( v->x + v->w - 298, v->toolsY, 60, v->rowHeight + 4 ))
-	{ v->severity = (v->severity + 1) % 3; v->generation++; con.backscroll = 0; return; }
-	if( Con_WindowInside( v->x + v->w - 230, v->toolsY, 94, v->rowHeight + 4 )) { Con_WindowSelection( true ); return; }
-	if( Con_WindowInside( v->x + v->w - 128, v->toolsY, 54, v->rowHeight + 4 )) { Con_WindowExport(); return; }
-	if( Con_WindowInside( v->x + v->w - 66, v->toolsY, 54, v->rowHeight + 4 )) { Con_Clear_f(); return; }
-	if( v->focus == 0 && v->candidateCount && con_showcompletion.value )
+	// The completion menu is a popup: hit-test it before the frame or history below it.
+	if( v->focus == 0 && v->completionVisible && v->candidateCount && con_showcompletion.value )
 	{
-		int first = Con_WindowCandidateFirst(), count = Con_WindowCandidateCount();
-		int top = v->inputY - (count + 1) * v->rowHeight - 6;
-		if( Con_WindowInside( v->fieldX - 6, top + v->rowHeight, v->fieldW + 12, count * v->rowHeight ))
+		int cx, cy, cw, ch; Con_WindowCandidateRect( &cx, &cy, &cw, &ch );
+		if( Con_WindowInside( cx, cy, cw, ch ))
 		{
-			Con_WindowAcceptCandidate( first + (y - top) / v->rowHeight - 1 );
-			v->candidateCount = 0; v->historyMenu = false; return;
+			Con_WindowAcceptCandidate( Con_WindowCandidateFirst() + bound( 0,
+				(y - cy - 2) / v->rowHeight, Con_WindowCandidateCount() - 1 ));
+			v->completionVisible = false;
+			return;
 		}
 	}
-	if( Con_WindowInside( v->x + v->w - 144, v->inputY, 60, v->rowHeight + 6 ))
-	{ v->focus = 0; v->historyMenu = !v->historyMenu; Con_WindowCompletion(); return; }
-	if( Con_WindowInside( v->x + v->w - 76, v->inputY, 64, v->rowHeight + 6 ))
+	v->capture = Con_WindowResizeEdges();
+	if( v->capture ) return;
+	if( Con_WindowInside( v->x + v->w - 34, v->y + 4, 26, v->entryH )) { Con_WindowClose(); return; }
+	v->completionVisible = false;
+	if( Con_WindowInside( v->x, v->y, v->w, v->titleH )) { v->capture = 16; return; }
+	if( Con_WindowInside( v->submitX, v->inputY, 64, v->entryH ))
 	{ v->focus = 0; Key_Console( K_ENTER ); return; }
-	if( Con_WindowInside( v->fieldX - 6, v->inputY, v->fieldW + 12, v->rowHeight + 6 ))
+	if( Con_WindowInside( v->fieldX - 4, v->inputY, v->fieldW + 8, v->entryH ))
 	{ v->focus = 0; Con_WindowPlaceCaret( &con.input, v->fieldX ); return; }
-	if( Con_WindowInside( v->x + v->w - 27, v->logY, 14, v->logH ))
-	{ v->capture = 64; Con_MouseMove( x, y ); return; }
-	if( Con_WindowInside( v->x + 12, v->logY, v->w - 42, v->logH ))
+	if( Con_WindowInside( v->logX + v->logW - 14, v->logY, 14, v->logH ))
+	{
+		int thumb = Con_WindowScrollThumb();
+		int top = v->logY + (v->logH - thumb) * Q_max( 0, v->rows - con.backscroll - v->shown ) / Q_max( 1, v->rows - v->shown );
+		if( y >= top && y < top + thumb ) { v->capture = 64; v->scrollGrab = y - top; }
+		else con.backscroll = bound( 0, con.backscroll + (y < top ? v->shown : -v->shown), Q_max( 0, v->rows - v->shown ));
+		return;
+	}
+	if( Con_WindowInside( v->logX, v->logY, v->logW - 14, v->logH ))
 	{
 		int row = v->first + (y - v->logY) / v->rowHeight;
-		v->focus = 2; v->candidateCount = 0; v->historyMenu = false;
-		if( row < v->rows ) v->selectionA = v->selectionB = CON_LINES( v->row[row].line ).serial;
+		v->focus = 2;
+		if( row < v->rows )
+		{
+			v->selectionA = v->selectionB = v->row[row].serial;
+			v->selectionAByte = v->selectionBByte = Con_WindowRowByte( &v->row[row], x );
+		}
 		else v->selectionA = v->selectionB = 0;
 		v->capture = 32;
 	}
@@ -662,26 +668,22 @@ static qboolean Con_WindowKey( int key )
 	con_window_t *v = &con_window;
 	// Control-letter actions arrive through Con_CharEvent on SDL text input.
 	// Consume a key event on backends that also send one, without executing twice.
-	if( Key_IsDown( K_CTRL ) && (key == 'f' || key == 's' ||
-		(v->focus == 2 && (key == 'c' || key == 'a'))) ) return true;
+	if( Key_IsDown( K_CTRL ) && v->focus == 2 && (key == 'c' || key == 'a') ) return true;
 	if( v->focus == 2 && (key == K_ENTER || key == K_KP_ENTER || key == K_TAB) )
 	{ v->focus = 0; return true; }
 	if( v->focus == 2 && (key == K_UPARROW || key == K_DOWNARROW || key == K_BACKSPACE ||
 		key == K_DEL || key == K_LEFTARROW || key == K_RIGHTARROW) ) v->focus = 0;
-	if( v->focus == 1 )
+	if( v->focus == 0 && (key == K_TAB || key == K_UPARROW || key == K_DOWNARROW) )
 	{
-		if( key == K_ESCAPE || key == K_ENTER || key == K_KP_ENTER || key == K_TAB ) { v->focus = 0; return true; }
-		if( key != K_MWHEELUP && key != K_MWHEELDOWN && key != K_PGUP && key != K_PGDN )
-		{ Field_KeyDownEvent( &v->filter, key ); v->generation++; con.backscroll = 0; return true; }
-	}
-	if( key == K_ESCAPE && (v->historyMenu || v->candidateCount) )
-	{ v->historyMenu = false; v->candidateCount = 0; return true; }
-	if( key == K_TAB && v->candidateCount && con_showcompletion.value )
-	{
-		int candidate = v->candidate + (Key_IsDown( K_SHIFT ) ? -1 : 1);
+		if( !v->candidateCount ) Con_WindowCompletion();
+		if( !v->candidateCount ) return key != K_TAB; // preserve engine parameter/file completion
+		int step = key == K_UPARROW || (key == K_TAB && Key_IsDown( K_SHIFT )) ? -1 : 1;
+		int candidate = v->candidate + step;
 		if( candidate < 0 ) candidate = v->candidateCount - 1;
 		if( candidate >= v->candidateCount ) candidate = 0;
-		Con_WindowAcceptCandidate( candidate ); return true;
+		Con_WindowAcceptCandidate( candidate );
+		v->completionVisible = true;
+		return true;
 	}
 	return false;
 }
@@ -689,9 +691,9 @@ static qboolean Con_WindowKey( int key )
 static qboolean Con_WindowChar( int key )
 {
 	con_window_t *v = &con_window;
-	if( key == 6 ) { v->focus = 1; return true; } // Ctrl+F
-	if( key == 19 ) { Con_WindowExport(); return true; } // Ctrl+S
-	if( key == 3 && v->focus == 2 ) { Con_WindowSelection( false ); return true; }
+	if( key == 12 ) { Cbuf_AddText( "clear\n" ); return true; }
+	if( key == 16 || key == 14 ) { Key_Console( key == 16 ? 'p' : 'n' ); return true; }
+	if( key == 3 && v->focus == 2 ) { Con_WindowSelection(); return true; }
 	if( key == 1 && v->focus == 2 )
 	{
 		Con_WindowRows();
@@ -699,12 +701,12 @@ static qboolean Con_WindowChar( int key )
 		{
 			v->selectionA = CON_LINES( v->row[0].line ).serial;
 			v->selectionB = CON_LINES( v->row[v->rows - 1].line ).serial;
+			v->selectionAByte = 0;
+			v->selectionBByte = Q_strlen( CON_LINES( v->row[v->rows - 1].line ).start );
 		}
 		return true;
 	}
-	if( v->focus == 1 )
-	{ Field_CharEvent( &v->filter, key ); v->generation++; con.backscroll = 0; return true; }
-	if( key >= 32 ) { v->focus = 0; v->historyMenu = false; }
+	if( key >= 32 ) v->focus = 0;
 	return false;
 }
 
@@ -720,11 +722,11 @@ static void Con_WindowHex( char *out, size_t size, const char *in )
 	out[n] = 0;
 }
 
-/* Explicit local diagnostics; strings are encoded so observing a filter cannot match itself. */
+/* Read-only local diagnostics. Text is encoded to keep one record per line. */
 static void Con_WindowDump_f( void )
 {
 	con_window_t *v = &con_window;
-	char text[3][MAX_STRING], input[MAX_STRING], filter[MAX_STRING], path[MAX_QPATH];
+	char text[3][MAX_STRING], input[MAX_STRING];
 	unsigned int serial[3] = { 0 };
 	int indexes[3] = { 0 }, begin[3] = { 0 }, end[3] = { 0 };
 	char hex[MAX_STRING * 2 + 1];
@@ -739,28 +741,25 @@ static void Con_WindowDump_f( void )
 		Q_strncpy( text[i], line->start, sizeof( text[i] ));
 	}
 	Q_strncpy( input, con.input.buffer, sizeof( input ));
-	Q_strncpy( filter, v->filter.buffer, sizeof( filter ));
-	Q_strncpy( path, v->lastExport, sizeof( path ));
+	int cx, cy, cw, ch; Con_WindowCandidateRect( &cx, &cy, &cw, &ch );
 	Con_Printf( "console_window: dest=%d focus=%d return=%d rect=%d,%d,%d,%d screen=%d,%d "
-		"tools_y=%d log=%d,%d,%d,%d input_rect=%d,%d,%d,%d status_y=%d row=%d "
-		"rows=%d first=%d shown=%d backscroll=%d severity=%d candidates=%d candidate=%d "
-		"selection=%u,%u capture=%d mouse=%d,%d history=%d,%d visible=%d\n",
+		"title_h=%d log=%d,%d,%d,%d input_rect=%d,%d,%d,%d submit=%d,%d,64,%d row=%d "
+		"rows=%d first=%d shown=%d backscroll=%d candidates=%d candidate=%d popup=%d popup_rect=%d,%d,%d,%d "
+		"selection=%u,%u selection_bytes=%d,%d capture=%d mouse=%d,%d history=%d,%d visible=%d\n",
 		cls.key_dest, v->focus, v->returnDest, v->x, v->y, v->w, v->h, refState.width, refState.height,
-		v->toolsY, v->x + 12, v->logY, v->w - 24, v->logH, v->fieldX, v->inputY + 3, v->fieldW, v->rowHeight,
-		v->statusY, v->rowHeight, v->rows, v->first, v->shown, con.backscroll, v->severity,
-		v->candidateCount, v->candidate, v->selectionA, v->selectionB, v->capture, v->mouseX, v->mouseY,
+		v->titleH, v->logX, v->logY, v->logW, v->logH, v->fieldX, v->inputY + 3, v->fieldW, v->rowHeight,
+		v->submitX, v->inputY, v->entryH, v->rowHeight, v->rows, v->first, v->shown, con.backscroll,
+		v->candidateCount, v->candidate, v->completionVisible && v->focus == 0 && con_showcompletion.value,
+		cx, cy, cw, ch, v->selectionA, v->selectionB, v->selectionAByte, v->selectionBByte,
+		v->capture, v->mouseX, v->mouseY,
 		con.history.line, con.history.next, cls.key_dest == key_console );
 	Con_WindowHex( hex, sizeof( hex ), input );
 	Con_Printf( "console_window_input: cursor=%d scroll=%d valuehex=%s\n", con.input.cursor, con.input.scroll, hex );
-	Con_WindowHex( hex, sizeof( hex ), filter );
-	Con_Printf( "console_window_filter: cursor=%d scroll=%d valuehex=%s\n", v->filter.cursor, v->filter.scroll, hex );
-	Con_WindowHex( hex, sizeof( hex ), path );
-	Con_Printf( "console_window_export: pathhex=%s\n", hex );
 	int firstCandidate = Con_WindowCandidateFirst();
 	int candidates = Con_WindowCandidateCount();
 	for( int i = 0; i < candidates; i++ )
 	{
-		Con_WindowHex( hex, sizeof( hex ), v->candidates[firstCandidate + i] );
+		Con_WindowHex( hex, sizeof( hex ), v->candidates[firstCandidate + i].display );
 		Con_Printf( "console_window_candidate: index=%d valuehex=%s\n", firstCandidate + i, hex );
 	}
 	for( int i = 0; i < count; i++ )

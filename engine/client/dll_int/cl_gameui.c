@@ -35,13 +35,14 @@ static void UI_ToggleAllowConsole_f( void )
 
 void UI_UpdateMenu( float realtime )
 {
+	qboolean loading = SCR_IsLoading();
 	if( !gameui.hInstance ) return;
 
 	// don't draw menu over console
-	if( cls.key_dest == key_console ) return;
+	if( cls.key_dest == key_console && !loading ) return;
 
 	// if some deferred cmds is waiting
-	if( UI_IsVisible() && !COM_StringEmptyOrNULL( host.deferred_cmd ))
+	if( !loading && UI_IsVisible() && !COM_StringEmptyOrNULL( host.deferred_cmd ))
 	{
 		Cbuf_AddText( host.deferred_cmd );
 		host.deferred_cmd[0] = '\0';
@@ -50,7 +51,7 @@ void UI_UpdateMenu( float realtime )
 	}
 
 	// don't show menu while level is loaded
-	if( GameState->nextstate != STATE_RUNFRAME && !GameState->loadGame )
+	if( !loading && GameState->nextstate != STATE_RUNFRAME && !GameState->loadGame )
 		return;
 
 	// menu time (not paused, not clamped)
@@ -61,7 +62,7 @@ void UI_UpdateMenu( float realtime )
 	gameui.globals->developer = host.allow_console;
 
 	gameui.dllFuncs.pfnRedraw( realtime );
-	UI_UpdateUserinfo();
+	if( !loading ) UI_UpdateUserinfo();
 }
 
 void UI_KeyEvent( int key, qboolean down )

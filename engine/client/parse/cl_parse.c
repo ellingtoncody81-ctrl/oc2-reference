@@ -467,6 +467,13 @@ void CL_BatchResourceRequest( qboolean initialize )
 
 	if( cls.state != ca_disconnected )
 	{
+		if( !done_downloading && SCR_IsLoading() )
+		{
+			int available = 0, needed = 0;
+			for( resource_t *p = cl.resourcesonhand.pNext; p && p != &cl.resourcesonhand; p = p->pNext ) available++;
+			for( resource_t *p = cl.resourcesneeded.pNext; p && p != &cl.resourcesneeded; p = p->pNext ) needed++;
+			SCR_LoadingProgress( "download", available, available + needed, "" );
+		}
 		if( done_downloading && CL_PrecacheResources( ))
 		{
 			CL_RegisterResources( &msg, cls.net_protocol );
@@ -876,6 +883,12 @@ static void CL_ParseServerData( sizebuf_t *msg, connprotocol_t proto )
 	}
 
 	Q_snprintf( mapfile, sizeof( mapfile ), "maps/%s.bsp", clgame.mapname );
+	if( !background )
+	{
+		if( !SCR_IsLoading() ) SCR_LoadingBegin( clgame.mapname, cls.servername );
+		else SCR_LoadingMap( clgame.mapname );
+		SCR_LoadingProgress( "serverinfo", 0, 0, "" );
+	}
 	if( CRC32_MapFile( &cl.worldmapCRC, mapfile, cl.maxclients > 1 ))
 	{
 		// validate map checksum
@@ -930,7 +943,9 @@ static void CL_ParseServerData( sizebuf_t *msg, connprotocol_t proto )
 	}
 
 	if( !cls.changedemo )
-		UI_SetActiveMenu( cl.background );
+	{
+		if( !SCR_IsLoading() || cl.background ) UI_SetActiveMenu( cl.background );
+	}
 	else if( !cls.demoplayback )
 		Key_SetKeyDest( key_menu );
 
@@ -1690,6 +1705,7 @@ void CL_RegisterResources( sizebuf_t *msg, connprotocol_t proto )
 
 		if( !cl.video_prepped && !cl.audio_prepped )
 		{
+			SCR_LoadingProgress( "renderer", 0, 0, "" );
 			Con_Printf( "Setting up renderer...\n" );
 
 			// load tempent sprites (glowshell, muzzleflashes etc)
@@ -1737,6 +1753,7 @@ void CL_RegisterResources( sizebuf_t *msg, connprotocol_t proto )
 				MSG_WriteStringf( msg, "spawn %i %i", cl.servercount, crc );
 			}
 			else MSG_WriteStringf( msg, "spawn %i", cl.servercount );
+			SCR_LoadingProgress( "signon", 0, 0, "" );
 		}
 	}
 	else

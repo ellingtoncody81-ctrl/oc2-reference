@@ -839,7 +839,9 @@ void GAME_EXPORT Key_Event( int key, int down )
 	}
 	else if( cls.key_dest == key_console )
 	{
-		Key_Console( key );
+		// Source's console leaves function-key bindings available while typing.
+		if( key >= K_F1 && key <= K_F12 ) Key_AddKeyCommands( key, kb, down );
+		else Key_Console( key );
 	}
 	else if( cls.key_dest == key_message )
 	{

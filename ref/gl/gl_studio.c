@@ -190,6 +190,20 @@ Mirror Source-authored right-hand rigs for cl_righthand 0. Original GoldSrc
 rigs retain their historical opposite authoring convention.
 ================
 */
+static qboolean R_IsC4ViewModel( const char *name )
+{
+	const char *expected = "models/v_c4.mdl";
+	if( !name ) return false;
+	for( ; *name && *expected; ++name, ++expected )
+	{
+		char c = *name;
+		if( c >= 'A' && c <= 'Z' ) c += 'a' - 'A';
+		if( c == '\\' ) c = '/';
+		if( c != *expected ) return false;
+	}
+	return !*name && !*expected;
+}
+
 static qboolean R_AllowFlipViewModel( cl_entity_t *e )
 {
 	if( !e || e != tr.viewent || !e->model || e->model->type != mod_studio )
@@ -208,7 +222,10 @@ static qboolean R_AllowFlipViewModel( cl_entity_t *e )
 			if( !Q_stricmp( bones[i].name, "v_weapon.Bip01_L_Hand" )) left = true;
 		}
 	}
-	const qboolean right_hand = !cl_righthand || cl_righthand->value > 0;
+	// C4 is always right-handed; keep winding/lighting paired with the client
+	// bone mirror and motion policy without changing the archived preference.
+	const qboolean right_hand = R_IsC4ViewModel( e->model->name ) ||
+		!cl_righthand || cl_righthand->value > 0;
 	return right && left ? !right_hand : right_hand;
 }
 

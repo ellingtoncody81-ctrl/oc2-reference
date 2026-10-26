@@ -299,6 +299,7 @@ void Con_ToggleConsole_f( void )
 		con_window.focus = 0;
 		con_window.historyMenu = false;
 		con_window.candidateCount = 0;
+		con_window.completionVisible = false;
 		Key_SetKeyDest( key_console );
 	}
 }
@@ -1379,11 +1380,10 @@ Con_HistoryAppend
 */
 static void Con_HistoryAppend( con_history_t *self, const field_t *from )
 {
-	int prevLine = Q_max( 0, self->line - 1 );
 	const char *buf = from->buffer;
 
 	// skip backslashes
-	if( from->buffer[0] == '\\' || from->buffer[1] == '/' )
+	if( from->buffer[0] == '\\' || from->buffer[0] == '/' )
 		buf++;
 
 	// only if non-empty
@@ -1394,9 +1394,14 @@ static void Con_HistoryAppend( con_history_t *self, const field_t *from )
 	if( Q_isspace( buf ))
 		return;
 
-	// if not copy (don't ignore backslashes)
-	if( !Q_strcmp( from->buffer, self->lines[prevLine % CON_HISTORY].buffer ))
-		return;
+	// Source keeps the latest occurrence of a command in its history.
+	for( int i = Q_max( 0, self->next - CON_HISTORY ); i < self->next; i++ )
+	{
+		if( Q_stricmp( from->buffer, self->lines[i % CON_HISTORY].buffer )) continue;
+		for( int j = i; j < self->next - 1; j++ ) self->lines[j % CON_HISTORY] = self->lines[(j + 1) % CON_HISTORY];
+		self->next--;
+		break;
+	}
 
 	Con_HistoryFromField( &self->lines[self->next % CON_HISTORY], from );
 	self->line = ++self->next;
@@ -1525,7 +1530,7 @@ void Key_Console( int key )
 		Cbuf_AddText( "\n" );
 
 		// echo to console
-		Con_Printf( ">%s\n", con.input.buffer );
+		Con_Printf( "] %s\n", con.input.buffer );
 
 		// copy line to history buffer
 		// just in case, remove all CR and LF characters pushing it to the history
@@ -1539,6 +1544,7 @@ void Key_Console( int key )
 		Con_ClearField( &con.input_completion );
 		con_window.candidateCount = 0;
 		con_window.historyMenu = false;
+		con_window.completionVisible = false;
 
 		if( cls.state == ca_disconnected )
 		{
@@ -1678,6 +1684,49 @@ Con_DrawDebugLines
 Custom debug messages
 ================
 */
+static qboolean Con_NotifyHasUnicode( const char *text )
+{
+	for( const byte *p = (const byte *)text; *p; p++ )
+		if( *p >= 0x80 ) return true;
+	return false;
+}
+
+// The ordinary console bitmap has 256 glyphs. TextMsg notifications retain
+// their own destination and expiry, but share the existing native UTF-8 font.
+static int Con_DrawUnicodeNotify( const notify_t *notify, int *y, int defaultX )
+{
+	const char *text = notify->szNotify;
+	const int available = Q_max( 1, refState.width - 20 );
+	int rows = 0;
+	// Match the window's request size so opening it cannot rebuild two fonts
+	// every frame. This does not alter window layout, state or notification time.
+	Con_WindowFont( bound( 14, Q_rint( refState.height / 60.0f ), 24 ));
+	const int rowHeight = Q_max( con.curFont->charHeight + 1, con_window.fontHeight + 4 );
+	while( *text )
+	{
+		int bytes = 0, width = 0;
+		while( text[bytes] && text[bytes] != '\r' && text[bytes] != '\n' )
+		{
+			int span;
+			if( IsColorString( text + bytes )) span = 2;
+			else Con_WindowDecode( text + bytes, &span );
+			const int nextWidth = Con_WindowText( 0, 0, text, bytes + span, refState.width * 8, notify->color, false );
+			if( bytes && nextWidth > available ) break;
+			bytes += span;
+			width = nextWidth;
+		}
+		if( *y + rowHeight > refState.height - 20 ) break;
+		*y += rowHeight;
+		const int x = Q_max( 10, refState.width - Q_max( defaultX, width ) - 10 );
+		Con_WindowText( x, *y, text, bytes, available, notify->color, true );
+		rows++;
+		text += bytes;
+		if( *text == '\r' ) { text++; if( *text == '\n' ) text++; }
+		else if( *text == '\n' ) text++;
+	}
+	return rows;
+}
+
 static int Con_DrawDebugLines( void )
 {
 	notify_t *notify = con.notify;
@@ -1699,6 +1748,12 @@ static int Con_DrawDebugLines( void )
 
 		if( notify->key_dest != cls.key_dest )
 			continue;
+
+		if( Con_NotifyHasUnicode( notify->szNotify ))
+		{
+			count += Con_DrawUnicodeNotify( notify, &y, defaultX );
+			continue;
+		}
 
 		Con_DrawStringLen( notify->szNotify, &len, NULL );
 		x = refState.width - Q_max( defaultX, len ) - 10;
@@ -1829,55 +1884,13 @@ void Con_DrawConsole( void )
 	// check for console width changes from a vid mode change
 	Con_CheckResize ();
 
-	if( cls.state == ca_connecting || cls.state == ca_connected )
-	{
-		if( !cl_allow_levelshots.value && !cls.timedemo )
-		{
-			if( cls.key_dest != key_console && Con_BackgroundMapActive( ))
-				con.vislines = con.showlines = 0;
-			else con.vislines = con.showlines = refState.height;
-		}
-		else
-		{
-			con.showlines = 0;
-
-			if( host_developer.value >= DEV_EXTENDED && !cls.timedemo )
-				Con_DrawNotify(); // draw notify lines
-		}
-	}
-
-	// if disconnected, render console full screen
-	switch( cls.state )
-	{
-	case ca_disconnected:
-		if( cls.key_dest != key_menu )
-		{
-			Con_DrawSolidConsole( refState.height );
-			Key_SetKeyDest( key_console );
-		}
-		break;
-	case ca_connecting:
-	case ca_connected:
-	case ca_validate:
-		// force to show console always for -dev 3 and higher
-		Con_DrawSolidConsole( con.vislines );
-		break;
-	case ca_active:
-	case ca_cinematic:
-		if( Con_BackgroundMapActive( ))
-		{
-			if( cls.key_dest == key_console )
-				Con_DrawSolidConsole( refState.height );
-		}
-		else
-		{
-			if( con.vislines )
-				Con_DrawSolidConsole( con.vislines );
-			else if( cls.state == ca_active && ( cls.key_dest == key_game || cls.key_dest == key_message ) && !cls.timedemo )
-				Con_DrawNotify(); // draw notify lines
-		}
-		break;
-	}
+	// Loading and disconnection belong to GameUI. Painting must never open a console
+	// or steal its keyboard destination; a console explicitly opened by the user still draws.
+	if( cls.key_dest == key_console )
+		Con_DrawSolidConsole( refState.height );
+	else if( cls.state == ca_active && !Con_BackgroundMapActive() &&
+		(cls.key_dest == key_game || cls.key_dest == key_message) && !cls.timedemo )
+		Con_DrawNotify();
 
 	if( !Con_Visible( )) SCR_DrawFPS( 4 );
 }
@@ -1959,9 +1972,9 @@ qboolean Con_GetInputRect( int *x, int *y, int *w, int *h )
 	if( cls.key_dest == key_console )
 	{
 		Con_WindowLayout();
-		*x = con_window.focus == 1 ? con_window.x + 20 : con_window.fieldX;
-		*y = con_window.focus == 1 ? con_window.toolsY + 2 : con_window.inputY + 3;
-		*w = con_window.focus == 1 ? con_window.w - 334 : con_window.fieldW;
+		*x = con_window.fieldX;
+		*y = con_window.inputY + 3;
+		*w = con_window.fieldW;
 		*h = con_window.rowHeight;
 		return true;
 	}
