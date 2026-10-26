@@ -260,15 +260,43 @@ bool EXT_FUNC CBasePlayer::__API_HOOK(SetClientUserInfoName)(char *infobuffer, c
 	return true;
 }
 
+static char *OC2_DefaultPlayerModel(CBasePlayer *player)
+{
+	// Appearance is a team choice, including bots, custom skins and VIPs.
+	// These are the combat rigs for the lobby's plaid Phoenix and gas-mask SAS;
+	// the APK's legacy terror/sas slot files actually contain Leet/GSG9 meshes.
+	char *model;
+	if (player->m_iTeam == TERRORIST)
+	{
+		player->m_iModelName = MODEL_TERROR;
+		model = "phoenix_varb";
+	}
+	else
+	{
+		player->m_iModelName = MODEL_SAS;
+		model = "sas_vara";
+	}
+	if (player->m_iTeam == TERRORIST || player->m_iTeam == CT)
+	{
+		char path[128];
+		Q_snprintf(path, sizeof(path), "models/player/%s/%s.mdl", model, model);
+		// Server sequences, hitboxes and client/ragdoll bones must use the same
+		// combat model. Repeated userinfo/spawn updates must not reset animation.
+		if (Q_strcmp(STRING(player->pev->model), path) != 0)
+			player->SetNewPlayerModel(path);
+	}
+	return model;
+}
+
 void EXT_FUNC CBasePlayer::SetClientUserInfoModel_api(char *infobuffer, char *szNewModel)
 {
+	szNewModel = OC2_DefaultPlayerModel(this);
 	SET_CLIENT_KEY_VALUE(entindex(), infobuffer, "model", szNewModel);
 }
 
 void CBasePlayer::SetClientUserInfoModel(char *infobuffer, char *szNewModel)
 {
-	if (szNewModel == nullptr)
-		return;
+	szNewModel = OC2_DefaultPlayerModel(this);
 
 	if (Q_strcmp(GET_KEY_VALUE(infobuffer, "model"), szNewModel) != 0)
 	{
@@ -278,96 +306,7 @@ void CBasePlayer::SetClientUserInfoModel(char *infobuffer, char *szNewModel)
 
 void CBasePlayer::SetPlayerModel(BOOL HasC4)
 {
-	char *infobuffer = GET_INFO_BUFFER(edict());
-	char *model;
-
-#ifdef REGAMEDLL_ADD
-	auto modelEx = CSPlayer()->m_szModel;
-	if (modelEx[0] != '\0') {
-		model = modelEx;
-	} else
-#endif
-	if (m_iTeam == CT)
-	{
-		switch (m_iModelName)
-		{
-		case MODEL_URBAN:
-			model = "urban";
-			break;
-		case MODEL_GSG9:
-			model = "gsg9";
-			break;
-		case MODEL_GIGN:
-			model = "gign";
-			break;
-		case MODEL_SAS:
-			model = "sas";
-			break;
-		case MODEL_VIP:
-			model = "vip";
-			break;
-		case MODEL_SPETSNAZ:
-			if (AreRunningCZero())
-			{
-				model = "spetsnaz";
-				break;
-			}
-		default:
-		{
-			if (IsBot())
-			{
-				model = (char *)TheBotProfiles->GetCustomSkinModelname(m_iModelName);
-				if (!model)
-					model = "urban";
-			}
-			else
-				model = "urban";
-
-			break;
-		}
-		}
-	}
-	else if (m_iTeam == TERRORIST)
-	{
-		switch (m_iModelName)
-		{
-		case MODEL_TERROR:
-			model = "terror";
-			break;
-		case MODEL_LEET:
-			model = "leet";
-			break;
-		case MODEL_ARCTIC:
-			model = "arctic";
-			break;
-		case MODEL_GUERILLA:
-			model = "guerilla";
-			break;
-		case MODEL_MILITIA:
-			if (AreRunningCZero())
-			{
-				model = "militia";
-				break;
-			}
-		default:
-		{
-			if (IsBot())
-			{
-				model = (char *)TheBotProfiles->GetCustomSkinModelname(m_iModelName);
-				if (!model)
-					model = "terror";
-			}
-			else
-				model = "terror";
-
-			break;
-		}
-		}
-	}
-	else
-		model = "urban";
-
-	SetClientUserInfoModel(infobuffer, model);
+	SetClientUserInfoModel(GET_INFO_BUFFER(edict()), nullptr);
 }
 
 CBasePlayer *CBasePlayer::GetNextRadioRecipient(CBasePlayer *pStartPlayer)
@@ -3808,12 +3747,11 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, MakeVIP)
 void EXT_FUNC CBasePlayer::__API_HOOK(MakeVIP)()
 {
 	pev->body = 0;
-	m_iModelName = MODEL_VIP;
+	m_iTeam = CT;
 
-	SetClientUserInfoModel(GET_INFO_BUFFER(edict()), "vip");
+	SetPlayerModel(m_bHasC4);
 	UTIL_LogPrintf("\"%s<%i><%s><CT>\" triggered \"Became_VIP\"\n", STRING(pev->netname), GETPLAYERUSERID(edict()), GETPLAYERAUTHID(edict()));
 
-	m_iTeam = CT;
 	m_bIsVIP = true;
 	m_bNotKilled = false;
 
@@ -8766,83 +8704,19 @@ void CBasePlayer::__API_HOOK(SwitchTeam)()
 	char *szOldTeam;
 	char *szNewTeam;
 	const char *szName;
-	char *szNewModel = nullptr;
 
 	oldTeam = m_iTeam;
 
 	if (m_iTeam == CT)
 	{
 		m_iTeam = TERRORIST;
-
-		switch (m_iModelName)
-		{
-		case MODEL_URBAN:
-			m_iModelName = MODEL_LEET;
-			szNewModel = "leet";
-			break;
-		case MODEL_GIGN:
-			m_iModelName = MODEL_GUERILLA;
-			szNewModel = "guerilla";
-			break;
-		case MODEL_SAS:
-			m_iModelName = MODEL_ARCTIC;
-			szNewModel = "arctic";
-			break;
-		case MODEL_SPETSNAZ:
-			if (AreRunningCZero())
-			{
-				m_iModelName = MODEL_MILITIA;
-				szNewModel = "militia";
-				break;
-			}
-		default:
-			if (m_iModelName == MODEL_GSG9 || !IsBot() || !TheBotProfiles->GetCustomSkinModelname(m_iModelName))
-			{
-				m_iModelName = MODEL_TERROR;
-				szNewModel = "terror";
-			}
-			break;
-		}
 	}
 	else if (m_iTeam == TERRORIST)
 	{
 		m_iTeam = CT;
-
-		switch (m_iModelName)
-		{
-		case MODEL_TERROR:
-			m_iModelName = MODEL_GSG9;
-			szNewModel = "gsg9";
-			break;
-
-		case MODEL_ARCTIC:
-			m_iModelName = MODEL_SAS;
-			szNewModel = "sas";
-			break;
-
-		case MODEL_GUERILLA:
-			m_iModelName = MODEL_GIGN;
-			szNewModel = "gign";
-			break;
-
-		case MODEL_MILITIA:
-			if (AreRunningCZero())
-			{
-				m_iModelName = MODEL_SPETSNAZ;
-				szNewModel = "spetsnaz";
-				break;
-			}
-		default:
-			if (m_iModelName == MODEL_LEET || !IsBot() || !TheBotProfiles->GetCustomSkinModelname(m_iModelName))
-			{
-				m_iModelName = MODEL_URBAN;
-				szNewModel = "urban";
-			}
-			break;
-		}
 	}
 
-	SetClientUserInfoModel(GET_INFO_BUFFER(edict()), szNewModel);
+	SetPlayerModel(m_bHasC4);
 
 	MESSAGE_BEGIN(MSG_ALL, gmsgTeamInfo);
 		WRITE_BYTE(entindex());
