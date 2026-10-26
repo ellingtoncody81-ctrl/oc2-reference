@@ -56,6 +56,7 @@
 #include "../../dlls/wpn_shared/oc2_gunshot.h"
 #include "../weapon_fire_feedback.h"
 #include "../skin_inventory_client.h"
+#include "../oc2_legs.h"
 #ifndef min
 #define min(a,b)  (((a) < (b)) ? (a) : (b))
 #endif
@@ -1795,4 +1796,5 @@ void DLLEXPORT HUD_PostRunCmd( local_state_t *from, local_state_t *to, struct us
 		g_clang		= cmd->viewangles;
 		g_clorg		= to->playerstate.origin;
 	}
+	OC2_LegsPrediction(from, to, time, cmd->msec, random_seed);
 }

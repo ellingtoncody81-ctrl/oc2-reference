@@ -33,7 +33,23 @@ struct LegView
     bool valid;
 };
 
+struct LegPrediction
+{
+    Vector fromOrigin;
+    Vector toOrigin;
+    float fromHull;
+    float toHull;
+    int player;
+    double endTime;
+    unsigned int commandSeed;
+    bool groundHullShift;
+    bool valid;
+};
+
 LegView s_view = {};
+LegPrediction s_prediction = {};
+bool s_duckGround = false;
+bool s_duckSampled = false;
 cl_entity_t s_entity = {};
 cvar_t *s_showLegs = NULL;
 double s_lastTime = -1.0;
@@ -106,6 +122,22 @@ float WrapCycle(float cycle)
     return cycle - floorf(cycle);
 }
 
+float RenderHullHeight(const ref_params_s &view)
+{
+    if (!s_prediction.groundHullShift || s_prediction.fromHull == s_prediction.toHull)
+        return s_prediction.toHull;
+    // CL_PredictMovement lerps origin but selects the destination eye height
+    // and hull. Reconstruct that lerp's hull component on the same endpoints.
+    // A snapped/teleported destination gives 1; coincident origins also use the
+    // destination, because no origin interpolation can be observed there.
+    const Vector span = s_prediction.toOrigin - s_prediction.fromOrigin;
+    const Vector offset = Vector(view.simorg) - s_prediction.fromOrigin;
+    const float lengthSquared = DotProduct(span, span);
+    const float fraction = lengthSquared > 0.000001f
+        ? Clamp(DotProduct(offset, span) / lengthSquared, 0.0f, 1.0f) : 1.0f;
+    return Mix(s_prediction.fromHull, s_prediction.toHull, fraction);
+}
+
 float GaitDirection()
 {
     const float travelYaw = atan2f(s_view.velocity.y, s_view.velocity.x) * 57.2957795f;
@@ -162,6 +194,53 @@ void OC2_LegsBeginFrame()
     s_entity.curstate.effects |= EF_NODRAW;
 }
 
+void OC2_LegsPrediction(const local_state_s *from, const local_state_s *to,
+    double commandTime, int commandMsec, unsigned int commandSeed)
+{
+    const bool duckGround = s_duckSampled && s_duckGround;
+    s_duckSampled = false;
+    bool append = s_prediction.valid && s_prediction.commandSeed == commandSeed &&
+        commandMsec > 0 && fabs(commandTime - s_prediction.endTime) < 0.000001;
+    s_prediction.valid = false;
+    if (!from || !to || from->playerstate.usehull < 0 || from->playerstate.usehull > 1 ||
+        to->playerstate.usehull < 0 || to->playerstate.usehull > 1 ||
+        !oc2_viewmodel::Finite(commandTime) || commandMsec < 0 || commandMsec > 255) return;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (!oc2_viewmodel::Finite(from->playerstate.origin[axis]) ||
+            !oc2_viewmodel::Finite(to->playerstate.origin[axis])) return;
+        append = append && from->playerstate.origin[axis] == s_prediction.toOrigin[axis];
+    }
+    const float fromHull = from->playerstate.usehull == 1 ? 18.0f : 36.0f;
+    const float toHull = to->playerstate.usehull == 1 ? 18.0f : 36.0f;
+    append = append && s_prediction.toHull == fromHull &&
+        s_prediction.player == to->playerstate.number - 1;
+    const bool groundShift = duckGround && fromHull != toHull;
+    if (!append)
+    {
+        s_prediction.fromOrigin = Vector(from->playerstate.origin);
+        s_prediction.fromHull = fromHull;
+        s_prediction.groundHullShift = groundShift;
+    }
+    else
+        s_prediction.groundHullShift = s_prediction.groundHullShift || groundShift;
+    // Xash recursively splits commands longer than 50 ms. The render lerp
+    // spans the outer command, so preserve its first endpoint across halves.
+    // A new seed, replayed start time or discontinuous state starts a new span.
+    s_prediction.toOrigin = Vector(to->playerstate.origin);
+    s_prediction.toHull = toHull;
+    s_prediction.player = to->playerstate.number - 1;
+    s_prediction.endTime = commandTime + commandMsec / 1000.0;
+    s_prediction.commandSeed = commandSeed;
+    s_prediction.valid = true;
+}
+
+void OC2_LegsDuckGround(bool grounded)
+{
+    s_duckGround = grounded;
+    s_duckSampled = true;
+}
+
 void OC2_LegsRefdef(const ref_params_s *view)
 {
     OC2_LegsInit();
@@ -171,6 +250,8 @@ void OC2_LegsRefdef(const ref_params_s *view)
         view->viewentity > view->maxclients || gEngfuncs.IsSpectateOnly())
     {
         s_hidden = true;
+        s_prediction.valid = false;
+        s_duckSampled = false;
         s_entity.curstate.effects |= EF_NODRAW;
         s_lastSubmitted = false;
         return;
@@ -183,9 +264,14 @@ void OC2_LegsRefdef(const ref_params_s *view)
     s_view.yaw = view->cl_viewangles[1];
     s_view.time = view->time;
     s_view.dt = view->frametime;
-    s_view.ducked = (g_iPlayerFlags & FL_DUCKING) != 0;
-    const float hullHeight = s_view.ducked ? 18.0f : 36.0f;
-    s_view.origin.z += 36.0f - hullHeight;
+    if (s_lastTime >= 0 && view->time < s_lastTime - 0.5)
+        s_prediction.valid = false;
+    const bool prediction = s_prediction.valid &&
+        (s_prediction.player < 0 || s_prediction.player == view->playernum);
+    const float hullHeight = prediction ? s_prediction.toHull
+        : ((g_iPlayerFlags & FL_DUCKING) != 0 ? 18.0f : 36.0f);
+    s_view.ducked = hullHeight < 36.0f;
+    s_view.origin.z += 36.0f - (prediction ? RenderHullHeight(*view) : hullHeight);
     // Eye height above the feet is 53 standing and 30 fully crouched.
     s_view.stance = Clamp((53.0f - (hullHeight + view->viewheight[2])) / 23.0f, 0.0f, 1.0f);
     // Xash passes a boolean ref_params.onground (0 in air, 1 on ground).
@@ -198,6 +284,8 @@ void OC2_LegsRefdef(const ref_params_s *view)
         OC2_LegsCreateEntity();
     else
     {
+        s_prediction.valid = false;
+        s_duckSampled = false;
         s_entity.curstate.effects |= EF_NODRAW;
         s_lastSubmitted = false;
     }
@@ -346,7 +434,26 @@ bool OC2_LegsBlend(CStudioModelRenderer &renderer, float pos[][3], float q[][4])
     const float jumpWeight = s_jumpWeight * (1.0f - s_stanceWeight);
     if (jumpWeight > 0.0f)
     {
+        const mstudiobone_t *bones = reinterpret_cast<const mstudiobone_t *>(
+            reinterpret_cast<const byte *>(renderer.m_pStudioHeader) + renderer.m_pStudioHeader->boneindex);
+        bool upper[MAXSTUDIOBONES] = {};
+        Sample(renderer, descs, 1, s_phase, runPos, runQ);
+        Sample(renderer, descs, 2, s_phase, duckPos, duckQ);
+        renderer.StudioSlerpBones(runQ, runPos, duckQ, duckPos, s_stanceWeight);
         Sample(renderer, descs, 6, s_jumpPhase, movePos, moveQ);
+        for (int bone = 0; bone < renderer.m_pStudioHeader->numbones; ++bone)
+        {
+            upper[bone] = strcmp(bones[bone].name, "Bip01 Spine1") == 0 ||
+                (bones[bone].parent >= 0 && upper[bones[bone].parent]);
+            if (upper[bone])
+            {
+                memcpy(movePos[bone], runPos[bone], sizeof(movePos[bone]));
+                memcpy(moveQ[bone], runQ[bone], sizeof(moveQ[bone]));
+            }
+        }
+        // The third-person jump swings the open collar toward the eye. Use
+        // the matching stance's idle upper-chest layer during its existing
+        // fade, while the root, waist and legs keep the authored jump pose.
         renderer.StudioSlerpBones(q, pos, moveQ, movePos, jumpWeight);
     }
     return true;

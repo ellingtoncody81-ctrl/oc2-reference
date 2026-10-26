@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include "com_model.h"
+#ifdef CLIENT_DLL
+#include "../cl_dll/oc2_legs.h"
+#endif
 
 #ifndef min
 #define min(a, b) ((a) < (b) ? (a) : (b))
@@ -1882,6 +1885,9 @@ void PM_UnDuck()
 
 void PM_Duck()
 {
+#ifdef CLIENT_DLL
+	OC2_LegsDuckGround(pmove->onground != -1);
+#endif
 	int buttonsChanged = (pmove->oldbuttons ^ pmove->cmd.buttons);	// These buttons have changed this frame
 	int nButtonPressed =  buttonsChanged & pmove->cmd.buttons;		// The changed ones still down are "pressed"
 

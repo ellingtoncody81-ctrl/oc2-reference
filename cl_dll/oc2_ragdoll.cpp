@@ -107,6 +107,8 @@ struct Body
     float torsoRest[6][6];
     Frame baseFrame;
     Vector hingeNormal[4];
+    int boneOwner[MAXSTUDIOBONES];
+    Vector boneParentOffset[MAXSTUDIOBONES];
     Vector boneVelocity[MAXSTUDIOBONES];
     float baseMatrix[MAXSTUDIOBONES][3][4];
 };
@@ -618,6 +620,49 @@ void Simulate(Body &body, float dt)
     ++body.steps;
 }
 
+void CacheBoneAttachments(Body &body)
+{
+    const mstudiobone_t *bones = reinterpret_cast<const mstudiobone_t *>(
+        reinterpret_cast<const byte *>(body.header) + body.header->boneindex);
+    for (int bone = 0; bone < body.boneCount; ++bone)
+    {
+        int owner = -1;
+        for (int joint = 0; joint < JOINT_COUNT; ++joint)
+            if (body.joints[joint].bone == bone) { owner = joint; break; }
+        if (owner < 0)
+        {
+            const char *name = bones[bone].name;
+            if (strstr(name, "Spine2") || strstr(name, "backpack")) owner = CHEST;
+            else if (strstr(name, "Neck")) owner = HEAD;
+            else if (strstr(name, "Clavicle")) owner = CHEST;
+            else if (strstr(name, "L Knee")) owner = LEFT_KNEE;
+            else if (strstr(name, "R Knee")) owner = RIGHT_KNEE;
+            else if (strstr(name, "L Elbow")) owner = LEFT_ELBOW;
+            else if (strstr(name, "R Elbow")) owner = RIGHT_ELBOW;
+        }
+        if (owner < 0)
+        {
+            int ancestor = bones[bone].parent;
+            while (ancestor >= 0 && owner < 0)
+            {
+                for (int joint = 0; joint < JOINT_COUNT; ++joint)
+                    if (body.joints[joint].bone == ancestor) { owner = joint; break; }
+                ancestor = owner < 0 ? bones[ancestor].parent : -1;
+            }
+        }
+        body.boneOwner[bone] = owner < 0 ? PELVIS : owner;
+        const int parent = bones[bone].parent;
+        if (parent >= 0 && parent < bone)
+        {
+            const float (*oldParent)[4] = body.baseMatrix[parent];
+            const Vector offset = Origin(body.baseMatrix[bone]) - Origin(oldParent);
+            for (int axis = 0; axis < 3; ++axis)
+                body.boneParentOffset[bone][axis] = offset.x * oldParent[0][axis] +
+                    offset.y * oldParent[1][axis] + offset.z * oldParent[2][axis];
+        }
+    }
+}
+
 bool InitialisePose(Body &body, studiohdr_t *header)
 {
     if (!header || header->numbones <= 0 || header->numbones > MAXSTUDIOBONES) return false;
@@ -667,6 +712,10 @@ bool InitialisePose(Body &body, studiohdr_t *header)
         joint.previous = joint.position - velocity * (1.0f / 90.0f);
     }
     body.initialHeadZ = body.joints[HEAD].position.z;
+    // Ownership and authored parent-local offsets belong to this exact death
+    // pose. Resolve them once, including helper bones; never reuse a live or
+    // previous corpse's attachments after the slot/model/serial changes.
+    CacheBoneAttachments(body);
     body.ready = true;
     return true;
 }
@@ -717,31 +766,7 @@ void ApplyPose(Body &body, CStudioModelRenderer &renderer)
         reinterpret_cast<const byte *>(body.header) + body.header->boneindex);
     for (int bone = 0; bone < body.boneCount; ++bone)
     {
-        int owner = -1;
-        for (int joint = 0; joint < JOINT_COUNT; ++joint)
-            if (body.joints[joint].bone == bone) { owner = joint; break; }
-        if (owner < 0)
-        {
-            const char *name = bones[bone].name;
-            if (strstr(name, "Spine2") || strstr(name, "backpack")) owner = CHEST;
-            else if (strstr(name, "Neck")) owner = HEAD;
-            else if (strstr(name, "Clavicle")) owner = CHEST;
-            else if (strstr(name, "L Knee")) owner = LEFT_KNEE;
-            else if (strstr(name, "R Knee")) owner = RIGHT_KNEE;
-            else if (strstr(name, "L Elbow")) owner = LEFT_ELBOW;
-            else if (strstr(name, "R Elbow")) owner = RIGHT_ELBOW;
-        }
-        if (owner < 0)
-        {
-            int ancestor = bones[bone].parent;
-            while (ancestor >= 0 && owner < 0)
-            {
-                for (int joint = 0; joint < JOINT_COUNT; ++joint)
-                    if (body.joints[joint].bone == ancestor) { owner = joint; break; }
-                ancestor = owner < 0 ? bones[ancestor].parent : -1;
-            }
-        }
-        if (owner < 0) owner = PELVIS;
+        const int owner = body.boneOwner[bone];
         const JointState &joint = body.joints[owner];
         const float (*original)[4] = body.baseMatrix[bone];
         float (*render)[4] = (*renderer.m_pbonetransform)[bone];
@@ -762,13 +787,8 @@ void ApplyPose(Body &body, CStudioModelRenderer &renderer)
         const int parent = bones[bone].parent;
         if (parent >= 0 && parent < bone)
         {
-            const float (*oldParent)[4] = body.baseMatrix[parent];
             const float (*newParent)[4] = (*renderer.m_pbonetransform)[parent];
-            const Vector offset = Origin(original) - Origin(oldParent);
-            Vector parentLocal;
-            for (int axis = 0; axis < 3; ++axis)
-                parentLocal[axis] = offset.x * oldParent[0][axis] +
-                    offset.y * oldParent[1][axis] + offset.z * oldParent[2][axis];
+            const Vector &parentLocal = body.boneParentOffset[bone];
             for (int axis = 0; axis < 3; ++axis)
                 position[axis] = newParent[axis][3] + newParent[axis][0] * parentLocal.x +
                     newParent[axis][1] * parentLocal.y + newParent[axis][2] * parentLocal.z;
