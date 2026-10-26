@@ -17,6 +17,7 @@
 #include "const.h"
 #include "view_bob.h"
 #include "viewmodel_motion.h"
+#include "viewmodel_handedness.h"
 #include "view_effects.h"
 #include "view_stairs.h"
 #include "view_ads.h"
@@ -393,7 +394,8 @@ static void V_PositionADS(ref_params_s *params,cl_entity_s *view,const view_ads_
 	const float weight=view_ads::Gain(s_ADS.amount);
 	Vector forward,right,up;
 	AngleVectors(params->viewangles,forward,right,up);
-	const float hand=gHUD.cl_righthand && gHUD.cl_righthand->value==0?-1.0f:1.0f;
+	const float hand=oc2_viewmodel::UsesRightHand(view->model->name,
+		gHUD.cl_righthand ? gHUD.cl_righthand->value : 1.0f)?1.0f:-1.0f;
 	// Re-anchor to the finished eye, so viewsize, hip offsets and stair smoothing
 	// cannot move an aimed scope away from the shooting ray. Model-space Y is
 	// left; the GoldSrc right vector has the opposite sign. X remains forward.
@@ -1519,7 +1521,9 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		bobYaw     = bound( bobYaw,     -30.0f, 30.0f );
 	}
 	view_ads_motion::Motion adsBob;
-	const float adsHand=gHUD.cl_righthand && gHUD.cl_righthand->value==0?-1.0f:1.0f;
+	const bool rightHand=oc2_viewmodel::UsesRightHand(view->model ? view->model->name : nullptr,
+		gHUD.cl_righthand ? gHUD.cl_righthand->value : 1.0f);
+	const float adsHand=rightHand?1.0f:-1.0f;
 	for ( i = 0; i < 3; i++ )
 	{
 		view->origin[ i ] += bobForward * pparams->forward[ i ];
@@ -1637,7 +1641,7 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 	effectInput.grounded = visualGrounded;
 	effectInput.active = bVmActive && view->model != NULL;
 	effectInput.paused = pparams->paused != 0;
-	effectInput.left_hand = gHUD.cl_righthand && gHUD.cl_righthand->value == 0.0f;
+	effectInput.left_hand = !rightHand;
 	effectInput.view_entity = pparams->viewentity;
 	effectInput.weapon_id = iWeaponId;
 	effectInput.model_index = view->curstate.modelindex;

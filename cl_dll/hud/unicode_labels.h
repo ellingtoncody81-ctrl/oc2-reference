@@ -3,6 +3,7 @@
 #include "match_ui.h"
 #include "cl_dll/IGameMenuExports.h"
 #include "utflib.h"
+#include "hud/text_layout.h"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -39,6 +40,19 @@ inline float FixedLabelWidth(const char *text,float height)
 {
     const HFont font=LabelFont(height);if(font<=0||!text)return 0;
     int wide=0;g_pMenu->GetTextSize(font,text,&wide);return wide/LabelScale();
+}
+inline float LineHeight(float height)
+{
+    const HFont font=LabelFont(height);if(font<=0)return height;
+    int wide=0,tall=0;g_pMenu->GetTextSize(font,"M",&wide,&tall);
+    return (std::max)(height,float(tall)/LabelScale());
+}
+inline std::vector<std::string> WrapLines(const char *text,float height,float available,bool colors=false)
+{
+    return hud_text_layout::Wrap(text,available,[height,colors](const char *line){
+        const std::string visible=colors?hud_text_layout::VisibleText(line):line;
+        return FixedLabelWidth(visible.c_str(),height);
+    });
 }
 inline void FixedLabel(const char *input,float x,float y,float height,match_ui::Color color,bool rightAlign=false,float maxWidth=0)
 {

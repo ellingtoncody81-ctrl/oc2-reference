@@ -39,6 +39,7 @@ version.
 #include "pm_shared.h"
 #include "match_ui.h"
 #include "hud_readability.h"
+#include "hud/presentation_contract.h"
 
 int CHudTimer::Init()
 {
@@ -46,6 +47,7 @@ int CHudTimer::Init()
 	HOOK_MESSAGE( gHUD.m_Timer, ShowTimer );
 	m_iFlags = 0;
 	m_bPanicColorChange = false;
+	InitHUDData();
 	gHUD.AddHudElem(this);
 	return 1;
 }
@@ -56,9 +58,56 @@ int CHudTimer::VidInit()
 	return 1;
 }
 
+void CHudTimer::InitHUDData() { ResetRound();m_bombDrawTime=-1;m_bombDrawTexture=0; }
+void CHudTimer::ResetRound() { m_bombState = hud_presentation::RoundTimer; }
+void CHudTimer::NoteTextMessage(const char *key)
+{
+	m_bombState = hud_presentation::TextBombState(hud_presentation::Bomb(m_bombState),key);
+	if (m_bombState != hud_presentation::RoundTimer) m_iFlags |= HUD_DRAW;
+}
+void CHudTimer::NoteScenario(const char *sprite, bool active)
+{
+	if (active && sprite && !strcmp(sprite,"bombticking"))
+	{
+		m_bombState = hud_presentation::Planted;
+		m_iFlags |= HUD_DRAW;
+	}
+}
+int CHudTimer::BombState() const
+{
+	if (m_bombState != hud_presentation::RoundTimer) return m_bombState;
+	// Standard BombDrop also resynchronizes a late joiner; no new wire byte.
+	const extra_player_info_t &bomb=g_PlayerExtraInfo[33];
+	return !bomb.dead && bomb.radarflashes && bomb.playerclass == 1
+		? hud_presentation::Planted : hud_presentation::RoundTimer;
+}
+bool CHudTimer::DrawBomb(float time, float center, float top, float scale) const
+{
+	const int state=BombState();
+	if (state != hud_presentation::Planted && state != hud_presentation::Defused) return false;
+	const bool planted=state == hud_presentation::Planted;
+	const int texture=match_ui::Texture(planted?"gfx/vgui/c4icon.tga":"gfx/vgui/c4defused.tga");
+	if (!texture) return false;
+	const auto rect=hud_presentation::BombRect(center,top,scale);
+	m_bombDrawTime=time;m_bombDrawState=state;m_bombDrawTexture=texture;
+	m_bombDrawRect[0]=rect.x;m_bombDrawRect[1]=rect.y;m_bombDrawRect[2]=rect.width;m_bombDrawRect[3]=rect.height;
+	m_bombDrawAlpha=planted?hud_presentation::BombAlpha(time):255;
+	match_ui::Picture(texture,rect.x,rect.y,rect.width,rect.height,
+		planted?match_ui::Color(255,0,0,m_bombDrawAlpha):match_ui::Color(255,255,255,255));
+	return true;
+}
+void CHudTimer::DumpPresentation() const
+{
+	gEngfuncs.Con_Printf("hudpresentation_bomb: draw_time=%.3f state=%d texture=%d path=%s rect=%.3f,%.3f,%.3f,%.3f alpha=%d hud_scale=%.4f\n",
+		m_bombDrawTime,m_bombDrawState,m_bombDrawTexture,m_bombDrawState==hud_presentation::Defused?"gfx/vgui/c4defused.tga":"gfx/vgui/c4icon.tga",
+		m_bombDrawRect[0],m_bombDrawRect[1],m_bombDrawRect[2],m_bombDrawRect[3],m_bombDrawAlpha,gHUD.m_flScale);
+}
+
 bool CHudTimer::ShouldDrawTimer() const
 {
-	return (m_iFlags & HUD_DRAW) && !(gHUD.m_iHideHUDDisplay & (HIDEHUD_TIMER | HIDEHUD_ALL))
+	const int bomb=BombState();
+	return ((m_iFlags & HUD_DRAW) || bomb==hud_presentation::Planted || bomb==hud_presentation::Defused)
+		&& !(gHUD.m_iHideHUDDisplay & (HIDEHUD_TIMER | HIDEHUD_ALL))
 		&& (gHUD.m_iWeaponBits & (1 << WEAPON_SUIT)) && g_iUser1 != OBS_IN_EYE;
 }
 
@@ -95,6 +144,7 @@ int CHudTimer::Draw( float fTime )
 		// The no-avatar fallback keeps the same enlarged top-center timer;
 		// placing it at the bottom would overlap the team badge/card.
 		const float s=hud_readability::Scale(match_ui::Scale());
+		if (DrawBomb(fTime,ScreenWidth*.5f,5*s,s)) return 1;
 		char text[32];snprintf(text,sizeof(text),"%d:%02d",minutes,seconds);
 		const float height=26*s,width=match_ui::TextWidth(text,height);
 		FillRGBABlend(int(ScreenWidth*.5f-width*.5f-12*s),int(8*s),int(width+24*s),int(height+12*s),8,12,18,195);

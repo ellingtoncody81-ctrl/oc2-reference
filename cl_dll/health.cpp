@@ -31,6 +31,7 @@
 #include "strl.h"
 #include "eventscripts.h"
 #include "oc2_ragdoll.h"
+#include "player_model_policy.h"
 
 #include "draw_util.h"
 
@@ -187,6 +188,7 @@ int CHudHealth:: MsgFunc_ScoreAttrib(const char *pszName,  int iSize, void *pbuf
 		return 1;
 
 	g_PlayerExtraInfo[index].dead   = !!(flags & PLAYER_DEAD);
+	OC2_RagdollPlayerState(index, g_PlayerExtraInfo[index].dead);
 	g_PlayerExtraInfo[index].has_c4 = !!(flags & PLAYER_HAS_C4);
 	g_PlayerExtraInfo[index].vip    = !!(flags & PLAYER_VIP);
 	g_PlayerExtraInfo[index].has_defuse_kit = !!(flags & PLAYER_HAS_DEFUSER);
@@ -507,34 +509,13 @@ int CHudHealth :: MsgFunc_ClCorpse(const char *pszName, int iSize, void *pbuf)
 	if (OC2_RagdollSuppressDelayedCorpse(playerID, origin))
 		return 0;
 
-	if( !gHUD.cl_minmodels->value )
-	{
-		if( !strstr(pModel, "models/") )
-			snprintf( szModel, sizeof(szModel), "models/player/%s/%s.mdl", pModel, pModel );
-		else
-			strlcpy( szModel, pModel, sizeof( szModel ) );
-	}
+	const char *teamModel = oc2_player_model::TeamModelPath(teamID);
+	if (teamModel)
+		strlcpy(szModel, teamModel, sizeof(szModel));
+	else if (!strstr(pModel, "models/"))
+		snprintf(szModel, sizeof(szModel), "models/player/%s/%s.mdl", pModel, pModel);
 	else
-	{
-		int modelidx;
-		if( teamID == TEAM_TERRORIST ) // terrorists
-		{
-			modelidx = gHUD.cl_min_t->value;
-			if( !BIsValidTModelIndex(modelidx) )
-				modelidx = PLAYERMODEL_LEET;
-		}
-		else if( teamID == TEAM_CT ) // ct
-		{
-			if( g_PlayerExtraInfo[playerID].vip )
-				modelidx = PLAYERMODEL_VIP;
-			else if( !BIsValidCTModelIndex( gHUD.cl_min_ct->value ))
-				modelidx = PLAYERMODEL_GIGN;
-			else modelidx = gHUD.cl_min_ct->value;
-		}
-		else modelidx = PLAYERMODEL_PLAYER;
-
-		strlcpy( szModel, sPlayerModelFiles[modelidx], sizeof( szModel ) );
-	}
+		strlcpy(szModel, pModel, sizeof(szModel));
 	CreateCorpse( origin, angles, szModel, delay, seq, classID, playerID );
 	return 0;
 }

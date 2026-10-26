@@ -75,7 +75,7 @@ endif()
 
 add_library(${CLIENT_LIB} SHARED ${CS_CLIENT_SRC})
 if(MSVC)
-	set_source_files_properties(ammo.cpp buy_menu_state.cpp hud/scoreboard.cpp PROPERTIES COMPILE_OPTIONS "/utf-8")
+	set_source_files_properties(ammo.cpp buy_menu_state.cpp hud/scoreboard.cpp text_message.cpp message.cpp saytext.cpp vgui_parser.cpp PROPERTIES COMPILE_OPTIONS "/utf-8")
 endif()
 
 set_target_postfix(${CLIENT_LIB})

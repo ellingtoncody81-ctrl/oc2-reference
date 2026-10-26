@@ -59,6 +59,7 @@ void UI_ConnectionWarning_f( void );
 void UI_ShowMessageBox( const char *text );
 void UI_UpdateDialog( int preferStore );
 void UI_ConnectionProgress_Disconnect( void );
+bool UI_DrawConnectionProgress( void );
 void UI_ConnectionProgress_Download( const char *pszFileName, const char *pszServerName, int iCurrent, int iTotal, const char *comment );
 void UI_ConnectionProgress_DownloadEnd( void );
 void UI_ConnectionProgress_Precache( void );

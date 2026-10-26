@@ -334,6 +334,7 @@ int CHudDeathNotice::MsgFunc_HudRound(const char *pszName, int iSize, void *pbuf
 {
 	// GoldSrc bridge for CS:GO CCSPlayer::RoundRespawn (cs_player.cpp:8363-8364).
 	kill_feedback::ResetRound(s_KillFeedback);
+	gHUD.m_Timer.ResetRound();
 	return 1;
 }
 

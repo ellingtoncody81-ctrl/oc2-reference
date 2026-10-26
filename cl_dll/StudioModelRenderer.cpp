@@ -48,6 +48,7 @@
 #include "skin_inventory_client.h"
 #include "oc2_glove_inventory.h"
 #include "viewmodel_motion.h"
+#include "viewmodel_handedness.h"
 #include "wpn_shared/oc2_presentation.h"
 #include "wpn_shared/oc2_reload.h"
 #include "view_ads.h"
@@ -242,7 +243,10 @@ static bool HasSourceHandRig(const studiohdr_t *header)
 
 static bool MirrorViewModel(const studiohdr_t *header)
 {
-	const bool rightHand = !gHUD.cl_righthand || gHUD.cl_righthand->value > 0;
+	const cl_entity_t *view = gEngfuncs.GetViewModel();
+	const bool rightHand = oc2_viewmodel::UsesRightHand(
+		view && view->model ? view->model->name : nullptr,
+		gHUD.cl_righthand ? gHUD.cl_righthand->value : 1.0f);
 	// Source-converted APK rigs are authored right-handed (idle R_Hand Y<0).
 	// Original GoldSrc rigs use the opposite authoring convention. The GL
 	// renderer uses the same rig predicate for winding and lighting.

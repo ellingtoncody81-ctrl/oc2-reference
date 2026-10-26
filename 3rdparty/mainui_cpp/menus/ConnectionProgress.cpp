@@ -20,424 +20,206 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "extdll_menu.h"
 #include "BaseMenu.h"
 #include "Utils.h"
-
 #include "ItemsHolder.h"
-#include "ProgressBar.h"
-#include "PicButton.h"
-#include "YesNoMessageBox.h"
+#include "frontend/PanoramaChrome.h"
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <cstring>
+#include <string>
 
-enum EState
+namespace
 {
-	STATE_NONE,
-	STATE_MENU, // do not hide when disconnected or in game
-	STATE_DOWNLOAD, // enlarge your connectionprogress window
-	STATE_CONNECTING, // showing single progress
-	STATE_CONSOLE // do not show until state reset
-};
-
-enum ESource
+bool SafeLoadingMap(const std::string &map)
 {
-	SOURCE_CONSOLE,
-	SOURCE_SERVERBROWSER,
-	SOURCE_CREATEGAME
-};
+    if(map.empty() || map.size() >= 128 || map[0] == '/' || map.find("..") != std::string::npos)
+        return false;
+    for(unsigned char c:map)
+        if(!std::isalnum(c) && c!='_' && c!='-' && c!='/') return false;
+    return true;
+}
 
+const char *LoadingStageText(const char *stage)
+{
+    if(!std::strcmp(stage,"server")) return "正在启动服务器";
+    if(!std::strcmp(stage,"serverinfo")) return "正在读取地图信息";
+    if(!std::strcmp(stage,"download")) return "正在准备地图资源";
+    if(!std::strcmp(stage,"resources")) return "正在加载地图资源";
+    if(!std::strcmp(stage,"renderer")) return "正在准备游戏画面";
+    if(!std::strcmp(stage,"signon")) return "正在进入游戏";
+    return "正在连接服务器";
+}
+
+std::string LoadingMapImage(const std::string &map, bool &overview)
+{
+    overview = false;
+    if(!SafeLoadingMap(map)) return {};
+    const char *aspect = ScreenWidth * 3 > ScreenHeight * 4 ? "_16x9" : "_4x3";
+    const std::string shots[] = {"levelshots/"+map+aspect+".tga", "levelshots/"+map+aspect+".bmp",
+        "levelshots/"+map+".tga", "levelshots/"+map+".bmp"};
+    for(const auto &path:shots)
+        if(EngFuncs::FileExists(path.c_str(),false)) return path;
+
+    overview = true;
+    const std::string card = "gfx/frontend/maps/"+map+".tga";
+    if(EngFuncs::FileExists(card.c_str(),false)) return card;
+
+    // The definition owns its image reference; custom maps need not use <map>.bmp.
+    const std::string definition = "overviews/"+map+".txt";
+    char *data = reinterpret_cast<char*>(EngFuncs::COM_LoadFile(definition.c_str()));
+    if(!data) return {};
+    char token[1024];char *cursor=data;std::string image;
+    while((cursor=EngFuncs::COM_ParseFile(cursor,token,sizeof(token))) != nullptr)
+    {
+        if(stricmp(token,"image")) continue;
+        cursor=EngFuncs::COM_ParseFile(cursor,token,sizeof(token));
+        if(!cursor) break;
+        std::string path=token;
+        std::replace(path.begin(),path.end(),'\\','/');
+        if(path.compare(0,10,"overviews/") || path.find("..")!=std::string::npos || path.find(':')!=std::string::npos)
+            continue;
+        if(EngFuncs::FileExists(path.c_str(),false)){image=path;break;}
+    }
+    EngFuncs::COM_FreeFile(data);
+    return image;
+}
+}
 
 class CMenuConnectionProgress : public CMenuBaseWindow
 {
 public:
-	CMenuConnectionProgress();
-	void _Init() override;
-	void _VidInit() override;
-	void Draw() override;
-	bool DrawAnimation() override;
-	bool KeyDown( int key ) override;
-	void Disconnect();
-	void HandleDisconnect( void );
-	void HandlePrecache( void )
-	{
-		SetCommonText( L( "GameUI_PrecachingResources" ) );
-		commonProgress.LinkCvar( "scr_loading", 0, 100 );
-		m_iState = STATE_CONNECTING;
-	}
-	void HandleStufftext( float flProgress, const char *pszText )
-	{
-		SetCommonText( pszText );
-		commonProgress.SetValue( flProgress );
-		m_iState = STATE_CONNECTING;
-	}
-	void HandleDownload( const char *pszFileName, const char *pszServerName, int iCurrent, int iTotal, const char *comment )
-	{
-		if( strstr( pszFileName, ".bsp" ) )
-			uiStatic.needMapListUpdate = true;
-		snprintf( sDownloadString, sizeof( sDownloadString ) - 1, L( "Downloading %s \nfrom %s" ), pszFileName, pszServerName );
-		snprintf( sCommonString, sizeof( sCommonString ) - 1, "%d of %d %s", iCurrent + 1, iTotal, comment );
-		m_iState = STATE_DOWNLOAD;
-		commonProgress.SetValue( (float)iCurrent/iTotal +  0.01f / iTotal * EngFuncs::GetCvarFloat("scr_download") );
-	}
-	void HandleConnect( const char *pszText )
-	{
-		if( !pszText )
-		{
-			m_iSource = SOURCE_CREATEGAME;
-			SetServer( "" );
-			SetCommonText( L( "GameUI_StartingServer" ) );
-		}
-		else
-		{
-			m_iSource = SOURCE_SERVERBROWSER;
-			SetServer( pszText );
-			SetCommonText( L( "GameUI_EstablishingConnection" ) );
-		}
+    CMenuConnectionProgress():CMenuBaseWindow("ConnectionProgress"),m_overview(false) {}
+    void _Init() override {}
+    void _VidInit() override
+    {
+        SetRect(0,0,uiStatic.width,768);
+        m_map.clear();m_image.clear();
+        CalcPosition();CalcSizes();
+    }
+    bool DrawAnimation() override { return true; }
+    bool KeyDown(int key) override
+    {
+        if(UI::Key::IsEscape(key))
+        {
+            Stop();
+            EngFuncs::ClientCmd(false,"disconnect\n");
+            return true;
+        }
+        if(UI::Key::IsConsole(key))
+        {
+            // Keep the loading page and its input destination behind the console.
+            EngFuncs::ClientCmd(false,"toggleconsole\n");
+            return true;
+        }
+        return true;
+    }
+    void Start()
+    {
+        if(Active()) Show();
+    }
+    void Stop()
+    {
+        if(IsVisible()) UI_CloseMenu();
+        if(!CL_IsActive()) UI_SetActiveMenu(true);
+    }
+    bool Active() const
+    {
+        return EngFuncs::GetCvarFloat("scr_loading_active")!=0;
+    }
+    void Draw() override
+    {
+        const int w=ScreenWidth,h=ScreenHeight;
+        const float scale=float(h)/768.0f;
+        const int margin=Q_max(20,int(42*scale)), footer=Q_max(88,int(116*scale));
+        const unsigned ink=PackRGBA(240,243,246,255),muted=PackRGBA(167,182,193,255);
+        const unsigned accent=PackRGBA(118,184,218,255);
+        UI_FillRect(0,0,w,h,PackRGBA(13,20,27,255));
+        const std::string map=EngFuncs::GetCvarString("scr_loading_map");
+        if(map!=m_map)
+        {
+            m_map=map;m_image=LoadingMapImage(map,m_overview);
+        }
+        const int imageTop=int(72*scale),imageBottom=h-footer-int(18*scale);
+        if(!m_image.empty())
+        {
+            const HIMAGE image=EngFuncs::PIC_Load(m_image.c_str());
+            const int iw=EngFuncs::PIC_Width(image),ih=EngFuncs::PIC_Height(image);
+            if(image && iw>0 && ih>0)
+            {
+                // Keep the complete radar visible; photographic levelshots cover the screen.
+                const float fit=m_overview?Q_min(float(w-margin*2)/iw,float(imageBottom-imageTop)/ih):
+                    Q_max(float(w)/iw,float(h)/ih);
+                const int dw=int(iw*fit),dh=int(ih*fit);
+                const Point pos((w-dw)/2,m_overview?imageTop+(imageBottom-imageTop-dh)/2:(h-dh)/2);
+                UI_DrawPic(pos,Size(dw,dh),PackRGBA(255,255,255,255),m_image.c_str(),QM_DRAWTRANS);
+                if(!m_overview) UI_FillRect(0,0,w,h,PackRGBA(9,17,24,48));
+            }
+        }
+        auto text=[&](int x,int y,int width,int height,const char *value,int size,unsigned color,unsigned align=QM_LEFT)
+        {
+            oc2_panorama::DrawText(Point(x,y),Size(width,height),value,size,color,false,align);
+        };
+        UI_FillRect(0,0,w,int(72*scale),PackRGBA(9,15,21,215));
+        text(margin,int(15*scale),w-margin*2,int(40*scale),"正在加载地图",28,ink);
+        if(SafeLoadingMap(map))
+            text(margin,int(17*scale),w-margin*2,int(36*scale),map.c_str(),22,muted,QM_RIGHT);
+        if(m_image.empty())
+            text(margin,imageTop,w-margin*2,imageBottom-imageTop,SafeLoadingMap(map)?"暂无地图图像":"正在获取地图信息",24,muted,QM_CENTER);
 
-		commonProgress.LinkCvar( "scr_loading", 0, 100 );
-	}
-
-	void SetCommonText( const char *pszText )
-	{
-		Q_strncpy( sCommonString, pszText, sizeof( sCommonString ) );
-		// snprintf( sCommonString, sizeof( sCommonString ) - 1, "%s", pszText );
-	}
-	void SetServer( const char *pszName )
-	{
-		if( m_iSource == SOURCE_CREATEGAME )
-		{
-			Q_strncpy( sTitleString, L( "GameUI_StartingServer" ), sizeof( sTitleString ) );
-		}
-		else if( !pszName[0] )
-		{
-			Q_strncpy( sTitleString, L( "GameUI_StartingServer" ), sizeof( sTitleString ) );
-		}
-		else
-		{
-			snprintf( sTitleString, sizeof( sTitleString ) - 1,
-				"%s %s", L( "GameUI_EstablishingConnection" ), pszName );
-		}
-
-		commonProgress.SetValue( 0 );
-	}
-
-	EState m_iState;
-	ESource m_iSource;
+        UI_FillRect(0,h-footer,w,footer,PackRGBA(9,15,21,245));
+        const char *stage=EngFuncs::GetCvarString("scr_loading_stage");
+        const int total=Q_max(0,int(EngFuncs::GetCvarFloat("scr_loading_total")));
+        const int current=bound(0,int(EngFuncs::GetCvarFloat("scr_loading_current")),total);
+        text(margin,h-footer+int(15*scale),w-margin*2,int(28*scale),LoadingStageText(stage),22,ink);
+        char amount[96]={};
+        if(total) std::snprintf(amount,sizeof(amount),"%d / %d",current,total);
+        text(margin,h-footer+int(15*scale),w-margin*2,int(28*scale),amount,18,muted,QM_RIGHT);
+        const int barY=h-footer+int(56*scale),barW=w-2*margin,barH=Q_max(3,int(5*scale));
+        UI_FillRect(margin,barY,barW,barH,PackRGBA(65,79,90,255));
+        if(total)
+        {
+            UI_FillRect(margin,barY,int(double(barW)*current/total),barH,accent);
+        }
+        else
+        {
+            // A moving marker means unknown work, not an invented completion percentage.
+            const int marker=Q_max(1,barW/9);
+            const double phase=std::fmod(Q_max(0,uiStatic.realTime)/1600.0,2.0);
+            const double position=phase<=1.0?phase:2.0-phase;
+            UI_FillRect(margin+int((barW-marker)*position),barY,marker,barH,accent);
+        }
+        const char *item=EngFuncs::GetCvarString("scr_loading_item");
+        text(margin,barY+int(13*scale),Q_max(1,barW-int(260*scale)),int(25*scale),item,14,muted);
+        text(margin,barY+int(13*scale),barW,int(25*scale),"Esc 取消    ~ 控制台",14,muted,QM_RIGHT);
+    }
 private:
-	CMenuBackgroundBitmap background;
-	CMenuProgressBar commonProgress;
-	CMenuProgressBar downloadProgress;
-	CMenuPicButton consoleButton;
-	CMenuPicButton disconnectButton;
-	CMenuPicButton skipButton;
-	CMenuYesNoMessageBox dialog;
-	CMenuAction title;
-	CMenuAction downloadText;
-	CMenuAction commonText;
-	char sTitleString[256];
-	char sDownloadString[512];
-	char sCommonString[512];
+    bool m_overview;
+    std::string m_map,m_image;
 };
 
-CMenuConnectionProgress::CMenuConnectionProgress() : CMenuBaseWindow( "ConnectionProgress" )
+ADD_MENU3(menu_connectionprogress,CMenuConnectionProgress,UI_ConnectionProgress_f);
+
+bool UI_DrawConnectionProgress(void)
 {
-	sDownloadString[0] = sCommonString[0] = sTitleString[0] = '\0';
-	m_iSource = SOURCE_CONSOLE;
-	m_iState = STATE_NONE;
-	szName = "ConnectionProgress";
+    if(!menu_connectionprogress->Active()) return false;
+    menu_connectionprogress->Draw();
+    return true;
 }
 
-bool CMenuConnectionProgress::KeyDown( int key )
+void UI_ConnectionProgress_Disconnect(void) { menu_connectionprogress->Stop(); }
+void UI_ConnectionProgress_Connect(const char *) { menu_connectionprogress->Start(); }
+void UI_ConnectionProgress_ChangeLevel(void) { menu_connectionprogress->Start(); }
+void UI_ConnectionProgress_ParseServerInfo(const char *) {}
+void UI_ConnectionProgress_Precache(void) {}
+void UI_ConnectionProgress_DownloadEnd(void) {}
+void UI_ConnectionProgress_Download(const char *,const char *,int,int,const char *) {}
+
+// Keep the existing menu command used by local-game launchers. Only engine
+// lifecycle/progress owns completion; the menu never manufactures a percentage.
+void UI_ConnectionProgress_f(void)
 {
-	if( UI::Key::IsEscape( key ))
-	{
-		dialog.Show();
-		PlayLocalSound( uiStatic.sounds[SND_OUT] );
-	}
-	else if( UI::Key::IsConsole( key ))
-	{
-		consoleButton.onReleased( &consoleButton );
-		PlayLocalSound( uiStatic.sounds[SND_LAUNCH] );
-	}
-	else if( key == 'A' )
-	{
-		HandleDisconnect();
-	}
-
-	return CMenuItemsHolder::KeyDown( key );
-}
-
-void CMenuConnectionProgress::HandleDisconnect( void )
-{
-	if( m_iState == STATE_NONE )
-		return;
-
-	if( m_iState == STATE_CONSOLE )
-	{
-		m_iState = STATE_NONE;
-		return;
-	}
-
-	if( UI_IsVisible() && m_pStack->Current() == this )
-	{
-		Hide();
-		if( m_iSource != SOURCE_CONSOLE && m_iState != STATE_MENU )
-		{
-			UI_CloseMenu();
-			UI_SetActiveMenu( true );
-			UI_Main_Menu();
-			UI_ServerBrowser_Menu();
-			if( m_iSource == SOURCE_CREATEGAME )
-				UI_CreateGame_Menu();
-			if( m_iState == STATE_DOWNLOAD )
-			{
-				Show();
-				return;
-			}
-			m_iSource = SOURCE_CONSOLE;
-		}
-	}
-	
-	SetCommonText( L( "GameUI_Disconnected" ) );
-
-	m_iState = STATE_NONE;
-	VidInit();
-}
-
-void CMenuConnectionProgress::Disconnect()
-{
-	if( m_iState == STATE_DOWNLOAD )
-	{
-		EngFuncs::ClientCmd( true, "http_clear\n" );
-		m_iState = STATE_CONNECTING;
-		HandleDisconnect();
-	}
-
-	EngFuncs::ClientCmd( false, "disconnect\n");
-}
-
-void CMenuConnectionProgress::_Init( void )
-{
-	iFlags |= QMF_DIALOG;
-
-	background.bForceColor = true;
-	background.colorBase = uiPromptBgColor;
-
-	consoleButton.SetPicture( PC_CONSOLE );
-	consoleButton.szName = L( "GameUI_Console" );
-	SET_EVENT_MULTI( consoleButton.onReleased,
-	{
-		CMenuConnectionProgress *parent = (CMenuConnectionProgress *)pSelf->Parent();
-		EngFuncs::KEY_SetDest( KEY_CONSOLE );
-		parent->m_iState = STATE_CONSOLE;
-		parent->m_iSource = SOURCE_CONSOLE;
-		UI_CloseMenu();
-		UI_SetActiveMenu( false );
-	});
-	consoleButton.bEnableTransitions = false;
-
-	disconnectButton.SetPicture( PC_DISCONNECT );
-	disconnectButton.szName = L( "GameUI_GameMenu_Disconnect" );
-	disconnectButton.onReleased = VoidCb( &CMenuConnectionProgress::Disconnect );
-	disconnectButton.bEnableTransitions = false;
-
-	dialog.SetMessage( L( "Really disconnect?" ) );
-	dialog.Link( this );
-	dialog.onPositive = VoidCb( &CMenuConnectionProgress::Disconnect );
-
-	title.iFlags = QMF_INACTIVE|QMF_DROPSHADOW;
-	title.eTextAlignment = QM_CENTER;
-	title.szName = sTitleString;
-
-	skipButton.szName = L( "Skip" );
-	skipButton.onReleased.SetCommand( true, "http_skip\n" );
-	skipButton.bEnableTransitions = false;
-
-	downloadText.iFlags = commonText.iFlags = QMF_INACTIVE;
-	downloadText.szName = sDownloadString;
-	commonText.szName = sCommonString;
-
-	downloadProgress.LinkCvar( "scr_download", 0.0f, 100.0f );
-
-	AddItem( background );
-	AddItem( consoleButton );
-	AddItem( disconnectButton );
-	AddItem( downloadProgress );
-	AddItem( commonProgress );
-	AddItem( title );
-	AddItem( skipButton );
-	AddItem( downloadText );
-	AddItem( commonText );
-}
-
-void CMenuConnectionProgress::_VidInit( void )
-{
-	int dlg_h = ( m_iState == STATE_DOWNLOAD )?256:192;
-	int dlg_y = 768 / 2 - dlg_h / 2;
-	int cursor = dlg_h;
-
-	SetRect( DLG_X + 192, dlg_y, 640, dlg_h );
-	pos.x += uiStatic.xOffset;
-	pos.y += uiStatic.yOffset;
-
-	title.SetCharSize( QM_DEFAULTFONT );
-	title.SetRect( 0, 16, 640, 20 );
-
-	cursor -= 44;
-	consoleButton.SetRect( 188, cursor, UI_BUTTONS_WIDTH / 2, UI_BUTTONS_HEIGHT );
-	disconnectButton.SetRect( 338, cursor, UI_BUTTONS_WIDTH / 2, UI_BUTTONS_HEIGHT );
-
-	if( gpGlobals->developer )
-		consoleButton.Hide();
-
-	cursor -= 30;
-	commonProgress.SetRect( 20, cursor, 600, 20 );
-
-	cursor -= 50;
-	commonText.SetCharSize( QM_SMALLFONT );
-	commonText.SetRect( 20, cursor, 500, 40 );
-
-	if( m_iState == STATE_DOWNLOAD )
-	{
-		cursor -= 30;
-		downloadProgress.Show();
-		downloadProgress.SetRect( 20, cursor, 500, 20 );
-		skipButton.SetRect( 540, cursor, UI_BUTTONS_WIDTH / 2, UI_BUTTONS_HEIGHT );
-		skipButton.Show();
-
-		cursor -= 50;
-		downloadText.Show();
-		downloadText.SetCharSize( QM_SMALLFONT );
-		downloadText.SetRect( 20, cursor, 500, 40 );
-	}
-	else
-	{
-		downloadProgress.Hide();
-		skipButton.Hide();
-		downloadText.Hide();
-	}
-
-	CalcPosition();
-	CalcSizes();
-}
-
-bool CMenuConnectionProgress::DrawAnimation()
-{
-	// We don't have animation
-	return true;
-}
-
-void CMenuConnectionProgress::Draw( void )
-{
-	if( ( m_iState != STATE_MENU && CL_IsActive() ) || ( m_iState == STATE_NONE && m_pStack->Current() == this ) )
-	{
-		m_iState = STATE_NONE;
-		Hide();
-		return;
-	}
-	UI_FillRect( 0,0, gpGlobals->scrWidth, gpGlobals->scrHeight, m_iState == STATE_NONE ? 0xFF000000 : 0x40000000 );
-	CMenuBaseWindow::Draw();
-}
-
-ADD_MENU3( menu_connectionprogress, CMenuConnectionProgress, UI_ConnectionProgress_f );
-
-// exports
-void UI_ConnectionProgress_Disconnect( void )
-{
-	menu_connectionprogress->HandleDisconnect();
-}
-
-void UI_ConnectionProgress_Download( const char *pszFileName, const char *pszServerName, int iCurrent, int iTotal, const char *comment )
-{
-	if( menu_connectionprogress->m_iState == STATE_CONSOLE )
-		return;
-
-	menu_connectionprogress->HandleDownload( pszFileName, pszServerName, iCurrent, iTotal, comment );
-	menu_connectionprogress->Show();
-}
-
-void UI_ConnectionProgress_DownloadEnd( void )
-{
-	if( menu_connectionprogress->m_iState == STATE_CONSOLE )
-		return;
-
-	menu_connectionprogress->m_iState = STATE_CONNECTING;
-	menu_connectionprogress->HandleDisconnect();
-	menu_connectionprogress->Show();
-}
-
-void UI_ConnectionProgress_Precache( void )
-{
-	if( menu_connectionprogress->m_iState == STATE_CONSOLE )
-		return;
-
-	menu_connectionprogress->HandlePrecache();
-	menu_connectionprogress->Show();
-}
-
-void UI_ConnectionProgress_Connect( const char *server ) // NULL for local server
-{
-	if( menu_connectionprogress->m_iState == STATE_CONSOLE )
-		return;
-
-	menu_connectionprogress->m_iState = STATE_MENU;
-	menu_connectionprogress->HandleConnect( server );
-	menu_connectionprogress->Show();
-}
-
-void UI_ConnectionProgress_ChangeLevel( void )
-{
-	if( menu_connectionprogress->m_iState == STATE_CONSOLE )
-		return;
-
-	menu_connectionprogress->m_iState = STATE_MENU;
-	menu_connectionprogress->SetCommonText( L( "Changing level on server" ) );
-	menu_connectionprogress->Show();
-}
-
-void UI_ConnectionProgress_ParseServerInfo( const char *server )
-{
-	if( menu_connectionprogress->m_iState == STATE_CONSOLE )
-		return;
-
-	menu_connectionprogress->SetServer( server );
-	menu_connectionprogress->m_iState = STATE_CONNECTING;
-	menu_connectionprogress->SetCommonText( L( "GameUI_ParseServerInfo" ) );
-	menu_connectionprogress->Show();
-}
-
-void UI_ConnectionProgress_f( void )
-{
-	if( !strcmp( EngFuncs::CmdArgv(1), "disconnect" ) )
-	{
-		UI_ConnectionProgress_Disconnect();
-	}
-	else if( !strcmp( EngFuncs::CmdArgv(1), "dl" ) )
-	{
-		UI_ConnectionProgress_Download( EngFuncs::CmdArgv( 2 ), EngFuncs::CmdArgv( 3 ), atoi(EngFuncs::CmdArgv( 4 )), atoi(EngFuncs::CmdArgv( 5 )), EngFuncs::CmdArgv( 6 ) );
-	}
-	else if( !strcmp( EngFuncs::CmdArgv(1), "dlend" ) )
-	{
-		UI_ConnectionProgress_DownloadEnd();
-	}
-	else if( !strcmp( EngFuncs::CmdArgv(1), "stufftext" ) )
-	{
-		menu_connectionprogress->HandleStufftext( atof( EngFuncs::CmdArgv( 2 ) ), EngFuncs::CmdArgv( 3 ) );
-	}
-	else if( !strcmp( EngFuncs::CmdArgv(1), "precache" ) )
-	{
-		UI_ConnectionProgress_Precache();
-	}
-	else if( !strcmp( EngFuncs::CmdArgv(1), "menu" ) )
-	{
-		UI_ConnectionProgress_Connect( EngFuncs::CmdArgv(2) );
-	}
-	else if( !strcmp( EngFuncs::CmdArgv(1), "localserver" ) )
-	{
-		UI_ConnectionProgress_Connect( NULL );
-	}
-	else if( !strcmp( EngFuncs::CmdArgv(1), "changelevel" ) )
-	{
-		UI_ConnectionProgress_ChangeLevel();
-	}
-	else if( !strcmp( EngFuncs::CmdArgv(1), "serverinfo" ) )
-	{
-		UI_ConnectionProgress_ParseServerInfo( EngFuncs::CmdArgv(2) );
-	}
+    const char *command=EngFuncs::CmdArgv(1);
+    if(!std::strcmp(command,"disconnect")) menu_connectionprogress->Stop();
+    else if(!std::strcmp(command,"localserver") || !std::strcmp(command,"menu") || !std::strcmp(command,"changelevel"))
+        menu_connectionprogress->Start();
 }

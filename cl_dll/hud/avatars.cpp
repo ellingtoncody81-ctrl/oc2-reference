@@ -200,10 +200,10 @@ int CHudAvatars::Draw(float time)
 	s_avatarDrawScale=scale;s_avatarDrawY=y;s_avatarDrawTSize=tSize;s_avatarDrawCTSize=ctSize;
 	const int background = match_ui::Texture("resource/hud/csgo/black.tga");
 	if (background) match_ui::Picture(background, center-60.0f*scale, y,
-		120.0f*scale, 225.0f*scale, {255, 255, 255, 200});
+		120.0f*scale, 220.0f*scale, {255, 255, 255, 200});
 	else FillRGBABlend(int(center-60.0f*scale), int(y), int(120.0f*scale), int(height), 12, 16, 22, 185);
 	const match_ui::Color terrorist(220, 180, 95), counterTerrorist(115, 175, 225);
-	if (gHUD.m_Timer.ShouldDrawTimer())
+	if (gHUD.m_Timer.ShouldDrawTimer() && !gHUD.m_Timer.DrawBomb(time,center,y,scale))
 	{
 		const int seconds = max(0, gHUD.m_Timer.SecondsRemaining(time));
 		const int stopwatch = gHUD.GetSpriteIndex("stopwatch");

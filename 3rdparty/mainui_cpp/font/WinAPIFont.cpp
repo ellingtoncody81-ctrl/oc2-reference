@@ -297,7 +297,13 @@ void CWinAPIFont::GetCharABCWidthsNoCache( int ch, int &a, int &b, int &c )
 
 bool CWinAPIFont::HasChar( int ch ) const
 {
-	return true;
+	if( ch < 0 || ch > 0xFFFF || ( ch >= 0xD800 && ch <= 0xDFFF ) )
+		return false;
+	::SelectObject( m_hDC, m_hFont );
+	const wchar_t character = (wchar_t)ch;
+	WORD glyph = 0xFFFF;
+	const DWORD result = ::GetGlyphIndicesW( m_hDC, &character, 1, &glyph, GGI_MARK_NONEXISTING_GLYPHS );
+	return result != GDI_ERROR && glyph != 0xFFFF && glyph != 0;
 }
 
 #endif // WIN32

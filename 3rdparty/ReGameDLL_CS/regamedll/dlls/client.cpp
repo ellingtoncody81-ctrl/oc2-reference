@@ -1672,116 +1672,6 @@ LINK_HOOK_VOID_CHAIN(HandleMenu_ChooseAppearance, (CBasePlayer *pPlayer, int slo
 
 void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int slot)
 {
-	int numSkins = AreRunningCZero() ? CZ_NUM_SKIN : CS_NUM_SKIN;
-
-	struct
-	{
-		ModelName model_id;
-		char *model_name;
-		int model_name_index;
-
-	} appearance;
-
-	Q_memset(&appearance, 0, sizeof(appearance));
-
-	if (pPlayer->m_iTeam == TERRORIST)
-	{
-		if ((slot > numSkins || slot < 1) && (!TheBotProfiles->GetCustomSkin(slot) || !pPlayer->IsBot()))
-		{
-			slot = RANDOM_LONG(1, numSkins);
-		}
-
-		switch (slot)
-		{
-		case 1:
-			appearance.model_id = MODEL_TERROR;
-			appearance.model_name = "terror";
-			break;
-		case 2:
-			appearance.model_id = MODEL_LEET;
-			appearance.model_name = "leet";
-			break;
-		case 3:
-			appearance.model_id = MODEL_ARCTIC;
-			appearance.model_name = "arctic";
-			break;
-		case 4:
-			appearance.model_id = MODEL_GUERILLA;
-			appearance.model_name = "guerilla";
-			break;
-		case 5:
-			if (AreRunningCZero())
-			{
-				appearance.model_id = MODEL_MILITIA;
-				appearance.model_name = "militia";
-				break;
-			}
-		default:
-			if (TheBotProfiles->GetCustomSkinModelname(slot) && pPlayer->IsBot())
-			{
-				appearance.model_name = (char *)TheBotProfiles->GetCustomSkinModelname(slot);
-			}
-			else
-			{
-				appearance.model_id = MODEL_TERROR;
-				appearance.model_name = "terror";
-			}
-			break;
-		}
-
-		// default T model models/player/terror/terror.mdl
-		appearance.model_name_index = 8;
-
-	}
-	else if (pPlayer->m_iTeam == CT)
-	{
-		if ((slot > numSkins || slot < 1) && (!TheBotProfiles->GetCustomSkin(slot) || !pPlayer->IsBot()))
-		{
-			slot = RANDOM_LONG(1, numSkins);
-		}
-
-		switch (slot)
-		{
-		case 1:
-			appearance.model_id = MODEL_URBAN;
-			appearance.model_name = "urban";
-			break;
-		case 2:
-			appearance.model_id = MODEL_GSG9;
-			appearance.model_name = "gsg9";
-			break;
-		case 3:
-			appearance.model_id = MODEL_SAS;
-			appearance.model_name = "sas";
-			break;
-		case 4:
-			appearance.model_id = MODEL_GIGN;
-			appearance.model_name = "gign";
-			break;
-		case 5:
-			if (AreRunningCZero())
-			{
-				appearance.model_id = MODEL_SPETSNAZ;
-				appearance.model_name = "spetsnaz";
-				break;
-			}
-		default:
-			if (TheBotProfiles->GetCustomSkinModelname(slot) && pPlayer->IsBot())
-			{
-				appearance.model_name = (char *)TheBotProfiles->GetCustomSkinModelname(slot);
-			}
-			else
-			{
-				appearance.model_id = MODEL_URBAN;
-				appearance.model_name = "urban";
-			}
-			break;
-		}
-
-		// default CT model models/player/urban/urban.mdl
-		appearance.model_name_index = 9;
-	}
-
 #ifdef REGAMEDLL_FIXES
 	pPlayer->ResetMenu();
 #else
@@ -1811,10 +1701,7 @@ void EXT_FUNC __API_HOOK(HandleMenu_ChooseAppearance)(CBasePlayer *pPlayer, int 
 	}
 
 	pPlayer->pev->body = 0;
-	pPlayer->m_iModelName = appearance.model_id;
-
-	pPlayer->SetClientUserInfoModel(GET_INFO_BUFFER(pPlayer->edict()), appearance.model_name);
-	pPlayer->SetNewPlayerModel(sPlayerModelFiles[appearance.model_name_index]);
+	pPlayer->SetPlayerModel(pPlayer->m_bHasC4);
 
 	if (CSGameRules()->m_bMapHasVIPSafetyZone)
 	{
@@ -3935,6 +3822,8 @@ void ClientPrecache()
 
 	for (i = 0; i < numPlayerModels; i++)
 		PRECACHE_MODEL(sPlayerModelFiles[i]);
+	PRECACHE_MODEL("models/player/phoenix_varb/phoenix_varb.mdl");
+	PRECACHE_MODEL("models/player/sas_vara/sas_vara.mdl");
 
 	if (AreRunningCZero())
 	{

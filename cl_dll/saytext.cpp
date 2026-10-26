@@ -30,6 +30,7 @@
 #include "com_weapons.h"
 #include "utlstring.h"
 #include "strl.h"
+#include "hud/unicode_labels.h"
 //#include "vgui_TeamFortressViewport.h"
 
 extern float *GetClientColor( int clientIndex );
@@ -142,6 +143,52 @@ int CHudSayText :: Draw( float flTime )
 		}
 	}
 	
+	if (g_pMenu)
+	{
+		const float height=max(12,gHUD.GetCharHeight());
+		line_height=int(std::ceil(hud_unicode::LineHeight(height)));
+		for (int i=0;i<MAX_LINES;++i)
+		{
+			if (!g_szLineBuffer[i][0]) continue;
+			float x=LINE_START;
+			const float *color=g_ColorYellow;
+			std::string run;
+			const auto flush=[&]()
+			{
+				if (run.empty()) return;
+				hud_unicode::FixedLabel(run.c_str(),x,float(y),height,
+					{int(color[0]*255),int(color[1]*255),int(color[2]*255)});
+				x+=hud_unicode::FixedLabelWidth(run.c_str(),height);run.clear();
+			};
+			const char *text=g_szLineBuffer[i];
+			bool legacyName=false;
+			for (const char *p=text;*p;)
+			{
+				if (legacyName && p-text>=g_iNameLengths[i])
+				{ flush();color=g_ColorYellow;legacyName=false; }
+				const unsigned char code=static_cast<unsigned char>(*p);
+				if (code=='^' && p[1]>='0' && p[1]<='9')
+				{
+					static const float colors[10][3]={{0,0,0},{1,0,0},{0,1,0},{1,1,0},{0,0,1},{0,1,1},{1,0,1},{1,1,1},{1,1,1},{1,1,1}};
+					flush();color=colors[p[1]-'0'];p+=2;continue;
+				}
+				if (code>=1 && code<=4)
+				{
+					flush();++p;
+					if (code==4) color=g_ColorGreen;
+					else if ((code==2 || code==3) && g_pflNameColors[i]) color=g_pflNameColors[i];
+					else color=g_ColorYellow;
+					legacyName=code==2 && g_iNameLengths[i]>0;
+					continue;
+				}
+				const size_t bytes=hud_text_layout::GlyphBytes(p);
+				run.append(p,bytes);p+=bytes;
+			}
+			flush();y+=line_height;
+		}
+		return 1;
+	}
+
 	for (int i = 0; i < MAX_LINES; i++)
 	{
 		if (!g_szLineBuffer[i][0]) // skip empty string
@@ -222,57 +269,57 @@ struct
 {
 	{
 		"#Cstrike_Chat_CT",
-		"\x03(Counter-Terrorist) %s1 : \x01%s2",
+		"\x03（反恐精英）%s1：\x01%s2",
 		2, true
 	},
 	{
 		"#Cstrike_Chat_T",
-		"\x03(Terrorist) %s1 : \x01%s2",
+		"\x03（恐怖分子）%s1：\x01%s2",
 		2, true
 	},
 	{
 		"#Cstrike_Chat_CT_Dead",
-		"\x03*DEAD*(Counter-Terrorist) %s1 : \x01%s2",
+		"\x03（死亡·反恐精英）%s1：\x01%s2",
 		2, false
 	},
 	{
 		"#Cstrike_Chat_T_Dead",
-		"\x03*DEAD*(Terrorist) %s1 : \x01%s2",
+		"\x03（死亡·恐怖分子）%s1：\x01%s2",
 		2, false
 	},
 	{
 		"#Cstrike_Chat_Spec",
-		"\x03(Spectator) %s1 : \x03%s2",
+		"\x03（观众）%s1：\x03%s2",
 		2, false
 	},
 	{
 		"#Cstrike_Chat_All",
-		"\x03%s1 : \x01%s2",
+		"\x03%s1：\x01%s2",
 		2, true
 	},
 	{
 		"#Cstrike_Chat_AllDead",
-		"\x03*DEAD* %s1: \x01%s2",
+		"\x03（死亡）%s1：\x01%s2",
 		2, false
 	},
 	{
 		"#Cstrike_Chat_AllSpec",
-		"\x03*SPEC* %s1: \x03%s2",
+		"\x03（观众）%s1：\x03%s2",
 		2, false
 	},
 	{
 		"#Cstrike_Name_Change",
-		"\x03* %s1 changed name to %s2",
+		"\x03* %s1 已改名为 %s2",
 		2, true
 	},
 	{
 		"#Cstrike_Chat_T_Loc",
-		"\x03*(Terrorist) %s1 @ %s3 : \x01%s2",
+		"\x03（恐怖分子）%s1 @ %s3：\x01%s2",
 		3, true
 	},
 	{
 		"#Cstrike_Chat_CT_Loc",
-		"\x03*(Counter-Terrorist) %s1 @ %s3 : \x01%s2",
+		"\x03（反恐精英）%s1 @ %s3：\x01%s2",
 		3, true
 	},
 	{
@@ -399,7 +446,7 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
 #endif
 
 
-	strlcpy( g_szLineBuffer[i], pszBuf, sizeof( g_szLineBuffer[i] ) );
+	hud_text_layout::Copy(g_szLineBuffer[i],sizeof(g_szLineBuffer[i]),pszBuf);
 
 	// make sure the text fits in one line
 	EnsureTextFitsInOneLineAndWrapIfHaveTo( i );
@@ -427,6 +474,37 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
 
 void CHudSayText :: EnsureTextFitsInOneLineAndWrapIfHaveTo( int line )
 {
+	if (g_pMenu)
+	{
+		const float height=max(12,gHUD.GetCharHeight());
+		line_height=int(std::ceil(hud_unicode::LineHeight(height)));
+		const float available=float(MAX_LINE_WIDTH-LINE_START)-hud_unicode::FixedLabelWidth(" ",height);
+		const auto lines=hud_unicode::WrapLines(g_szLineBuffer[line],height,available,true);
+		float *nameColor=g_pflNameColors[line];
+		const int nameLength=g_iNameLengths[line];
+		std::string activeColor(1,char(1));
+		for (size_t part=0;part<lines.size();++part)
+		{
+			int target=line;
+			if (part)
+			{
+				for (target=0;target<MAX_LINES && g_szLineBuffer[target][0];++target) {}
+				if (target==MAX_LINES) { ScrollTextUp();target=MAX_LINES-1; }
+			}
+			std::string row=part?std::string(" ")+activeColor+lines[part]:lines[part];
+			if (row.empty()) row=" ";
+			hud_text_layout::Copy(g_szLineBuffer[target],sizeof(g_szLineBuffer[target]),row.c_str());
+			g_pflNameColors[target]=nameColor;
+			g_iNameLengths[target]=part?0:nameLength;
+			for (const char *p=lines[part].c_str();*p;++p)
+			{
+				const unsigned char ch=static_cast<unsigned char>(*p);
+				if (ch>=1 && ch<=4) activeColor.assign(1,char(ch));
+				else if (*p=='^' && p[1]>='0' && p[1]<='9') { activeColor.assign(p,2);++p; }
+			}
+		}
+		return;
+	}
 	int line_width = 0;
 	DrawUtils::ConsoleStringSize(g_szLineBuffer[line], &line_width, &line_height );
 

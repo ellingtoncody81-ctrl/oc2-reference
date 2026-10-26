@@ -25,6 +25,10 @@
 #include "parsemsg.h"
 #include "vgui_parser.h"
 #include "draw_util.h"
+#include "hud/message_zh.h"
+#include "hud/unicode_labels.h"
+#include <string>
+#include <vector>
 
 static int Utf8StringLen(const char *pszText)
 {
@@ -253,6 +257,54 @@ void CHudMessage::MessageScanStart( void )
 
 void CHudMessage::MessageDrawScan( client_textmessage_t *pMessage, float time )
 {
+	if (g_pMenu && hud_unicode::UnicodeLabel(pMessage->pMessage))
+	{
+		const float height=max(12,gHUD.GetCharHeight());
+		const float available=pMessage->x>=0?(1-pMessage->x)*ScreenWidth:ScreenWidth*.9f;
+		const auto lines=hud_unicode::WrapLines(pMessage->pMessage,height,available);
+		const float lineHeight=hud_unicode::LineHeight(height);
+		m_parms.pMessage=pMessage;m_parms.time=time;
+		m_parms.length=Utf8StringLen(pMessage->pMessage);
+		m_parms.totalWidth=0;
+		for (const auto &line:lines) m_parms.totalWidth=max(m_parms.totalWidth,int(hud_unicode::FixedLabelWidth(line.c_str(),height)));
+		m_parms.y=YPosition(pMessage->y,int(lines.size()*lineHeight));
+		m_parms.charTime=0;MessageScanStart();
+		const bool flicker=pMessage->effect==1 && m_parms.charTime!=0;
+		m_parms.charTime=0; // Unicode flicker is drawn below with the actual glyph.
+		const HFont font=hud_unicode::LabelFont(height);
+		const float scale=hud_unicode::LabelScale();
+		const int tall=g_pMenu->GetFontTall(font);
+		float drawY=float(m_parms.y);
+		for (const auto &line:lines)
+		{
+			float drawX=float(XPosition(pMessage->x,int(hud_unicode::FixedLabelWidth(line.c_str(),height)),m_parms.totalWidth));
+			for (const char *p=line.c_str();*p;)
+			{
+				const char *begin=p;p+=hud_text_layout::GlyphBytes(p);
+				const std::string glyph(begin,p);
+				m_parms.text=0;MessageScanNextChar();
+				const float width=hud_unicode::FixedLabelWidth(glyph.c_str(),height);
+				if (drawX>=0 && drawY>=0 && drawX+width<=ScreenWidth)
+				{
+					utfstate_t state={0};uint32_t codepoint=0;
+					for (unsigned char byte:glyph) codepoint=Q_DecodeUTF8(&state,byte);
+					const int x=int(std::floor(drawX*scale+.5f)),y=int(std::floor(drawY*scale+.5f));
+					// Original HudText fades RGB towards black under additive blending.
+					// Alpha blending would show black glyphs before the scan reveals them.
+					const unsigned color=0xff000000u|(unsigned(m_parms.r)<<16)|(unsigned(m_parms.g)<<8)|unsigned(m_parms.b);
+					if (flicker)
+					{
+						const unsigned flash=0xff000000u|(unsigned(pMessage->r2)<<16)|(unsigned(pMessage->g2)<<8)|unsigned(pMessage->b2);
+						g_pMenu->DrawCharacter(font,int(codepoint),x,y,tall,flash,true);
+					}
+					g_pMenu->DrawCharacter(font,int(codepoint),x,y,tall,color,true);
+				}
+				drawX+=width;
+			}
+			drawY+=lineHeight;
+		}
+		return;
+	}
 	int i, j, length, width;
 	const char *pText;
 	unsigned char line[512];
@@ -456,6 +508,9 @@ int CHudMessage::Draw( float fTime )
 
 void CHudMessage::MessageAdd( const char *pName, float time, qboolean hintMessage/*, unsigned int font */ )
 {
+	if (!pName || !*pName) return;
+	const char *translated=hud_message_zh::Find(pName);
+	if (translated && !*translated) return;
 	int i, j;
 	client_textmessage_t *tempMessage;
 	client_textmessage_t *message;
@@ -472,7 +527,11 @@ void CHudMessage::MessageAdd( const char *pName, float time, qboolean hintMessag
 
 			if( tempMessage )
 			{
-				if( tempMessage->pMessage[0] == '#' )
+				if (translated)
+				{
+					message=AllocMessage(translated,tempMessage);
+				}
+				else if( tempMessage->pMessage[0] == '#' )
 				{
 					message = AllocMessage( CHudTextMessage::BufferedLocaliseTextString( tempMessage->pMessage ), tempMessage );
 				}
@@ -487,8 +546,8 @@ void CHudMessage::MessageAdd( const char *pName, float time, qboolean hintMessag
 			}
 			else
 			{
-				char *localized = (char *)pName;
-				if( pName[0] == '#' )
+				char *localized = const_cast<char*>(translated?translated:pName);
+				if( !translated && pName[0] == '#' )
 				{
 					localized = (char *)Localize( pName + 1 );
 				}

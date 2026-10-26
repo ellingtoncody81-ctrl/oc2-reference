@@ -760,6 +760,7 @@ static int g_NextDeadPlayerTag = 0;
 void OC2_CorpseForget(tempent_s *corpse)
 {
 	if (!corpse) return;
+	OC2_RagdollCorpseForgotten(corpse);
 	for (int i = 0; i < 64; ++i)
 	{
 		if (g_DeadPlayerModels[i] == corpse &&
@@ -773,6 +774,7 @@ void OC2_CorpseForget(tempent_s *corpse)
 
 void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAnimTime, int iSequence, int iBody, int playerIndex)
 {
+	if (!OC2_RagdollCanCreateCorpse(playerIndex)) return;
 	int modelIdx = gEngfuncs.pEventAPI->EV_FindModelIndex(pModel);
 	Vector null(0, 0, 0);
 	TEMPENTITY *model = gEngfuncs.pEfxAPI->R_TempModel( vOrigin, null, vAngles, 100.0f, modelIdx, 0 );
@@ -781,6 +783,7 @@ void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAn
 	{
 		if (g_NextDeadPlayerTag >= 0x7ffffffe) g_NextDeadPlayerTag = 0;
 		model->entity.curstate.iuser3 = ++g_NextDeadPlayerTag;
+		OC2_RagdollCorpseCreated(model, playerIndex);
 		OC2_InventoryCaptureCorpseGlove(&model->entity, playerIndex);
 		model->flags = (FTENT_CLIENTCUSTOM|FTENT_PERSIST|FTENT_SPRANIMATE|FTENT_FADEOUT|FTENT_COLLIDEWORLD|FTENT_BODYTRACE);
 		model->frameMax = 255.0f;

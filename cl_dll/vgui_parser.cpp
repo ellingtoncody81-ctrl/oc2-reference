@@ -33,6 +33,8 @@
 #include "cl_dll.h"
 #include "vgui_parser.h"
 #include "unicode_strtools.h"
+#include "hud/message_zh.h"
+#include "hud/text_layout.h"
 
 #include "errno.h"
 #include <ctype.h>
@@ -61,6 +63,7 @@ char *StringCopy( const char *input )
 
 const char *Localize( const char *szStr )
 {
+	if (const char *translated=hud_message_zh::Token(szStr)) return translated;
 	if( szStr )
 	{
 		char *str = strdup( szStr );
@@ -298,6 +301,16 @@ size_t Localize_Format( char *dst, size_t dstsize, const char *fmt, const char *
 	}
 
 	size_t w = 0;
+	const auto append=[&](const char *text)
+	{
+		for (const char *p=text;*p;)
+		{
+			const size_t bytes=hud_text_layout::GlyphBytes(p);
+			if (w+bytes>=dstsize) return false;
+			memcpy(dst+w,p,bytes);w+=bytes;p+=bytes;
+		}
+		return true;
+	};
 #if LOCALIZE_FORMAT_BARE_PERCENT_S
 	int positional = 0;
 #endif
@@ -308,8 +321,7 @@ size_t Localize_Format( char *dst, size_t dstsize, const char *fmt, const char *
 		{
 			int idx = p[2] - '1';
 			const char *sub = ( idx < argc && argv[idx] ) ? argv[idx] : "";
-			while( *sub && w + 1 < dstsize )
-				dst[w++] = *sub++;
+			if (!append(sub)) break;
 			p += 3;
 			continue;
 		}
@@ -319,14 +331,15 @@ size_t Localize_Format( char *dst, size_t dstsize, const char *fmt, const char *
 		{
 			const char *sub = ( positional < argc && argv[positional] ) ? argv[positional] : "";
 			positional++;
-			while( *sub && w + 1 < dstsize )
-				dst[w++] = *sub++;
+			if (!append(sub)) break;
 			p += 2;
 			continue;
 		}
 #endif
 
-		dst[w++] = *p++;
+		const size_t bytes=hud_text_layout::GlyphBytes(p);
+		if (w+bytes>=dstsize) break;
+		memcpy(dst+w,p,bytes);w+=bytes;p+=bytes;
 	}
 
 	dst[w] = '\0';

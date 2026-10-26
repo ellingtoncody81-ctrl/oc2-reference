@@ -28,15 +28,91 @@
 #include "vgui_parser.h"
 #include "ctype.h"
 #include "draw_util.h"
+#include "hud/message_zh.h"
+#include "hud/unicode_labels.h"
+#include "hud/presentation_contract.h"
+#include <string>
+#include <vector>
 
 int CHudTextMessage::Init(void)
 {
 	HOOK_MESSAGE( gHUD.m_TextMessage, TextMsg );
+	HOOK_COMMAND(gHUD.m_TextMessage,"hud_presentation_dump",PresentationDump);
 
 	gHUD.AddHudElem( this );
-	m_iFlags = 0;
+	InitHUDData();
 
 	return 1;
+}
+
+void CHudTextMessage::InitHUDData()
+{
+	m_centerText[0]=m_lastToken[0]=0;
+	m_centerStart=m_centerEnd=0;
+	m_received=m_suppressed=m_drawn=0;
+	m_lastDestination=0;
+	m_centerDrawTime=-1;m_centerDrawY=m_centerDrawExpansion=0;
+	m_iFlags=HUD_DRAW | HUD_INTERMISSION;
+}
+void CHudTextMessage::Reset()
+{
+	// ResetHUD can be a fullupdate; the center text still has its own clock.
+}
+void CHudTextMessage::ShowCenter(const char *text)
+{
+	hud_text_layout::Copy(m_centerText,sizeof(m_centerText),text);
+	m_centerStart=gHUD.m_flTime;
+	const float hold=gEngfuncs.pfnGetCvarFloat("scr_centertime");
+	m_centerEnd=m_centerStart+max(0.0f,hold);
+}
+int CHudTextMessage::Draw(float time)
+{
+	if (!m_centerText[0] || time<m_centerStart || time>=m_centerEnd || (gHUD.m_iHideHUDDisplay&HIDEHUD_ALL)) return 1;
+	if (!g_pMenu) return 1;
+	// The APK's pfnCenterPrint wrapper maps .25 to .72254 of screen height.
+	// CL_DrawCenterPrint keeps white text and animates the backdrop over .3 s.
+	const float height=max(12,gHUD.GetCharHeight()),available=ScreenWidth*.9f;
+	const auto lines=hud_unicode::WrapLines(m_centerText,height,available);
+	const float lineHeight=hud_unicode::LineHeight(height);
+	float y=hud_presentation::CenterY(float(ScreenHeight));
+	const float expansion=hud_presentation::CenterExpansion(time-m_centerStart,m_centerEnd-time);
+	float widest=0;
+	for (const auto &line:lines) widest=max(widest,hud_unicode::FixedLabelWidth(line.c_str(),height));
+	const float padding=20.0f/hud_unicode::LabelScale();
+	// Preserve the APK anchor unless a translated multiline block reaches the
+	// lower screen edge, as HudText's existing YPosition already does.
+	y=max(padding,min(y,float(ScreenHeight)-float(lines.size())*lineHeight-padding));
+	const int panelWidth=int((widest+2*padding)*expansion);
+	const int panelX=int((ScreenWidth-panelWidth)*.5f),panelY=int(y-padding);
+	const int panelHeight=int(lines.size()*lineHeight+2*padding);
+	if (panelWidth>0)
+	{
+		// APK's flat fallback: black .6, white .5 edges, twenty-pixel padding.
+		// The PC renderer has no center-text blur capture interface.
+		FillRGBABlend(panelX,panelY,panelWidth,panelHeight,0,0,0,int(255*.6f*expansion));
+		const int edge=min(panelWidth,max(1,int(2.0f/hud_unicode::LabelScale())));
+		FillRGBABlend(panelX,panelY,edge,panelHeight,255,255,255,int(255*.5f*expansion));
+		FillRGBABlend(panelX+panelWidth-edge,panelY,edge,panelHeight,255,255,255,int(255*.5f*expansion));
+	}
+	m_centerDrawTime=time;m_centerDrawY=y;m_centerDrawExpansion=expansion;
+	for (const auto &line:lines)
+	{
+		const float width=hud_unicode::FixedLabelWidth(line.c_str(),height);
+		hud_unicode::FixedLabel(line.c_str(),(ScreenWidth-width)*.5f,y,height,{255,255,255});
+		y+=lineHeight;
+	}
+	++m_drawn;
+	return 1;
+}
+void CHudTextMessage::UserCmd_PresentationDump()
+{
+	const auto rect=hud_presentation::BombRect(ScreenWidth*.5f,5,1);
+	gEngfuncs.Con_Printf("hudpresentation: time=%.3f bomb=%d alpha=%d apk_rect=%.1f,%.1f,%.1f,%.1f received=%u suppressed=%u center_draws=%u token=%s dest=%d center_start=%.3f center_end=%.3f center=%s\n",
+		gHUD.m_flTime,gHUD.m_Timer.BombState(),hud_presentation::BombAlpha(gHUD.m_flTime),rect.x,rect.y,rect.width,rect.height,
+		m_received,m_suppressed,m_drawn,m_lastToken,m_lastDestination,m_centerStart,m_centerEnd,m_centerText);
+	gHUD.m_Timer.DumpPresentation();
+	gEngfuncs.Con_Printf("hudpresentation_center: draw_time=%.3f y=%.3f expansion=%.4f height=%d hud_scale=%.4f\n",
+		m_centerDrawTime,m_centerDrawY,m_centerDrawExpansion,ScreenHeight,gHUD.m_flScale);
 }
 
 // Searches through the string for any msg names (indicated by a '#')
@@ -44,66 +120,37 @@ int CHudTextMessage::Init(void)
 // the new value is pushed into dst_buffer
 char *CHudTextMessage::LocaliseTextString( const char *msg, char *dst_buffer, int buffer_size )
 {
-	int len = buffer_size;
-	char *dst = dst_buffer;
-	for ( char *src = (char*)msg; *src != 0 && buffer_size > 0; buffer_size-- )
+	if (!dst_buffer || buffer_size<=0) return dst_buffer;
+	if (!msg) { dst_buffer[0]=0;return dst_buffer; }
+	if (const char *translated=hud_message_zh::Find(msg))
+	{ hud_text_layout::Copy(dst_buffer,size_t(buffer_size),translated);return dst_buffer; }
+	std::string result;
+	for (const char *src=msg;*src;)
 	{
-		if ( *src == '#' )
+		if (*src=='#')
 		{
-			// cut msg name out of string
-			static char word_buf[255];
-			char *wdst = word_buf, *word_start = src;
-			for ( ++src ; (*src >= 'A' && *src <= 'z') || (*src >= '0' && *src <= '9'); wdst++, src++ )
+			const char *end=src+1;
+			while ((*end>='A' && *end<='Z') || (*end>='a' && *end<='z') || (*end>='0' && *end<='9') || *end=='_') ++end;
+			const std::string token(src,end);
+			const char *replacement=hud_message_zh::Token(token.c_str());
+			if (!replacement && token.size()>1)
 			{
-				*wdst = *src;
-			}
-			*wdst = 0;
-
-			// lookup msg name in titles.txt
-			client_textmessage_t *clmsg = TextMessageGet( word_buf );
-			if ( !clmsg || !(clmsg->pMessage) )
-			{
-				// look also in vgui2 translations
-				const char *str = Localize( word_buf );
-				if( str )
-				{
-					strncpy(dst, str, buffer_size);
-					buffer_size = 0;
-					continue;
-				}
+				const char *key=token.c_str()+1;
+				if (const auto *title=TextMessageGet(key))
+					replacement=title->pMessage && title->pMessage[0]=='#'?Localize(title->pMessage+1):title->pMessage;
 				else
 				{
-					src = word_start;
-					*dst = *src;
-					dst++, src++;
-					continue;
+					const char *localized=Localize(key);
+					if (localized && strcmp(localized,key)) replacement=localized;
 				}
 			}
-
-			if(clmsg->pMessage[0] == '#')
-			{
-				strncpy(dst, Localize(clmsg->pMessage+1), buffer_size);
-				buffer_size = 0;
-			}
-			else
-			{
-				// copy string into message over the msg name
-				for ( char *wsrc = (char*)clmsg->pMessage; *wsrc != 0; wsrc++, dst++ )
-				{
-					*dst = *wsrc;
-				}
-				*dst = 0;
-			}
+			result+=replacement?replacement:token;
+			src=end;continue;
 		}
-		else
-		{
-			*dst = *src;
-			dst++, src++;
-			*dst = 0;
-		}
+		const size_t bytes=hud_text_layout::GlyphBytes(src);
+		result.append(src,bytes);src+=bytes;
 	}
-
-	dst_buffer[len-1] = 0; // ensure null termination
+	hud_text_layout::Copy(dst_buffer,size_t(buffer_size),result.c_str());
 	return dst_buffer;
 }
 
@@ -120,6 +167,14 @@ char *CHudTextMessage::LookupString( char *msg, int *msg_dest )
 {
 	if ( !msg )
 		return (char*)"";
+	// Retain title destination overrides before applying the fixed Chinese text.
+	if (const char *translated=hud_message_zh::Token(msg))
+	{
+		const char *key=msg[0]=='#'?msg+1:msg;
+		if (msg_dest) if (const auto *title=TextMessageGet(key))
+			if (title->effect<0) *msg_dest=-title->effect;
+		return const_cast<char*>(translated);
+	}
 
 	// '#' character indicates this is a reference to a string in titles.txt, and not the string itself
 	if ( msg[0] == '#' ) 
@@ -151,6 +206,7 @@ char *CHudTextMessage::LookupString( char *msg, int *msg_dest )
 
 void StripEndNewlineFromString( char *str )
 {
+	if (!str || !*str) return;
 	int s = strlen( str ) - 1;
 	if ( str[s] == '\n' || str[s] == '\r' )
 		str[s] = 0;
@@ -160,9 +216,17 @@ void StripEndNewlineFromString( char *str )
 // returns a pointer to str
 char* ConvertCRtoNL( char *str )
 {
-	for ( char *ch = str; *ch != 0; ch++ )
-		if ( *ch == '\r' )
-			*ch = '\n';
+	char *write=str;
+	for (char *read=str;*read;++read)
+	{
+		if (*read=='\r')
+		{
+			*write++='\n';
+			if (read[1]=='\n') ++read;
+		}
+		else *write++=*read;
+	}
+	*write=0;
 	return str;
 }
 
@@ -178,7 +242,7 @@ char* ConvertCRtoNL( char *str )
 //   string: message parameter 4
 // any string that starts with the character '#' is a message name, and is used to look up the real message in titles.txt
 // the next (optional) one to four strings are parameters for that string (which can also be message names if they begin with '#')
-#define MAX_TEXTMSG_STRING 512
+#define MAX_TEXTMSG_STRING 2048
 int CHudTextMessage::MsgFunc_TextMsg( const char *pszName, int iSize, void *pbuf )
 {
 	BufferReader reader( pszName, pbuf, iSize );
@@ -187,9 +251,17 @@ int CHudTextMessage::MsgFunc_TextMsg( const char *pszName, int iSize, void *pbuf
 	int clientIdx = -1;
 
 	static char szBuf[6][MAX_TEXTMSG_STRING];
-	char *msg_text = LookupString( reader.ReadString(), &msg_dest );
-	msg_text = strncpy( szBuf[0], msg_text, MAX_TEXTMSG_STRING );
-	szBuf[0][MAX_TEXTMSG_STRING - 1] = 0;
+	char token[MAX_TEXTMSG_STRING];
+	snprintf(token,sizeof(token),"%s",reader.ReadString());
+	gHUD.m_Timer.NoteTextMessage(token);
+	snprintf(m_lastToken,sizeof(m_lastToken),"%s",token);
+	++m_received;
+	char *msg_text = LookupString( token, &msg_dest );
+	if (const char *translated=hud_message_zh::Find(token)) msg_text=const_cast<char*>(translated);
+	m_lastDestination=msg_dest;
+	if (!msg_text || !*msg_text) { ++m_suppressed;return 1; }
+	hud_text_layout::Copy(szBuf[0],MAX_TEXTMSG_STRING,msg_text);
+	msg_text=szBuf[0];
 
 	// keep reading strings and using C format strings for substituting the strings into the localised text string
 	for( int i = 1; i <= 4; i++ )
@@ -200,8 +272,7 @@ int CHudTextMessage::MsgFunc_TextMsg( const char *pszName, int iSize, void *pbuf
 		char *str = (i == 2) ? raw : LookupString( raw );
 		const char *localized = (i == 2) ? str : Localize( str );
 
-		strncpy( szBuf[i], localized, MAX_TEXTMSG_STRING );
-		szBuf[i][MAX_TEXTMSG_STRING-1] = 0;
+		hud_text_layout::Copy(szBuf[i],MAX_TEXTMSG_STRING,localized);
 
 		// these strings are meant for substitution into the main strings, so cull the automatic end newlines
 		StripEndNewlineFromString( szBuf[i] );
@@ -219,11 +290,7 @@ int CHudTextMessage::MsgFunc_TextMsg( const char *pszName, int iSize, void *pbuf
 
 		ConvertCRtoNL( psz );
 
-		int len = DrawUtils::ConsoleStringLen( psz );
-
-		DrawUtils::DrawConsoleString( (ScreenWidth - len) / 2, ScreenHeight / 3, psz );
-
-		CenterPrint( psz );
+		ShowCenter( psz );
 		break;
 	}
 	case HUD_PRINTNOTIFY:

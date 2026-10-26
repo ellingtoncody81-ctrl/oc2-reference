@@ -699,10 +699,22 @@ class CHudTextMessage: public CHudBase
 {
 public:
 	int Init( void );
+	void InitHUDData( void );
+	void Reset( void );
+	int Draw( float time );
+	void ShowCenter( const char *text );
+	void UserCmd_PresentationDump();
 	static char *LocaliseTextString( const char *msg, char *dst_buffer, int buffer_size );
 	static char *BufferedLocaliseTextString( const char *msg );
 	static char *LookupString( char *msg_name, int *msg_dest = NULL );
 	CHudMsgFunc(TextMsg);
+private:
+	char m_centerText[2048] = {};
+	float m_centerStart = 0, m_centerEnd = 0;
+	float m_centerDrawTime = -1, m_centerDrawY = 0, m_centerDrawExpansion = 0;
+	unsigned m_received = 0, m_suppressed = 0, m_drawn = 0;
+	char m_lastToken[128] = {};
+	int m_lastDestination = 0;
 };
 
 //
@@ -846,6 +858,13 @@ public:
 	int Init( void );
 	int VidInit( void );
 	int Draw(float fTime);
+	void InitHUDData();
+	void ResetRound();
+	void NoteTextMessage(const char *key);
+	void NoteScenario(const char *sprite, bool active);
+	int BombState() const;
+	bool DrawBomb(float time, float center, float top, float scale) const;
+	void DumpPresentation() const;
 	// set up the timer.
 	// [short]
 	CHudMsgFunc(RoundTime);
@@ -857,6 +876,9 @@ public:
 	int SecondsRemaining(float time) const { return (int)(m_iTime + m_fStartTime - time); }
 	bool ShouldDrawTimer() const;
 private:
+	int m_bombState = 0;
+	mutable float m_bombDrawTime = -1, m_bombDrawRect[4] = {};
+	mutable int m_bombDrawState = 0, m_bombDrawTexture = 0, m_bombDrawAlpha = 0;
 	int m_HUD_timer;
 	int m_iTime;
 	float m_fStartTime;

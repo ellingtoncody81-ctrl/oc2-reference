@@ -41,6 +41,7 @@
 #include "camera.h"
 #include "eventscripts.h"
 #include "oc2_ragdoll.h"
+#include "player_model_policy.h"
 
 #define ANIM_WALK_SEQUENCE 3
 #define ANIM_JUMP_SEQUENCE 6
@@ -841,40 +842,10 @@ int CGameStudioModelRenderer::_StudioDrawPlayer(int flags, entity_state_t *pplay
 	if (m_nPlayerIndex < 0 || m_nPlayerIndex >= gEngfuncs.GetMaxClients())
 		return 0;
 
-	/*m_pRenderModel = IEngineStudio.SetupPlayerModel(m_nPlayerIndex);
-
-	if (m_pRenderModel == NULL)
-		return 0;*/
-
 	extra_player_info_t *pExtra = g_PlayerExtraInfo + pplayer->number;
-
-	if( gHUD.cl_minmodels && gHUD.cl_minmodels->value )
-	{
-		int team = pExtra->teamnumber;
-		if( team == TEAM_TERRORIST )
-		{
-			// set leet if model isn't valid
-			int modelIdx = gHUD.cl_min_t && BIsValidTModelIndex(gHUD.cl_min_t->value) ? gHUD.cl_min_t->value : 1;
-
-			m_pRenderModel = gEngfuncs.CL_LoadModel( sPlayerModelFiles[ modelIdx ], NULL );
-		}
-		else if( team == TEAM_CT )
-		{
-			if( pExtra->vip )
-				m_pRenderModel = gEngfuncs.CL_LoadModel( sPlayerModelFiles[3], NULL );
-			else
-			{
-				// set gign, if model isn't valud
-				int modelIdx = gHUD.cl_min_ct && BIsValidCTModelIndex(gHUD.cl_min_ct->value) ? gHUD.cl_min_ct->value : 2;
-
-				m_pRenderModel = gEngfuncs.CL_LoadModel( sPlayerModelFiles[ modelIdx ], NULL );
-			}
-		}
-	}
-	else
-	{
-		m_pRenderModel = IEngineStudio.SetupPlayerModel( m_nPlayerIndex );
-	}
+	const char *teamModel = oc2_player_model::TeamModelPath(pExtra->teamnumber);
+	m_pRenderModel = teamModel ? gEngfuncs.CL_LoadModel(teamModel, NULL)
+		: IEngineStudio.SetupPlayerModel(m_nPlayerIndex);
 
 	if( !m_pRenderModel )
 	{

@@ -543,6 +543,8 @@ int CHudRadar::MsgFunc_BombDrop(const char *pszName, int iSize, void *pbuf)
 	{
 		gHUD.m_SpectatorGui.m_bBombPlanted = 0;
 		gHUD.m_Timer.m_iFlags = 0;
+		// Standard BombDrop also reaches late joiners without a Bomb_Planted text.
+		gHUD.m_Timer.NoteScenario("bombticking", true);
 	}
 	return 1;
 }

@@ -101,6 +101,7 @@ int CHudScenario::MsgFunc_Scenario(const char *pszName, int iSize, void *buf)
 	m_iFlags = HUD_DRAW;
 
 	const char *spriteName = reader.ReadString();
+	gHUD.m_Timer.NoteScenario(spriteName, true);
 	m_sprite.SetSpriteByName( spriteName );
 
 	m_iFlashAlpha = reader.ReadByte();
