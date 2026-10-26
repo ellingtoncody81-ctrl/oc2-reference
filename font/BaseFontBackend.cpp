@@ -227,8 +227,86 @@ void CBaseFont::UploadGlyphsForRanges(charRange_t *range, int rangeSize)
 
 CBaseFont::~CBaseFont()
 {
+	for( int i = 0; i < m_dynamicTextures.Count(); i++ )
+		EngFuncs::PIC_Free( m_dynamicTextures[i].name );
 	if( m_szTextureName[0] != 0 )
 		EngFuncs::PIC_Free( m_szTextureName );
+}
+
+bool CBaseFont::UploadGlyphOnDemand( int ch )
+{
+#if defined(_WIN32) && defined(MAINUI_USE_CUSTOM_FONT_RENDER) && !defined(MAINUI_USE_STB) && !defined(MAINUI_USE_FREETYPE)
+	if( strcmp( GetBackendName(), "win32" ) != 0 )
+		return false;
+
+	glyph_t glyph( ch );
+	// Remember control characters without querying GDI every frame.
+	if( ch < 0x20 )
+	{
+		m_glyphs.Insert( glyph );
+		return true;
+	}
+	if( !HasChar( ch ) )
+	{
+		// Unsupported codepoints get a visible replacement. Alias its glyph,
+		// leaving texture ownership with the original atlas or dynamic entry.
+		if( ch == '?' )
+			return false;
+		glyph_t replacement( '?' );
+		int idx = m_glyphs.Find( replacement );
+		if( !m_glyphs.IsValidIndex( idx ) && UploadGlyphOnDemand( '?' ) )
+			idx = m_glyphs.Find( replacement );
+		if( !m_glyphs.IsValidIndex( idx ) )
+			return false;
+		glyph = m_glyphs[idx];
+		glyph.ch = ch;
+		m_glyphs.Insert( glyph );
+		return true;
+	}
+
+	const int width = GetMaxCharWidth() + GetEfxOffset() * 2;
+	const int height = GetHeight();
+	if( width <= 0 || height <= 0 )
+		return false;
+
+	const Size bufferSize( width, height );
+	byte *rgba = new byte[width * height * 4]();
+	Size drawSize;
+	GetCharRGBA( ch, Point( 0, 0 ), bufferSize, rgba, drawSize );
+	const int drawWidth = Q_min( Q_max( drawSize.w, 0 ), width );
+	bool visible = false;
+	for( int i = 3; i < width * height * 4; i += 4 )
+		visible = visible || rgba[i] != 0;
+
+	if( visible && drawWidth > 0 )
+	{
+		CBMP bmp( drawWidth, height + 2 );
+		const bmp_t *hdr = bmp.GetBitmapHdr();
+		byte *pixels = bmp.GetTextureData();
+		// Match the preloaded atlas's bottom-up BMP rows and one-pixel rect
+		// origin, including its final blank row, to keep the same baseline.
+		for( int y = 0; y < height - 1; y++ )
+			memcpy( pixels + ( hdr->height - 1 - y ) * hdr->width * 4,
+				rgba + y * width * 4, drawWidth * 4 );
+
+		dynamicTexture_t texture;
+		V_snprintf( texture.name, sizeof( texture.name ), "#oc2_glyph_%p_%06X.bmp", (void *)this, (unsigned)ch );
+		glyph.texture = bmp.Upload( texture.name );
+		if( glyph.texture )
+		{
+			glyph.rect.left = 0;
+			glyph.rect.right = drawWidth;
+			glyph.rect.top = 1;
+			glyph.rect.bottom = height + 1;
+			m_dynamicTextures.AddToTail( texture );
+		}
+	}
+	delete[] rgba;
+	m_glyphs.Insert( glyph );
+	return true;
+#else
+	return false;
+#endif
 }
 
 void CBaseFont::GetCharABCWidths( int ch, int &a, int &b, int &c )
@@ -512,8 +590,10 @@ int CBaseFont::DrawCharacter(int ch, Point pt, int charH, const unsigned int col
 
 	CBaseFont::glyph_t find( ch );
 	int idx = m_glyphs.Find( find );
+	if( !m_glyphs.IsValidIndex( idx ) && UploadGlyphOnDemand( ch ) )
+		idx = m_glyphs.Find( find );
 
-	if( m_glyphs.IsValidIndex( idx ) )
+	if( m_glyphs.IsValidIndex( idx ) && m_glyphs[idx].texture )
 	{
 		CBaseFont::glyph_t &glyph = m_glyphs[idx];
 
@@ -658,6 +738,22 @@ bool CBaseFont::ReadFromCache( const char *filename, charRange_t *range, size_t 
 		return false;
 	}
 
+	// Validate the complete sequence before uploading or inserting anything.
+	// A same-length character-set change must not leave stale tree entries.
+	ch = reinterpret_cast<char_data_t *>(data + sizeof( cached_font_t ));
+	for( i = 0; i < rangeSize; i++ )
+	{
+		for( j = 0; j < range[i].Length(); j++, ch++ )
+		{
+			if( ch->ch != range[i].Character( j ) )
+			{
+				Con_Printf( "Font cache file has different character set. Expected %d, got %d", range[i].Character( j ), ch->ch );
+				EngFuncs::COM_FreeFile( data );
+				return false;
+			}
+		}
+	}
+
 	uint bmpFileSize = bmp->fileSize;
 	CBMP::SwapBmpHdrToLE( bmp );
 	HIMAGE hImage = EngFuncs::PIC_Load( filename, (const byte*)bmp, bmpFileSize, 0 );
@@ -678,15 +774,6 @@ bool CBaseFont::ReadFromCache( const char *filename, charRange_t *range, size_t 
 
 		for( j = 0; j < charsCount; j++ )
 		{
-			if( ch->ch != range[i].Character( j ))
-			{
-				Con_Printf( "Font cache file has different character set. Expected %d, got %d", range[i].Character( j ), ch->ch );
-				EngFuncs::COM_FreeFile( data );
-				EngFuncs::PIC_Free( filename );
-				EngFuncs::DeleteFile( filename );
-				return false;
-			}
-
 			glyph_t glyph( ch->ch );
 			abc_t abc;
 

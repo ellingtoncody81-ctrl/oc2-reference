@@ -19,6 +19,7 @@ GNU General Public License for more details.
 // #include "port.h" // defines XASH_MOBILE_PLATFORM
 #include "BaseMenu.h"
 #include "utlrbtree.h"
+#include "utlvector.h"
 
 // #ifdef XASH_MOBILE_PLATFORM
 #if defined(__ANDROID__) || TARGET_OS_IPHONE || defined(XASH_SAILFISH) || defined(MAINUI_FONT_SCALE)
@@ -113,6 +114,7 @@ protected:
 	int m_iEllipsisWide;
 
 private:
+	bool UploadGlyphOnDemand( int ch );
 	bool ReadFromCache( const char *filename, charRange_t *range, size_t rangeSize );
 	void SaveToCache( const char *filename, charRange_t *range, size_t rangeSize, CBMP *bmp );
 
@@ -145,6 +147,8 @@ private:
 
 	CUtlRBTree<glyph_t, int> m_glyphs;
 	CUtlRBTree<abc_t, int>   m_ABCCache;
+	struct dynamicTexture_t { char name[96]; };
+	CUtlVector<dynamicTexture_t> m_dynamicTextures;
 
 	char m_szTextureName[256];
 	friend class CFontManager;

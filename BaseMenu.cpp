@@ -626,6 +626,12 @@ void UI_UpdateMenu( float flTime )
 
 	static bool loadStuff = true;
 
+	// Loading is a dedicated 2D path. The lobby and client models may be
+	// replaced synchronously by the engine while this page is being redrawn.
+	uiStatic.realTime = flTime * 1000;
+	if( UI_DrawConnectionProgress() )
+		return;
+
 	// can't do this in Init, since these are dependent on cvar values
 	// set from user configs
 	if( loadStuff )
