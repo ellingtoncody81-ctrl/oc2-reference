@@ -454,7 +454,7 @@ static void V_PositionADS(ref_params_s *params,cl_entity_s *view,const view_ads_
 		{
 			sightShift[axis]=view->origin[axis]-anchoredOrigin[axis];
 			for(int local=0;local<3;++local)
-				sightShift[axis]+=(after[axis][local]-before[axis][local])*profile->center[local];
+				sightShift[axis]+=(after[axis][local]-before[axis][local])*profile->center[local]*(local==1?hand:1.0f);
 		}
 		const float side=DotProduct(sightShift,right),rise=DotProduct(sightShift,up);
 		for(int axis=0;axis<3;++axis)
@@ -1311,9 +1311,6 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 	view->origin[2] += ( waterOffset );
 	VectorAdd( view->origin, pparams->viewheight, view->origin );
 
-	// Let the viewmodel shake at about 10% of the amplitude
-	gEngfuncs.V_ApplyShake( view->origin, view->angles, 0.9 );
-
 	// ---- view bob
 	//
 	// Two paths share this spot. The classic Quake bob above produced one scalar
@@ -1343,11 +1340,11 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		params.amt_vert    = gHUD.cl_bobamt_vert ? gHUD.cl_bobamt_vert->value : 0.35f;
 		params.amt_lat     = gHUD.cl_bobamt_lat  ? gHUD.cl_bobamt_lat->value  : 0.86f;
 		params.lower_amt   = gHUD.cl_bob_lower_amt ? gHUD.cl_bob_lower_amt->value : 8.0f;
-		params.air_scale   = gHUD.viewmodel_bob_air_scale ? gHUD.viewmodel_bob_air_scale->value : 0.8f;
+		params.air_scale   = gHUD.viewmodel_bob_air_scale ? gHUD.viewmodel_bob_air_scale->value : 0.2f;
 		params.air_speed   = gHUD.viewmodel_bob_air_speed ? gHUD.viewmodel_bob_air_speed->value : 25.0f;
 		params.speed_smooth = gHUD.viewmodel_bob_speed_smooth ? gHUD.viewmodel_bob_speed_smooth->value : 15.0f;
 		params.ground_delay = gHUD.viewmodel_bob_ground_delay ? gHUD.viewmodel_bob_ground_delay->value : 0.05f;
-		params.speed_follow = gHUD.viewmodel_bob_speed_follow ? gHUD.viewmodel_bob_speed_follow->value : 200.0f;
+		params.speed_follow = gHUD.viewmodel_bob_speed_follow ? gHUD.viewmodel_bob_speed_follow->value : 640.0f;
 		params.shift_left  = gHUD.viewmodel_shift_left_amt  ? gHUD.viewmodel_shift_left_amt->value  : 1.5f;
 		params.shift_right = gHUD.viewmodel_shift_right_amt ? gHUD.viewmodel_shift_right_amt->value : 0.75f;
 
@@ -1500,7 +1497,9 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		bobUp      = offsets.vertical * 0.1f * flBobScale;
 		bobSide    = offsets.lateral  * 0.2f * flBobScale;
 		bobRoll    = offsets.vertical * 0.5f * flBobScale;
-		bobPitch   = -offsets.vertical * 0.4f * flBobScale;
+		// StudioSetUpTransform negates entity pitch. Encode Source's physical
+		// -vertical*0.4 here so the final gun rotation keeps the same phase.
+		bobPitch   = offsets.vertical * 0.4f * flBobScale;
 		bobYaw     = -offsets.lateral  * 0.3f * flBobScale;
 
 		// Safety net. A view model pulled far enough forward crosses the near
@@ -1646,6 +1645,8 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		effectInput.view_angles[i] = view->angles[i];
 		effectInput.mouse_angles[i] = pparams->cl_viewangles[i];
 	}
+	// Lag math uses physical camera angles, not GoldSrc's encoded entity pitch.
+	effectInput.view_angles[PITCH] = -effectInput.view_angles[PITCH];
 	view_effects::EffectsOutput effects = view_effects::StepEffects( s_ViewEffects, effectParams, effectInput );
 	const auto vmSettings=V_ViewModelSettings();
 	view_effects::Vec3 fixed = view_effects::FixedOffset( effectInput.mouse_angles,
@@ -1776,6 +1777,9 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 		}
 	}
 
+	// Source applies shake after bob/lag; keep it out of the 100ms angle history.
+	// This model starts at simorg, so 0.9 versus the eye's 1.0 is 0.1 relative shake.
+	gEngfuncs.V_ApplyShake( view->origin, view->angles, 0.9 );
 	V_PositionADS(pparams,view,adsMotion);
 	Vector vmForward,vmRight,vmUp;
 	AngleVectors(pparams->viewangles,vmForward,vmRight,vmUp);

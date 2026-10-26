@@ -373,7 +373,7 @@ void CHud :: Init( void )
 	// These keep NextClient's 1 : 2.46 ratio at 2.7x, which lands at ~0.22
 	// units of vertical travel and ~0.27 lateral. Everything stays a cvar;
 	// see md/15-hud-module.md.
-	cl_bobstyle    = CVAR_CREATE( "cl_bobstyle",      "0",    FCVAR_ARCHIVE );
+	cl_bobstyle    = CVAR_CREATE( "cl_bobstyle",      "2",    FCVAR_ARCHIVE );
 	cl_bob_camera  = CVAR_CREATE( "cl_bob_camera",    "1",    FCVAR_ARCHIVE );
 	cl_bobamt_vert = CVAR_CREATE( "cl_bobamt_vert",   "0.35", FCVAR_ARCHIVE );
 	cl_bobamt_lat  = CVAR_CREATE( "cl_bobamt_lat",    "0.86", FCVAR_ARCHIVE );
@@ -381,7 +381,7 @@ void CHud :: Init( void )
 
 	// Airborne handling. CS:GO drops the amplitude to 1/5 instantly, which
 	// flickers on ramp crests; air_speed rate limits it, 0 = CS:GO.
-	viewmodel_bob_air_scale = CVAR_CREATE( "viewmodel_bob_air_scale", "0.8",  FCVAR_ARCHIVE );
+	viewmodel_bob_air_scale = CVAR_CREATE( "viewmodel_bob_air_scale", "0.2",  FCVAR_ARCHIVE );
 	viewmodel_bob_air_speed = CVAR_CREATE( "viewmodel_bob_air_speed", "25",   FCVAR_ARCHIVE );
 
 	// Low-pass on the input speed, 1/s. The engine hands us the raw server
@@ -397,7 +397,7 @@ void CHud :: Init( void )
 
 	// Speed chase rate, units per second. CS:GO uses 640; that is the ceiling on
 	// how fast bob_offset -- and so the phase rate -- may move in one frame.
-	viewmodel_bob_speed_follow = CVAR_CREATE( "viewmodel_bob_speed_follow", "200", FCVAR_ARCHIVE );
+	viewmodel_bob_speed_follow = CVAR_CREATE( "viewmodel_bob_speed_follow", "640", FCVAR_ARCHIVE );
 
 	// Master trim on everything the CS:GO bob pushes into the view model.
 	// 1.0 leaves AddViewModelBobHelper's own 0.4 / 0.1 / 0.2 untouched.

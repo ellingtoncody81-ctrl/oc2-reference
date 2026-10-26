@@ -124,11 +124,10 @@ namespace view_bob
 
 		// Find the speed of the player.
 		float speed = std::sqrt( input.vx * input.vx + input.vy * input.vy );
+		const float raw_speed = speed;
 
-		// Low-pass it first. See BobParams::speed_smooth -- on this engine the
-		// raw value steps at the server tick rate, and unlike the classic bob
-		// this one feeds the speed into the phase rate, so every step shows up
-		// as a hitch in the stride.
+		// The amplitude adapter smooths server-tick velocity steps. Keep its
+		// history separate from Source's rate-limited stride speed below.
 		if( params.speed_smooth > 0.0f )
 		{
 			float f = 1.0f - std::exp( -params.speed_smooth * frametime );
@@ -143,11 +142,11 @@ namespace view_bob
 		{
 			state.speed_in = speed;
 		}
-		// GoldSrc's velocity arrives in server-sized steps. Keep the Source
-		// follow limit on stride phase, but let the already smoothed velocity
-		// drive the visible amplitude. With a low follow cvar the old path took
-		// over a second to bring a running weapon up to full motion.
+		// Smooth tick-sized amplitude steps separately. Cascading this low-pass
+		// into Source's phase follow limit makes the first strides drag behind
+		// an already moving player, especially during short strafes.
 		const float amplitude_speed = Clamp( speed, 0.0f, 320.0f );
+		speed = raw_speed;
 
 		// don't allow too big speed changes
 		float max_speed_delta = std::fmax( 0.0f, ( time - state.last_bob_time ) * params.speed_follow );
@@ -167,7 +166,8 @@ namespace view_bob
 		}
 
 		float bob_offset = BobOffset( speed );
-		state.bob_time += ( time - state.last_bob_time ) * bob_offset;
+		const float phase_step = ( time - state.last_bob_time ) * bob_offset;
+		state.bob_time += phase_step;
 		state.last_bob_time = time;
 
 		float bob_cycle = 0.5f;
@@ -236,6 +236,15 @@ namespace view_bob
 		{
 			bob_cycle = ( ( ( 1000.0f - 150.0f ) / 3.5f ) * 0.001f ) * params.bob_cycle;
 		}
+
+		// A weapon changes cycle length, not the foot's position in a stride.
+		// Source recomputes bob_time / cycle directly; that can jump at a switch
+		// after a long run. Preserve phase while adopting the new cadence.
+		if( state.last_cycle > 0.0f && bob_cycle != state.last_cycle )
+		{
+			state.bob_time = ( state.bob_time - phase_step ) * ( bob_cycle / state.last_cycle ) + phase_step;
+		}
+		state.last_cycle = bob_cycle;
 
 		// ---- vertical ----
 		float cycle = state.bob_time - static_cast<int>( state.bob_time / bob_cycle ) * bob_cycle;

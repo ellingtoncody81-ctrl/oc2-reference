@@ -292,6 +292,12 @@ void OC2_LegsCreateEntity()
     s_entity.index = 0;
     s_entity.player = 0;
     s_view.origin.CopyToArray(s_entity.origin);
+    // Keep the arm/neck openings behind the eye while retaining the feet.
+    // Crouching brings the lower body closer, so use a smaller rear offset.
+    const float bodyBack = Mix(8.0f, 4.0f, s_stanceWeight);
+    const float bodyYaw = s_view.yaw * 0.017453292519943295f;
+    s_entity.origin[0] -= cosf(bodyYaw) * bodyBack;
+    s_entity.origin[1] -= sinf(bodyYaw) * bodyBack;
     s_entity.angles[0] = 0.0f;
     s_entity.angles[1] = s_view.yaw;
     s_entity.angles[2] = 0.0f;

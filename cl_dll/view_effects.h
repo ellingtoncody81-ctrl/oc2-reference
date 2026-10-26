@@ -49,8 +49,8 @@ namespace view_effects
 	struct EffectsInput
 	{
 		float time, frame_time;
-		Vec3 view_angles;  // final viewmodel angles, for sway
-		Vec3 mouse_angles; // raw client view angles, excludes bob/recoil
+		Vec3 view_angles;  // Source physical angles: positive pitch looks down
+		Vec3 mouse_angles; // same convention, raw camera angles without bob/recoil
 		float vertical_speed;
 		bool grounded, active, paused, left_hand;
 		int view_entity, weapon_id, model_index;
