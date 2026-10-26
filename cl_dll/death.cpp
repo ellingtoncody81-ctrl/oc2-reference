@@ -470,7 +470,7 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	strlcat( killedwith, weaponName, sizeof( killedwith ) );
 	// ClCorpse arrives after the server's death animation. Start physical
 	// simulation from the last live pose at the actual kill event instead.
-	OC2_RagdollSpawnDeath(victim, killer);
+	OC2_RagdollSpawnDeath(victim, killer, headshot != 0);
 
 	//if (gViewPort)
 	//	gViewPort->DeathMsg( killer, victim );
