@@ -46,12 +46,23 @@ const int kParent[JOINT_COUNT] = {
     PELVIS, RIGHT_HIP, RIGHT_KNEE
 };
 
-const int kDirectionChild[JOINT_COUNT] = {
-    CHEST, HEAD, -1,
-    LEFT_ELBOW, LEFT_HAND, -1,
-    RIGHT_ELBOW, RIGHT_HAND, -1,
-    LEFT_KNEE, LEFT_FOOT, -1,
-    RIGHT_KNEE, RIGHT_FOOT, -1
+// Joint particles carry the mass of their surrounding body part. The torso
+// is a braced rigid cluster; limbs retain ball sockets and limited hinges.
+const float kMass[JOINT_COUNT] = {
+    12.0f, 20.0f, 6.0f, 3.0f, 2.0f, 1.0f, 3.0f, 2.0f, 1.0f,
+    6.0f, 4.0f, 1.5f, 6.0f, 4.0f, 1.5f
+};
+const int kTorso[] = { PELVIS, CHEST, LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP };
+const int kChains[4][3] = {
+    {LEFT_SHOULDER, LEFT_ELBOW, LEFT_HAND},
+    {RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_HAND},
+    {LEFT_HIP, LEFT_KNEE, LEFT_FOOT},
+    {RIGHT_HIP, RIGHT_KNEE, RIGHT_FOOT}
+};
+
+struct Frame
+{
+    Vector side, forward, up;
 };
 
 struct JointState
@@ -72,6 +83,8 @@ struct Body
     bool early;
     bool legacySeen;
     bool hasLivePose;
+    bool hasLiveVelocity;
+    bool headshot;
     bool sleeping;
     int quietFrames;
     unsigned int steps;
@@ -83,6 +96,7 @@ struct Body
     double lastTime;
     double expires;
     Vector launch;
+    Vector impact;
     Vector deathOrigin;
     tempent_s *corpse;
     model_t *model;
@@ -90,18 +104,24 @@ struct Body
     int boneCount;
     JointState joints[JOINT_COUNT];
     float rest[JOINT_COUNT];
+    float torsoRest[6][6];
+    Frame baseFrame;
+    Vector hingeNormal[4];
+    Vector boneVelocity[MAXSTUDIOBONES];
     float baseMatrix[MAXSTUDIOBONES][3][4];
 };
 
 struct LivePose
 {
     bool valid;
+    bool velocityValid;
     model_t *model;
     double time;
     int boneCount;
     Vector origin;
     Vector angles;
     float matrix[MAXSTUDIOBONES][3][4];
+    Vector velocity[MAXSTUDIOBONES];
 };
 
 Body s_bodies[64] = {};
@@ -109,6 +129,7 @@ LivePose s_livePose[33] = {};
 int s_nextSerial = 0;
 int s_pendingEarlyVictim = 0;
 int s_pendingKiller = 0;
+bool s_pendingHeadshot = false;
 cvar_t *s_ragdoll = NULL;
 bool s_dumpRegistered = false;
 
@@ -253,6 +274,50 @@ Vector RotateArc(const Vector &vector, const Vector &from, const Vector &to)
         axis * (Dot(axis, vector) * (1.0f - cosine));
 }
 
+Vector Unit(const Vector &value, const Vector &fallback)
+{
+    const float length = Length(value);
+    return length > 0.0001f ? value * (1.0f / length) : fallback;
+}
+
+Vector Limited(const Vector &value, float maximum)
+{
+    const float length = Length(value);
+    if (!(length < 1000000.0f)) return Vector(0.0f, 0.0f, 0.0f);
+    return length > maximum ? value * (maximum / length) : value;
+}
+
+Frame TorsoFrame(const Body &body, bool base)
+{
+    const Vector pelvis = base ? body.joints[PELVIS].base : body.joints[PELVIS].position;
+    const Vector chest = base ? body.joints[CHEST].base : body.joints[CHEST].position;
+    const Vector left = base ? body.joints[LEFT_SHOULDER].base : body.joints[LEFT_SHOULDER].position;
+    const Vector right = base ? body.joints[RIGHT_SHOULDER].base : body.joints[RIGHT_SHOULDER].position;
+    Frame frame;
+    frame.up = Unit(chest - pelvis, Vector(0.0f, 0.0f, 1.0f));
+    frame.side = Unit(right - left - frame.up * Dot(right - left, frame.up),
+        Vector(0.0f, -1.0f, 0.0f));
+    frame.forward = Unit(Cross(frame.up, frame.side), Vector(1.0f, 0.0f, 0.0f));
+    frame.side = Cross(frame.forward, frame.up);
+    return frame;
+}
+
+Vector RotateFrame(const Vector &value, const Frame &from, const Frame &to)
+{
+    return to.side * Dot(value, from.side) + to.forward * Dot(value, from.forward) +
+        to.up * Dot(value, from.up);
+}
+
+Vector HingeNormal(const Body &body, int chain, const Frame &frame)
+{
+    const int first = kChains[chain][0], middle = kChains[chain][1];
+    const Vector oldAxis = RotateFrame(body.joints[middle].base - body.joints[first].base,
+        body.baseFrame, frame);
+    const Vector axis = body.joints[middle].position - body.joints[first].position;
+    return Unit(RotateArc(RotateFrame(body.hingeNormal[chain], body.baseFrame, frame),
+        oldAxis, axis), frame.side);
+}
+
 void SolveDistance(Body &body, int first, int second, float minimum, float maximum)
 {
     Vector delta = body.joints[second].position - body.joints[first].position;
@@ -260,11 +325,72 @@ void SolveDistance(Body &body, int first, int second, float minimum, float maxim
     if (distance < 0.0001f) return;
     const float target = Clamp(distance, minimum, maximum);
     const float correction = (distance - target) / distance;
-    const float firstMass = first == PELVIS ? 0.65f : 1.0f;
-    const float secondMass = second == PELVIS ? 0.65f : 1.0f;
+    const float firstMass = 1.0f / kMass[first];
+    const float secondMass = 1.0f / kMass[second];
     const float sum = firstMass + secondMass;
     body.joints[first].position = body.joints[first].position + delta * (correction * firstMass / sum);
     body.joints[second].position = body.joints[second].position - delta * (correction * secondMass / sum);
+}
+
+void SolveHinge(Body &body, int chain, const Frame &frame)
+{
+    const int first = kChains[chain][0], middle = kChains[chain][1], last = kChains[chain][2];
+    const Vector upper = Unit(body.joints[middle].position - body.joints[first].position,
+        frame.up * -1.0f);
+    const Vector lower = body.joints[last].position - body.joints[middle].position;
+    const Vector normal = HingeNormal(body, chain, frame);
+    const Vector bend = Cross(normal, upper);
+    // A hinge has one bend axis. In particular a knee cannot reverse through
+    // its straight position or fold sideways when its foot catches the floor.
+    const float limit = chain < 2 ? 2.60f : 2.65f;
+    const float signedAngle = atan2f(Dot(lower, bend), Dot(lower, upper));
+    // Near a fully folded joint, atan2 crosses -pi/pi. Resolve toward the
+    // nearby flexion stop instead of snapping all the way to straight.
+    const float angle = signedAngle < -1.5708f ? limit : Clamp(signedAngle, 0.015f, limit);
+    const Vector desired = (upper * cosf(angle) + bend * sinf(angle)) * body.rest[last];
+    const Vector correction = (desired - lower) * 0.85f;
+    const float middleWeight = 1.0f / kMass[middle], lastWeight = 1.0f / kMass[last];
+    const float sum = middleWeight + lastWeight;
+    body.joints[middle].position = body.joints[middle].position - correction * (middleWeight / sum);
+    body.joints[last].position = body.joints[last].position + correction * (lastWeight / sum);
+}
+
+void SolveCone(Body &body, int first, int second, const Vector &axis, float cosine)
+{
+    const Vector delta = body.joints[second].position - body.joints[first].position;
+    const Vector direction = Unit(delta, axis);
+    if (Dot(direction, axis) >= cosine) return;
+    const Vector tangent = Unit(direction - axis * Dot(direction, axis),
+        Unit(Cross(axis, Vector(1.0f, 0.0f, 0.0f)), Vector(0.0f, 1.0f, 0.0f)));
+    const Vector desired = (axis * cosine + tangent * sqrtf(1.0f - cosine * cosine)) * body.rest[second];
+    const Vector correction = (desired - delta) * 0.65f;
+    const float firstWeight = 1.0f / kMass[first], secondWeight = 1.0f / kMass[second];
+    const float sum = firstWeight + secondWeight;
+    body.joints[first].position = body.joints[first].position - correction * (firstWeight / sum);
+    body.joints[second].position = body.joints[second].position + correction * (secondWeight / sum);
+}
+
+void SolveSkeleton(Body &body)
+{
+    for (int first = 0; first < 6; ++first)
+        for (int second = first + 1; second < 6; ++second)
+            SolveDistance(body, kTorso[first], kTorso[second],
+                body.torsoRest[first][second], body.torsoRest[first][second]);
+    const Frame frame = TorsoFrame(body, false);
+    for (int i = 1; i < JOINT_COUNT; ++i)
+        SolveDistance(body, kParent[i], i, body.rest[i], body.rest[i]);
+    for (int chain = 0; chain < 4; ++chain)
+    {
+        const Vector socketAxis = Unit(RotateFrame(body.joints[kChains[chain][1]].base -
+            body.joints[kChains[chain][0]].base, body.baseFrame, frame), frame.up * -1.0f);
+        SolveCone(body, kChains[chain][0], kChains[chain][1], socketAxis, -0.85f);
+        if (chain >= 2)
+            SolveCone(body, kChains[chain][0], kChains[chain][1], frame.up * -1.0f, -0.77f);
+        SolveHinge(body, chain, frame);
+    }
+    const Vector neck = Unit(RotateFrame(body.joints[HEAD].base - body.joints[CHEST].base,
+        body.baseFrame, frame), frame.up);
+    SolveCone(body, CHEST, HEAD, neck, 0.64f);
 }
 
 void TraceWorld(const Vector &start, const Vector &end, pmtrace_t &trace)
@@ -303,12 +429,15 @@ Vector RecoverFree(const JointState &joint, const Vector &start)
     return joint.lastFree;
 }
 
-bool Collide(JointState &joint, const Vector &start, Vector &normal, bool &stuck)
+bool Collide(JointState &joint, const Vector &start, Vector &normal, bool &stuck, float &planeOffset)
 {
     normal = Vector(0.0f, 0.0f, 0.0f);
+    planeOffset = 0.0f;
     stuck = false;
     pmtrace_t trace;
-    TraceWorld(start, joint.position, trace);
+    const Vector travel = joint.position - start;
+    const Vector sweepEnd = joint.position + Unit(travel, Vector(0.0f, 0.0f, 0.0f)) * (joint.radius + 0.1f);
+    TraceWorld(start, sweepEnd, trace);
     if (trace.startsolid || trace.allsolid)
     {
         joint.position = RecoverFree(joint, start);
@@ -318,12 +447,14 @@ bool Collide(JointState &joint, const Vector &start, Vector &normal, bool &stuck
     if (trace.fraction < 1.0f)
     {
         normal = Vector(trace.plane.normal);
-        joint.position = Vector(trace.endpos) + normal * (joint.radius + 0.1f);
-        return true;
+        planeOffset = Dot(Vector(trace.endpos), normal) + joint.radius + 0.1f;
+        const float depth = planeOffset - Dot(joint.position, normal);
+        if (depth > 0.0f) joint.position = joint.position + normal * depth;
+        return depth >= -0.03f;
     }
     // Point traces otherwise let feet sink until their center crosses the
     // floor. This short world-only probe keeps their collision radius above it.
-    const Vector probeEnd = joint.position - Vector(0.0f, 0.0f, joint.radius + 0.2f);
+    const Vector probeEnd = joint.position - Vector(0.0f, 0.0f, joint.radius + 10.0f);
     TraceWorld(joint.position, probeEnd, trace);
     if (trace.startsolid || trace.allsolid)
     {
@@ -334,8 +465,14 @@ bool Collide(JointState &joint, const Vector &start, Vector &normal, bool &stuck
     if (trace.fraction < 1.0f && trace.plane.normal[2] > 0.5f)
     {
         normal = Vector(trace.plane.normal);
-        joint.position = Vector(trace.endpos) + Vector(trace.plane.normal) * (joint.radius + 0.1f);
-        return true;
+        // The vertical probe locates a plane, not a replacement center. On a
+        // slope, moving to endpos + normal*radius adds a sideways step forever.
+        planeOffset = Dot(Vector(trace.endpos), normal) + joint.radius + 0.1f;
+        const float depth = planeOffset - Dot(joint.position, normal);
+        if (depth > 0.0f) joint.position = joint.position + normal * depth;
+        // Nearby planes can participate in later constraint iterations without
+        // applying ground friction before the body actually reaches them.
+        return depth >= -0.03f;
     }
     if (WorldFree(joint.position)) joint.lastFree = joint.position;
     return false;
@@ -345,72 +482,115 @@ void Simulate(Body &body, float dt)
 {
     Vector start[JOINT_COUNT];
     Vector predictedTravel[JOINT_COUNT];
-    bool contacted[JOINT_COUNT] = {};
     bool stuck[JOINT_COUNT] = {};
     Vector contactNormal[JOINT_COUNT][2];
+    float contactOffset[JOINT_COUNT][2] = {};
+    bool contactActive[JOINT_COUNT][2] = {};
     int contactCount[JOINT_COUNT] = {};
     for (int i = 0; i < JOINT_COUNT; ++i)
     {
         JointState &joint = body.joints[i];
         start[i] = joint.position;
-        Vector velocity = (joint.position - joint.previous) * 0.982f;
+        // Keep inertia in flight. Ground friction and joint projection supply
+        // the damping at impact, instead of removing almost all momentum each second.
+        Vector velocity = Limited(joint.position - joint.previous, 600.0f * dt) * 0.998f;
         joint.position = joint.position + velocity + Vector(0.0f, 0.0f, -800.0f * dt * dt);
         predictedTravel[i] = joint.position - start[i];
+        Vector normal;
+        bool trapped = false;
+        float planeOffset;
+        const bool collision = Collide(joint, start[i], normal, trapped, planeOffset);
+        if (!trapped && Length(normal) > 0.5f)
+        {
+            contactNormal[i][0] = normal;
+            contactOffset[i][0] = planeOffset;
+            contactActive[i][0] = collision;
+            contactCount[i] = 1;
+        }
+        if (collision)
+        {
+            stuck[i] = trapped;
+            ++body.contacts;
+        }
     }
 
-    for (int iteration = 0; iteration < 5; ++iteration)
+    for (int iteration = 0; iteration < 24; ++iteration)
     {
-        for (int i = 1; i < JOINT_COUNT; ++i)
-            SolveDistance(body, kParent[i], i, body.rest[i], body.rest[i]);
-        SolveDistance(body, LEFT_SHOULDER, RIGHT_SHOULDER,
-            body.rest[LEFT_SHOULDER] * 1.3f, body.rest[LEFT_SHOULDER] * 2.6f);
-        SolveDistance(body, LEFT_HIP, RIGHT_HIP,
-            body.rest[LEFT_HIP] * 1.2f, body.rest[LEFT_HIP] * 2.5f);
-        const int chains[][3] = {
-            {LEFT_SHOULDER, LEFT_ELBOW, LEFT_HAND},
-            {RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_HAND},
-            {LEFT_HIP, LEFT_KNEE, LEFT_FOOT},
-            {RIGHT_HIP, RIGHT_KNEE, RIGHT_FOOT}
-        };
-        for (int chain = 0; chain < 4; ++chain)
-        {
-            const int first = chains[chain][0], middle = chains[chain][1], last = chains[chain][2];
-            const float total = body.rest[middle] + body.rest[last];
-            SolveDistance(body, first, last, total * 0.42f, total * 0.98f);
-        }
-        if (iteration == 2 || iteration == 4)
+        SolveSkeleton(body);
+        // Reuse planes found this step between expensive world sweeps. This
+        // lets joints and contacts converge together without stretching the
+        // last chain whenever the final collision projection touches a floor.
+        for (int i = 0; i < JOINT_COUNT; ++i)
+            for (int contact = 0; contact < contactCount[i]; ++contact)
+            {
+                const Vector &normal = contactNormal[i][contact];
+                const float depth = contactOffset[i][contact] - Dot(body.joints[i].position, normal);
+                if (depth > 0.0f)
+                {
+                    body.joints[i].position = body.joints[i].position + normal * depth;
+                    contactActive[i][contact] = true;
+                }
+            }
+        if (iteration == 11 || iteration == 23)
             for (int i = 0; i < JOINT_COUNT; ++i)
             {
                 Vector normal;
                 bool trapped = false;
-                if (Collide(body.joints[i], start[i], normal, trapped))
+                float planeOffset;
+                if (Collide(body.joints[i], start[i], normal, trapped, planeOffset))
                 {
-                    contacted[i] = true;
-                    stuck[i] = stuck[i] || trapped;
-                    if (!trapped && contactCount[i] < 2)
-                        contactNormal[i][contactCount[i]++] = normal;
+                    stuck[i] = trapped;
+                    if (!trapped && contactCount[i] < 2 &&
+                        (!contactCount[i] || Dot(contactNormal[i][0], normal) < 0.95f))
+                    {
+                        contactNormal[i][contactCount[i]] = normal;
+                        contactOffset[i][contactCount[i]] = planeOffset;
+                        contactActive[i][contactCount[i]++] = true;
+                    }
+                    else if (!trapped && contactCount[i] && Dot(contactNormal[i][0], normal) >= 0.95f)
+                        contactActive[i][0] = true;
                     ++body.contacts;
                 }
             }
     }
 
+    Vector centerTravel(0.0f, 0.0f, 0.0f);
+    float totalMass = 0.0f;
+    for (int i = 0; i < JOINT_COUNT; ++i)
+    {
+        centerTravel = centerTravel + (body.joints[i].position - start[i]) * kMass[i];
+        totalMass += kMass[i];
+    }
+    centerTravel = centerTravel * (1.0f / totalMass);
     float motion = 0.0f;
     for (int i = 0; i < JOINT_COUNT; ++i)
     {
         JointState &joint = body.joints[i];
-        // Constraint corrections are positional, not an impulse. Remove only
-        // inward velocity at a contact; a body touching a vertical wall must
-        // still fall under gravity along the wall's tangent.
+        // PBD velocity comes from the solved pose: this is how a local hit,
+        // foot contact and limb inertia transmit torque through the skeleton.
+        // Only contact depenetration is excluded from the outward velocity.
         Vector carry = stuck[i] ? Vector(0.0f, 0.0f, 0.0f)
-            : predictedTravel[i] * 0.90f;
+            : joint.position - start[i];
+        // Joint friction damps relative limb motion while preserving the
+        // mass-weighted linear velocity (including gravity and running speed).
+        if (!stuck[i]) carry = centerTravel + (carry - centerTravel) * 0.985f;
         for (int contact = 0; contact < contactCount[i]; ++contact)
         {
+            if (!contactActive[i][contact]) continue;
             const Vector &normal = contactNormal[i][contact];
-            const float inward = Dot(carry, normal);
-            if (inward < 0.0f) carry = carry - normal * inward;
+            const float normalSpeed = Dot(carry, normal);
+            const float predictedNormal = Dot(predictedTravel[i], normal);
+            const float outward = Clamp(normalSpeed, 0.0f,
+                predictedNormal > 0.0f ? predictedNormal : 0.0f);
+            Vector tangent = carry - normal * normalSpeed;
+            const float tangentSpeed = Length(tangent);
+            const float normalImpulse = (predictedNormal < 0.0f ? -predictedNormal : 0.0f) +
+                800.0f * dt * dt * Clamp(normal.z, 0.0f, 1.0f);
+            if (tangentSpeed > 0.0001f)
+                tangent = tangent * Clamp(1.0f - 0.65f * normalImpulse / tangentSpeed, 0.0f, 1.0f);
+            carry = tangent + normal * outward;
         }
-        if (contacted[i] && !stuck[i]) carry = carry * 0.70f;
-        joint.previous = joint.position - carry;
+        joint.previous = joint.position - Limited(carry, 600.0f * dt);
         const float displacement = Length(joint.position - start[i]);
         if (displacement > motion) motion = displacement;
         if (WorldFree(joint.position)) joint.lastFree = joint.position;
@@ -422,10 +602,14 @@ void Simulate(Body &body, float dt)
             body.joints[kParent[i]].position) - body.rest[i]);
         if (error > worstError) worstError = error;
     }
-    body.quietFrames = motion < 0.09f && worstError < 5.0f
+    bool supported = false;
+    for (int i = 0; i < JOINT_COUNT; ++i)
+        for (int contact = 0; contact < contactCount[i]; ++contact)
+            if (contactActive[i][contact] && contactNormal[i][contact].z > 0.5f) supported = true;
+    body.quietFrames = supported && motion < 0.06f && worstError < 0.8f
         ? body.quietFrames + 1 : 0;
     if (body.quietFrames > 60 ||
-        (body.lastTime - body.birth > 12.0 && motion < 0.2f && worstError < 8.0f))
+        (supported && body.lastTime - body.birth > 12.0 && motion < 0.12f && worstError < 1.2f))
     {
         body.sleeping = true;
         for (int i = 0; i < JOINT_COUNT; ++i)
@@ -434,16 +618,11 @@ void Simulate(Body &body, float dt)
     ++body.steps;
 }
 
-bool Initialise(Body &body, CStudioModelRenderer &renderer)
+bool InitialisePose(Body &body, studiohdr_t *header)
 {
-    studiohdr_t *header = renderer.m_pStudioHeader;
-    if (!header || header->numbones <= 0 || header->numbones > MAXSTUDIOBONES ||
-        !IEngineStudio.IsHardware()) return false;
+    if (!header || header->numbones <= 0 || header->numbones > MAXSTUDIOBONES) return false;
     body.header = header;
     body.boneCount = header->numbones;
-    if (!body.hasLivePose)
-        memcpy(body.baseMatrix, *renderer.m_pbonetransform,
-            sizeof(body.baseMatrix[0]) * body.boneCount);
     for (int i = 0; i < JOINT_COUNT; ++i)
     {
         int bone = FindBone(header, kBoneNames[i]);
@@ -456,20 +635,84 @@ bool Initialise(Body &body, CStudioModelRenderer &renderer)
         joint.position = joint.base;
         joint.lastFree = joint.position;
         joint.radius = i == PELVIS || i == CHEST ? 7.0f : i == HEAD ? 6.0f : 3.5f;
-        const Vector impulse = body.launch + Vector(0.0f, 0.0f,
-            i == HEAD || i == CHEST ? 75.0f : 24.0f);
-        joint.previous = joint.position - impulse * (1.0f / 90.0f);
         body.rest[i] = kParent[i] >= 0
             ? Length(joint.base - body.joints[kParent[i]].base) : 0.0f;
         if (kParent[i] >= 0 && body.rest[i] < 0.5f) body.rest[i] = 0.5f;
+    }
+    body.baseFrame = TorsoFrame(body, true);
+    for (int first = 0; first < 6; ++first)
+        for (int second = first + 1; second < 6; ++second)
+            body.torsoRest[first][second] = Length(body.joints[kTorso[first]].base -
+                body.joints[kTorso[second]].base);
+    for (int chain = 0; chain < 4; ++chain)
+    {
+        const Vector upper = Unit(body.joints[kChains[chain][1]].base -
+            body.joints[kChains[chain][0]].base, body.baseFrame.up * -1.0f);
+        const Vector lower = Unit(body.joints[kChains[chain][2]].base -
+            body.joints[kChains[chain][1]].base, upper);
+        const Vector fallback = Unit(Cross(upper, body.baseFrame.forward * -1.0f), body.baseFrame.side);
+        body.hingeNormal[chain] = Length(Cross(upper, lower)) > 0.025f
+            ? Unit(Cross(upper, lower), fallback) : fallback;
+    }
+    const Vector impact = Length(body.impact) > 0.01f ? body.impact : body.baseFrame.forward * 12.0f;
+    for (int i = 0; i < JOINT_COUNT; ++i)
+    {
+        JointState &joint = body.joints[i];
+        Vector velocity = body.hasLiveVelocity ? body.boneVelocity[joint.bone] : body.launch;
+        float influence = i == PELVIS ? 0.15f : 0.0f;
+        if (i == CHEST) influence = body.headshot ? 0.55f : 1.0f;
+        if (i == HEAD) influence = body.headshot ? 1.0f : 0.45f;
+        if (i == LEFT_SHOULDER || i == RIGHT_SHOULDER) influence = body.headshot ? 0.4f : 0.7f;
+        velocity = Limited(velocity + impact * influence, 400.0f);
+        joint.previous = joint.position - velocity * (1.0f / 90.0f);
     }
     body.initialHeadZ = body.joints[HEAD].position.z;
     body.ready = true;
     return true;
 }
 
+bool Initialise(Body &body, CStudioModelRenderer &renderer)
+{
+    if (!renderer.m_pStudioHeader || renderer.m_pStudioHeader->numbones <= 0 ||
+        renderer.m_pStudioHeader->numbones > MAXSTUDIOBONES || !IEngineStudio.IsHardware()) return false;
+    if (!body.hasLivePose)
+        memcpy(body.baseMatrix, *renderer.m_pbonetransform,
+            sizeof(body.baseMatrix[0]) * renderer.m_pStudioHeader->numbones);
+    return InitialisePose(body, renderer.m_pStudioHeader);
+}
+
+Vector PoseVector(const Body &body, int owner, const Vector &value, const Frame &torso)
+{
+    if (owner == PELVIS || owner == CHEST)
+        return RotateFrame(value, body.baseFrame, torso);
+    for (int chain = 0; chain < 4; ++chain)
+    {
+        const int first = kChains[chain][0], middle = kChains[chain][1], last = kChains[chain][2];
+        if (owner != first && owner != middle && owner != last) continue;
+        const int a = owner == first ? first : middle;
+        const int b = owner == first ? middle : last;
+        Frame from, to;
+        from.up = Unit(body.joints[b].base - body.joints[a].base, body.baseFrame.up);
+        from.side = body.hingeNormal[chain];
+        from.forward = Unit(Cross(from.up, from.side), body.baseFrame.forward);
+        from.side = Cross(from.forward, from.up);
+        to.up = Unit(body.joints[b].position - body.joints[a].position, torso.up);
+        // Transport the hinge frame through a straight elbow/knee too. A cross
+        // product of almost-collinear segments would introduce arbitrary rolls.
+        to.side = HingeNormal(body, chain, torso);
+        to.forward = Unit(Cross(to.up, to.side), torso.forward);
+        to.side = Cross(to.forward, to.up);
+        return RotateFrame(value, from, to);
+    }
+    const Vector oldDirection = RotateFrame(body.joints[HEAD].base - body.joints[CHEST].base,
+        body.baseFrame, torso);
+    const Vector newDirection = body.joints[HEAD].position - body.joints[CHEST].position;
+    return RotateArc(RotateFrame(value, body.baseFrame, torso), oldDirection, newDirection);
+}
+
 void ApplyPose(Body &body, CStudioModelRenderer &renderer)
 {
+    const Frame torso = TorsoFrame(body, false);
     const mstudiobone_t *bones = reinterpret_cast<const mstudiobone_t *>(
         reinterpret_cast<const byte *>(body.header) + body.header->boneindex);
     for (int bone = 0; bone < body.boneCount; ++bone)
@@ -482,8 +725,7 @@ void ApplyPose(Body &body, CStudioModelRenderer &renderer)
             const char *name = bones[bone].name;
             if (strstr(name, "Spine2") || strstr(name, "backpack")) owner = CHEST;
             else if (strstr(name, "Neck")) owner = HEAD;
-            else if (strstr(name, "L Clavicle")) owner = LEFT_SHOULDER;
-            else if (strstr(name, "R Clavicle")) owner = RIGHT_SHOULDER;
+            else if (strstr(name, "Clavicle")) owner = CHEST;
             else if (strstr(name, "L Knee")) owner = LEFT_KNEE;
             else if (strstr(name, "R Knee")) owner = RIGHT_KNEE;
             else if (strstr(name, "L Elbow")) owner = LEFT_ELBOW;
@@ -499,27 +741,38 @@ void ApplyPose(Body &body, CStudioModelRenderer &renderer)
                 ancestor = owner < 0 ? bones[ancestor].parent : -1;
             }
         }
-        if (owner < 0) continue;
+        if (owner < 0) owner = PELVIS;
         const JointState &joint = body.joints[owner];
-        int direction = kDirectionChild[owner];
-        if (direction < 0) direction = kParent[owner];
-        const Vector oldDirection = direction >= 0
-            ? body.joints[direction].base - joint.base : Vector(0.0f, 0.0f, 1.0f);
-        const Vector newDirection = direction >= 0
-            ? body.joints[direction].position - joint.position : oldDirection;
         const float (*original)[4] = body.baseMatrix[bone];
         float (*render)[4] = (*renderer.m_pbonetransform)[bone];
         float (*light)[4] = (*renderer.m_plighttransform)[bone];
         for (int column = 0; column < 3; ++column)
         {
             const Vector axis(original[0][column], original[1][column], original[2][column]);
-            const Vector rotated = RotateArc(axis, oldDirection, newDirection);
+            const Vector rotated = PoseVector(body, owner, axis, torso);
             render[0][column] = light[0][column] = rotated.x;
             render[1][column] = light[1][column] = rotated.y;
             render[2][column] = light[2][column] = rotated.z;
         }
         const Vector localOffset = Origin(original) - joint.base;
-        const Vector position = joint.position + RotateArc(localOffset, oldDirection, newDirection);
+        Vector position = joint.position + PoseVector(body, owner, localOffset, torso);
+        // As in Source's RagdollGetBoneMatrix, keep the authored parent-local
+        // attachment offset. Independent physics transforms must not pull the
+        // single-weight GoldSrc mesh apart across spine/clavicle helper bones.
+        const int parent = bones[bone].parent;
+        if (parent >= 0 && parent < bone)
+        {
+            const float (*oldParent)[4] = body.baseMatrix[parent];
+            const float (*newParent)[4] = (*renderer.m_pbonetransform)[parent];
+            const Vector offset = Origin(original) - Origin(oldParent);
+            Vector parentLocal;
+            for (int axis = 0; axis < 3; ++axis)
+                parentLocal[axis] = offset.x * oldParent[0][axis] +
+                    offset.y * oldParent[1][axis] + offset.z * oldParent[2][axis];
+            for (int axis = 0; axis < 3; ++axis)
+                position[axis] = newParent[axis][3] + newParent[axis][0] * parentLocal.x +
+                    newParent[axis][1] * parentLocal.y + newParent[axis][2] * parentLocal.z;
+        }
         render[0][3] = light[0][3] = position.x;
         render[1][3] = light[1][3] = position.y;
         render[2][3] = light[2][3] = position.z;
@@ -581,11 +834,28 @@ void OC2_RagdollCaptureLive(CStudioModelRenderer &renderer, int playerIndex)
 {
     if (playerIndex < 1 || playerIndex > 32 || !renderer.m_pCurrentEntity ||
         renderer.m_pCurrentEntity->curstate.renderfx == kRenderFxDeadPlayer ||
+        g_PlayerExtraInfo[playerIndex].dead ||
         !renderer.m_pRenderModel ||
         !renderer.m_pStudioHeader || renderer.m_pStudioHeader->numbones <= 0 ||
         renderer.m_pStudioHeader->numbones > MAXSTUDIOBONES)
         return;
+    if (IsDeathAnimation(renderer.m_pRenderModel, renderer.m_pCurrentEntity->curstate.sequence)) return;
     LivePose &pose = s_livePose[playerIndex];
+    const double elapsed = renderer.m_clTime - pose.time;
+    const bool sameSample = pose.valid && pose.model == renderer.m_pRenderModel &&
+        pose.boneCount == renderer.m_pStudioHeader->numbones;
+    const float originDelta = Length(Vector(renderer.m_pCurrentEntity->origin) - pose.origin);
+    if (sameSample && fabs(elapsed) < 0.0001 && originDelta < 0.001f) return;
+    if (sameSample && elapsed >= 0.0001 && elapsed <= 0.12 &&
+        originDelta < 64.0f)
+    {
+        for (int bone = 0; bone < pose.boneCount; ++bone)
+            pose.velocity[bone] = Limited((Origin((*renderer.m_pbonetransform)[bone]) -
+                Origin(pose.matrix[bone])) * static_cast<float>(1.0 / elapsed), 400.0f);
+        pose.velocityValid = true;
+    }
+    else
+        pose.velocityValid = false;
     pose.valid = true;
     pose.model = renderer.m_pRenderModel;
     pose.time = renderer.m_clTime;
@@ -613,7 +883,7 @@ bool OC2_RagdollHideDeadPlayer(int playerIndex, int drawnSequence)
     return false;
 }
 
-void OC2_RagdollSpawnDeath(int victimIndex, int killerIndex)
+void OC2_RagdollSpawnDeath(int victimIndex, int killerIndex, bool headshot)
 {
     OC2_RagdollInit();
     if (victimIndex < 1 || victimIndex > gEngfuncs.GetMaxClients() ||
@@ -641,9 +911,11 @@ void OC2_RagdollSpawnDeath(int victimIndex, int killerIndex)
     const int sequence = FindLiveIdleSequence(header);
     s_pendingEarlyVictim = victimIndex;
     s_pendingKiller = killerIndex;
+    s_pendingHeadshot = headshot;
     CreateCorpse(origin, angles, model->name, static_cast<float>(now), sequence,
         player ? player->curstate.body : 0, victimIndex);
     s_pendingEarlyVictim = s_pendingKiller = 0;
+    s_pendingHeadshot = false;
 }
 
 bool OC2_RagdollSuppressDelayedCorpse(int playerIndex, const Vector &origin)
@@ -697,6 +969,7 @@ bool OC2_RagdollRegister(tempent_s *corpse, int playerIndex)
     body.serial = ++s_nextSerial;
     body.playerIndex = playerIndex;
     body.early = s_pendingEarlyVictim == playerIndex;
+    body.headshot = body.early && s_pendingHeadshot;
     body.birth = body.lastTime = now;
     body.expires = corpse->die;
     body.corpse = corpse;
@@ -720,6 +993,13 @@ bool OC2_RagdollRegister(tempent_s *corpse, int playerIndex)
                 body.baseMatrix[bone][2][3] += delta.z;
             }
             body.hasLivePose = true;
+            // Stale bones can still be a useful starting pose, but stale
+            // animation velocity must not launch a player who has since stopped.
+            if (pose.velocityValid && now - pose.time <= 0.12)
+            {
+                memcpy(body.boneVelocity, pose.velocity, sizeof(pose.velocity));
+                body.hasLiveVelocity = true;
+            }
         }
     }
     if (playerIndex > 0 && playerIndex <= gEngfuncs.GetMaxClients())
@@ -738,13 +1018,15 @@ bool OC2_RagdollRegister(tempent_s *corpse, int playerIndex)
             away.z = 0.0f;
             const float distance = Length(away);
             if (distance > 1.0f)
-                body.launch = body.launch + away * (110.0f / distance);
+                body.impact = away * ((body.headshot ? 125.0f : 100.0f) / distance);
         }
     }
-    body.launch.x = Clamp(body.launch.x, -220.0f, 220.0f);
-    body.launch.y = Clamp(body.launch.y, -220.0f, 220.0f);
-    body.launch.z = Clamp(body.launch.z, -140.0f, 140.0f);
+    body.launch = Limited(body.launch, 400.0f);
     corpse->entity.curstate.iuser4 = body.serial;
+    // A captured live pose is sufficient to begin physics immediately, even
+    // if the corpse is outside the frustum when its DeathMsg arrives.
+    if (body.hasLivePose)
+        InitialisePose(body, const_cast<studiohdr_t *>(header));
     return true;
 }
 
@@ -764,9 +1046,9 @@ static void Advance(Body &body, double now)
     {
         const double gap = now - body.lastTime;
         if (gap < 0.25)
-            body.accumulator += Clamp(static_cast<float>(gap), 0.0f, 0.05f);
+            body.accumulator += Clamp(static_cast<float>(gap), 0.0f, 0.10f);
         const float stepTime = 1.0f / 90.0f;
-        for (int step = 0; step < 5 && body.accumulator >= stepTime &&
+        for (int step = 0; step < 9 && body.accumulator >= stepTime &&
             !body.sleeping; ++step)
         {
             Simulate(body, stepTime);
@@ -818,4 +1100,5 @@ void OC2_RagdollClear()
     for (int i = 0; i < 64; ++i) s_bodies[i] = Body();
     for (int i = 0; i < 33; ++i) s_livePose[i] = LivePose();
     s_pendingEarlyVictim = s_pendingKiller = 0;
+    s_pendingHeadshot = false;
 }
