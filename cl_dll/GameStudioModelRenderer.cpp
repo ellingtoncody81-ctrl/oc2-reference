@@ -994,7 +994,12 @@ int CGameStudioModelRenderer::_StudioDrawPlayer(int flags, entity_state_t *pplay
 
 		IEngineStudio.StudioSetRemapColors(m_nTopColor, m_nBottomColor);
 
-		StudioRenderModel(dir);
+		{
+			OC2_InventoryGloveBodyModelScope gloveBodyModel(*this,pplayer->number);
+			OC2_InventoryPlayerGloveScope gloves(*this,pplayer->number);
+			StudioRenderModel(dir);
+			gloves.Draw(lighting,dir);
+		}
 		m_pPlayerInfo = NULL;
 
 		if (pplayer->weaponmodel)

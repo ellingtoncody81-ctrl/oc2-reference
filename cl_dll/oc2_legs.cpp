@@ -9,6 +9,7 @@
 #include "const.h"
 #include "oc2_legs.h"
 #include "StudioModelRenderer.h"
+#include "studio_util.h"
 #include "viewmodel_transition.h"
 
 #include <math.h>
@@ -23,6 +24,8 @@ struct LegView
 {
     Vector origin;
     Vector velocity;
+    Vector eye;
+    float pitch;
     float yaw;
     double time;
     float dt;
@@ -166,14 +169,44 @@ void Sample(CStudioModelRenderer &renderer, const mstudioseqdesc_t *descs,
     }
 }
 
+void MultiplyRotation(const float a[4], const float b[4], float out[4])
+{
+    const float value[4] = {
+        a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1],
+        a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0],
+        a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3],
+        a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2] };
+    memcpy(out, value, sizeof(value));
+}
+
+void ModelPose(const mstudiobone_t *bones, int bone, float pos[][3], float q[][4],
+    float origin[3], float rotation[4])
+{
+    int chain[MAXSTUDIOBONES], count = 0;
+    for (int i = bone; i >= 0 && count < MAXSTUDIOBONES; i = bones[i].parent)
+        chain[count++] = i;
+    origin[0] = origin[1] = origin[2] = 0.0f;
+    rotation[0] = rotation[1] = rotation[2] = 0.0f; rotation[3] = 1.0f;
+    for (int i = count-1; i >= 0; --i)
+    {
+        float matrix[3][4];
+        QuaternionMatrix(rotation, matrix);
+        for (int axis = 0; axis < 3; ++axis)
+            origin[axis] += matrix[axis][0]*pos[chain[i]][0] +
+                matrix[axis][1]*pos[chain[i]][1] + matrix[axis][2]*pos[chain[i]][2];
+        MultiplyRotation(rotation, q[chain[i]], rotation);
+    }
+}
+
 void DumpLegs()
 {
-    gEngfuncs.Con_Printf("legs: visible=%d model=%s sequence=%d phase=%.3f grounded=%d ducked=%d origin=%.1f/%.1f/%.1f rate=%.3f stance=%.3f move=%.3f/%.3f run=%.3f jump=%.3f/%.3f\n",
+    gEngfuncs.Con_Printf("legs: visible=%d model=%s sequence=%d phase=%.3f grounded=%d ducked=%d origin=%.1f/%.1f/%.1f rate=%.3f stance=%.3f move=%.3f/%.3f run=%.3f jump=%.3f/%.3f eye=%.3f/%.3f/%.3f eye_body_z=%.6f pitch=%.6f vz=%.6f\n",
         int(s_lastSubmitted),
         s_modelName, s_entity.curstate.sequence,
         s_phase, int(s_view.grounded), int(s_view.ducked),
         s_view.origin.x, s_view.origin.y, s_view.origin.z, s_playbackRate, s_view.stance,
-        s_standMove, s_duckMove, s_runWeight, s_jumpPhase, s_jumpWeight);
+        s_standMove, s_duckMove, s_runWeight, s_jumpPhase, s_jumpWeight,
+        s_view.eye.x,s_view.eye.y,s_view.eye.z,s_view.eye.z-s_view.origin.z,s_view.pitch,s_view.velocity.z);
 }
 }
 
@@ -261,6 +294,8 @@ void OC2_LegsRefdef(const ref_params_s *view)
     // uses one standing-hull anchor; the camera retains its own stair smoothing.
     s_view.origin = Vector(view->simorg[0], view->simorg[1], view->simorg[2]);
     s_view.velocity = Vector(view->simvel[0], view->simvel[1], view->simvel[2]);
+    s_view.eye = Vector(view->vieworg);
+    s_view.pitch = view->viewangles[0];
     s_view.yaw = view->cl_viewangles[1];
     s_view.time = view->time;
     s_view.dt = view->frametime;
@@ -437,9 +472,15 @@ bool OC2_LegsBlend(CStudioModelRenderer &renderer, float pos[][3], float q[][4])
         const mstudiobone_t *bones = reinterpret_cast<const mstudiobone_t *>(
             reinterpret_cast<const byte *>(renderer.m_pStudioHeader) + renderer.m_pStudioHeader->boneindex);
         bool upper[MAXSTUDIOBONES] = {};
+        int chest = -1;
+        for (int bone = 0; bone < renderer.m_pStudioHeader->numbones; ++bone)
+            if (strcmp(bones[bone].name, "Bip01 Spine1") == 0) { chest = bone; break; }
+        float groundOrigin[3], groundRotation[4], idleOrigin[3], idleRotation[4];
+        if (chest >= 0) ModelPose(bones, chest, pos, q, groundOrigin, groundRotation);
         Sample(renderer, descs, 1, s_phase, runPos, runQ);
         Sample(renderer, descs, 2, s_phase, duckPos, duckQ);
         renderer.StudioSlerpBones(runQ, runPos, duckQ, duckPos, s_stanceWeight);
+        if (chest >= 0) ModelPose(bones, chest, runPos, runQ, idleOrigin, idleRotation);
         Sample(renderer, descs, 6, s_jumpPhase, movePos, moveQ);
         for (int bone = 0; bone < renderer.m_pStudioHeader->numbones; ++bone)
         {
@@ -455,6 +496,25 @@ bool OC2_LegsBlend(CStudioModelRenderer &renderer, float pos[][3], float q[][4])
         // the matching stance's idle upper-chest layer during its existing
         // fade, while the root, waist and legs keep the authored jump pose.
         renderer.StudioSlerpBones(q, pos, moveQ, movePos, jumpWeight);
+        if (chest >= 0 && bones[chest].parent >= 0)
+        {
+            // The idle LOCAL chest still inherits the jumping pelvis/Spine.
+            // Resolve its target in model space, then convert only Spine1
+            // back through the actual parent. This also covers descent and
+            // the landing fade without moving the body anchor or lower rig.
+            float parentOrigin[3], parentRotation[4], targetRotation[4];
+            ModelPose(bones, bones[chest].parent, pos, q, parentOrigin, parentRotation);
+            QuaternionSlerp(groundRotation, idleRotation, jumpWeight, targetRotation);
+            const float inverse[4] = {-parentRotation[0], -parentRotation[1],
+                -parentRotation[2], parentRotation[3]};
+            MultiplyRotation(inverse, targetRotation, q[chest]);
+            float matrix[3][4], delta[3];
+            QuaternionMatrix(parentRotation, matrix);
+            for (int axis = 0; axis < 3; ++axis)
+                delta[axis] = Mix(groundOrigin[axis], idleOrigin[axis], jumpWeight) - parentOrigin[axis];
+            for (int axis = 0; axis < 3; ++axis)
+                pos[chest][axis] = matrix[0][axis]*delta[0] + matrix[1][axis]*delta[1] + matrix[2][axis]*delta[2];
+        }
     }
     return true;
 }

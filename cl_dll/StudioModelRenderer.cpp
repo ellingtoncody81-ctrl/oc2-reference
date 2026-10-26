@@ -47,6 +47,7 @@
 #include "viewmodel_transition.h"
 #include "skin_inventory_client.h"
 #include "oc2_glove_inventory.h"
+#include "viewmodel_motion.h"
 #include "wpn_shared/oc2_presentation.h"
 #include "wpn_shared/oc2_reload.h"
 #include "view_ads.h"
@@ -1070,6 +1071,7 @@ void CStudioModelRenderer::StudioSetupBones(void)
 			StudioSlerpBones(q,pos,oldQ,oldPos,weight);
 		}
 		ViewModelHandPosition(m_pStudioHeader,pos,q,g_viewFlow.blendedHand);
+		HUD_WeaponMotionPose(m_pRenderModel ? m_pRenderModel->name : "none",m_pStudioHeader,pos,q,m_clTime,sampleTime,current.startTime,current.sequence,(float)f,(int)changed,g_viewTransitions.Count(),snap);
 	}
 	else if (OC2_LegsBlend(*this, pos, q))
 	{
@@ -1500,7 +1502,10 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 
 		{
 			OC2_InventoryMaterialScope inventoryMaterials(*this);
+			OC2_InventoryGloveBodyModelScope gloveBodyModel(*this);
+			OC2_InventoryPlayerGloveScope playerGloves(*this);
 			StudioRenderModel(dir);
+			playerGloves.Draw(lighting,dir);
 		}
 		if (bIsViewModel)
 		{

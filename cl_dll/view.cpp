@@ -16,6 +16,7 @@
 #include "usercmd.h"
 #include "const.h"
 #include "view_bob.h"
+#include "viewmodel_motion.h"
 #include "view_effects.h"
 #include "view_stairs.h"
 #include "view_ads.h"
@@ -1787,6 +1788,7 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 	s_ViewModelRelative[0]=DotProduct(vmRelative,vmForward);
 	s_ViewModelRelative[1]=DotProduct(vmRelative,vmRight);
 	s_ViewModelRelative[2]=DotProduct(vmRelative,vmUp);
+	HUD_WeaponMotionView(pparams,iWeaponId,iWeaponState,iWeaponClip);
 	if ( gHUD.cl_viewbob && gHUD.cl_viewbob->value )
 	{
 		VectorCopy( view->origin, view->curstate.origin );
@@ -2636,6 +2638,7 @@ V_Init
 */
 void V_Init (void)
 {
+	HUD_WeaponMotionInit();
 	gEngfuncs.pfnAddCommand("ads_dump",V_DumpADS);
 	gEngfuncs.pfnAddCommand("viewbob_dump",V_DumpBob);
 	gEngfuncs.pfnAddCommand("viewmodel_dump",V_DumpViewModelSettings);

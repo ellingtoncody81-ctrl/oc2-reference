@@ -363,9 +363,9 @@ void CAM_ToThirdPerson(void)
 	vec3_t viewangles;
 
 #if !defined( _DEBUG )
-	if ( gEngfuncs.GetMaxClients() > 1 )
+	if ( gEngfuncs.GetMaxClients() > 1 && gEngfuncs.pfnGetCvarFloat("sv_cheats") == 0.0f )
 	{
-		// no thirdperson in multiplayer.
+		// Source also restricts its third-person camera to cheat-enabled games.
 		return;
 	}
 #endif

@@ -42,6 +42,17 @@ struct GloveShader
  std::string material;int width=0,height=0,original=0,replacement=0,during=0,after=0;
 };
 std::vector<GloveShader> gloveShaders;
+struct CorpseGlove
+{
+ int tag=0,player=0,resource=0;model_t *model=nullptr;
+};
+std::map<const cl_entity_t *,CorpseGlove> corpseGloves;
+struct WorldGloveDraw
+{
+ int player=0,resource=0,entity=0,tag=0,hidden=0,swaps=0;
+ bool corpse=false,restored=false,legacy=false;double time=0;std::string model;
+};
+std::map<std::pair<int,int>,WorldGloveDraw> worldGloveDraws;
 struct TextureSlot {int handle=0,frame=-1;std::uint64_t serial=0;std::string name;};
 std::map<std::string,TextureSlot> textures;
 int textureFrame=-1;std::uint64_t textureSerial=0;
@@ -359,6 +370,12 @@ void GloveDump()
  for(const auto &slot:gloveShaders)
   gEngfuncs.Con_Printf("oc2glove_shader: material=%s width=%d height=%d original=%d replacement=%d during=%d after=%d\n",
    slot.material.c_str(),slot.width,slot.height,slot.original,slot.replacement,slot.during,slot.after);
+ for(const auto &row:worldGloveDraws)
+ {
+  const auto &d=row.second;
+  gEngfuncs.Con_Printf("oc2glove_world: player=%d resource=%d entity=%d corpse=%d tag=%d hidden=%d legacy=%d swaps=%d restored=%d time=%.3f model=%s\n",
+   d.player,d.resource,d.entity,int(d.corpse),d.tag,d.hidden,int(d.legacy),d.swaps,int(d.restored),d.time,d.model.c_str());
+ }
  if(gRenderAPI.RenderGetParm&&gloveDraw.leftTexture&&gloveDraw.rightTexture)
   gEngfuncs.Con_Printf("oc2glove_gpu: left_size=%dx%d right_size=%dx%d\n",
    int(gRenderAPI.RenderGetParm(PARM_TEX_WIDTH,gloveDraw.leftTexture)),int(gRenderAPI.RenderGetParm(PARM_TEX_HEIGHT,gloveDraw.leftTexture)),
@@ -423,6 +440,7 @@ void OC2_InventoryResetSession()
 {
  items.clear();draws.clear();networkReady=false;resyncSent=false;lastSent.clear();queuedConfig.clear();upload.clear();uploadIndex=0;
  playerGloves.fill(0);gloveNetworkReady=false;lastGloveSent.clear();gloveDraw=GloveDraw();gloveShaders.clear();
+ corpseGloves.clear();worldGloveDraws.clear();
 }
 void OC2_InventoryFrame()
 {
@@ -593,11 +611,14 @@ OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &ren
 OC2_InventoryMaterialScope::~OC2_InventoryMaterialScope()
 { for(auto it=saved.rbegin();it!=saved.rend();++it)*it->address=it->value; }
 
-OC2_InventoryGloveMaterialScope::OC2_InventoryGloveMaterialScope(CStudioModelRenderer &renderer,int resource)
+OC2_InventoryGloveMaterialScope::OC2_InventoryGloveMaterialScope(CStudioModelRenderer &renderer,int resource,bool diagnostics):record(diagnostics)
 {
  if(!resource){ready=true;return;}
- gloveDraw.swaps=gloveDraw.leftTexture=gloveDraw.rightTexture=0;
- gloveDraw.restored=true;gloveShaders.clear();
+ if(record)
+ {
+  gloveDraw.swaps=gloveDraw.leftTexture=gloveDraw.rightTexture=0;
+  gloveDraw.restored=true;gloveShaders.clear();
+ }
  const auto *entry=oc2_gloves::FindEntry(gloveCatalog,resource);
  if(!entry||!Active())return;
  if(entry->leftTexture.empty()&&entry->rightTexture.empty()){ready=true;return;}
@@ -625,18 +646,219 @@ OC2_InventoryGloveMaterialScope::OC2_InventoryGloveMaterialScope(CStudioModelRen
   if(!replacement)continue;
   // Keep MDL dimensions, normalized UVs, flags and bare skin families intact.
   saved.push_back(Saved(&material.index,material.index));
-  GloveShader slot;slot.material=material.name;slot.width=material.width;slot.height=material.height;
-  slot.original=material.index;slot.replacement=replacement;gloveShaders.push_back(slot);material.index=replacement;
+  if(record)
+  {
+   GloveShader slot;slot.material=material.name;slot.width=material.width;slot.height=material.height;
+   slot.original=material.index;slot.replacement=replacement;gloveShaders.push_back(slot);
+  }
+  material.index=replacement;
  }
- ready=true;gloveDraw.swaps=int(saved.size());gloveDraw.leftTexture=leftTexture;gloveDraw.rightTexture=rightTexture;
+ ready=true;
+ if(record){gloveDraw.swaps=int(saved.size());gloveDraw.leftTexture=leftTexture;gloveDraw.rightTexture=rightTexture;}
 }
 OC2_InventoryGloveMaterialScope::~OC2_InventoryGloveMaterialScope()
 {
- for(std::size_t index=0;index<saved.size();++index)gloveShaders[index].during=*saved[index].address;
+ if(record)for(std::size_t index=0;index<saved.size();++index)gloveShaders[index].during=*saved[index].address;
  for(auto it=saved.rbegin();it!=saved.rend();++it)*it->address=it->value;
- for(std::size_t index=0;index<saved.size();++index)
+ if(record)for(std::size_t index=0;index<saved.size();++index)
  {
   gloveShaders[index].after=*saved[index].address;
   gloveDraw.restored=gloveDraw.restored&&gloveShaders[index].after==gloveShaders[index].original;
  }
+}
+
+void OC2_InventoryCaptureCorpseGlove(cl_entity_s *entity,int player)
+{
+ if(!entity||player<1||player>32)return;
+ const auto *entry=OC2_InventoryPlayerGlove(player);
+ CorpseGlove state;state.tag=entity->curstate.iuser3;state.player=player;
+ state.resource=entry?entry->id:0;state.model=entity->model;
+ // Temp entities are pooled. The generation tag rejects a reused slot;
+ // the copied resource keeps an old corpse independent of a respawn/equip.
+ if(corpseGloves.size()>=128&&!corpseGloves.count(entity))corpseGloves.erase(corpseGloves.begin());
+ corpseGloves[entity]=state;
+}
+
+namespace
+{
+bool LegacyGloveBody(const model_t *model)
+{
+ return model&&(!stricmp(model->name,"models/oc2/gloves/players/guerilla.mdl")||
+                !stricmp(model->name,"models/oc2/gloves/players/vip.mdl"));
+}
+model_t *GloveBodyModel(model_t *original,int resource)
+{
+ const auto *choice=oc2_gloves::FindEntry(gloveCatalog,resource);
+ if(!original||!choice||!Active()||!IEngineStudio.IsHardware())return original;
+ const char *path=nullptr;
+ if(!stricmp(original->name,"models/player/guerilla/guerilla.mdl"))path="models/oc2/gloves/players/guerilla.mdl";
+ else if(!stricmp(original->name,"models/player/vip/vip.mdl"))path="models/oc2/gloves/players/vip.mdl";
+ if(!path)return original;
+ const std::string world=oc2_gloves::WorldModelPath(*choice);
+ auto *wearable=IEngineStudio.Mod_ForName(world.c_str(),false);
+ if(!wearable||wearable->type!=mod_studio)return original;
+ textureFrame=textureFrame==0x7fffffff?0:textureFrame+1;
+ if((!choice->leftTexture.empty()&&!Texture(choice->leftTexture,false))||
+    (!choice->rightTexture.empty()&&!Texture(choice->rightTexture,false)))return original;
+ auto *selected=IEngineStudio.Mod_ForName(path,false);
+ return selected&&selected->type==mod_studio?selected:original;
+}
+}
+OC2_InventoryGloveBodyModelScope::OC2_InventoryGloveBodyModelScope(CStudioModelRenderer &studio,int player):renderer(studio)
+{
+ auto *entity=renderer.m_pCurrentEntity;
+ if(!entity||!renderer.m_pRenderModel||!renderer.m_pStudioHeader)return;
+ int resource=0;
+ if(player)
+ {
+  const auto *entry=OC2_InventoryPlayerGlove(player);resource=entry?entry->id:0;
+ }
+ else
+ {
+  const auto found=corpseGloves.find(entity);
+  if(found==corpseGloves.end()||found->second.tag!=entity->curstate.iuser3||found->second.model!=entity->model)return;
+  resource=found->second.resource;
+ }
+ auto *selected=GloveBodyModel(renderer.m_pRenderModel,resource);
+ if(selected==renderer.m_pRenderModel)return;
+ auto *selectedHeader=static_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(selected));
+ auto *ownerHeader=renderer.m_pStudioHeader;
+ // This is an explicit canonical/derived resource pair. Require the exact
+ // same named skeleton before using the owner's already solved matrices.
+ if(!HeaderRange(selectedHeader,selectedHeader?selectedHeader->boneindex:0,selectedHeader?selectedHeader->numbones:0,sizeof(mstudiobone_t))||
+    !HeaderRange(ownerHeader,ownerHeader->boneindex,ownerHeader->numbones,sizeof(mstudiobone_t))||
+    selectedHeader->numbones!=ownerHeader->numbones||
+    memcmp(reinterpret_cast<const byte *>(selectedHeader)+selectedHeader->boneindex,
+           reinterpret_cast<const byte *>(ownerHeader)+ownerHeader->boneindex,ownerHeader->numbones*sizeof(mstudiobone_t)))return;
+ original=renderer.m_pRenderModel;header=ownerHeader;bodyPart=renderer.m_pBodyPart;subModel=renderer.m_pSubModel;
+ renderer.m_pRenderModel=selected;renderer.m_pStudioHeader=selectedHeader;
+ IEngineStudio.StudioSetHeader(selectedHeader);IEngineStudio.SetRenderModel(selected);
+}
+OC2_InventoryGloveBodyModelScope::~OC2_InventoryGloveBodyModelScope()
+{
+ if(!original)return;
+ renderer.m_pRenderModel=original;renderer.m_pStudioHeader=static_cast<studiohdr_t *>(header);
+ renderer.m_pBodyPart=static_cast<mstudiobodyparts_t *>(bodyPart);renderer.m_pSubModel=static_cast<mstudiomodel_t *>(subModel);
+ IEngineStudio.StudioSetHeader(renderer.m_pStudioHeader);IEngineStudio.SetRenderModel(original);
+}
+
+OC2_InventoryPlayerGloveScope::OC2_InventoryPlayerGloveScope(CStudioModelRenderer &studio,int index):renderer(studio),player(index)
+{
+ auto *entity=renderer.m_pCurrentEntity;
+ if(!entity||!renderer.m_pStudioHeader||!IEngineStudio.IsHardware()||!Active())return;
+ if(!player)
+ {
+  const auto found=corpseGloves.find(entity);
+  if(found==corpseGloves.end()||found->second.tag!=entity->curstate.iuser3||
+     (found->second.model!=entity->model&&!LegacyGloveBody(entity->model)))return;
+  player=found->second.player;resource=found->second.resource;corpse=true;corpseTag=found->second.tag;
+ }
+ else
+ {
+  const auto *choice=OC2_InventoryPlayerGlove(player);resource=choice?choice->id:0;
+ }
+ const auto *choice=oc2_gloves::FindEntry(gloveCatalog,resource);
+ if(!choice)return;
+ // Every supported player must expose both actual hand bones. Never merge a
+ // viewmodel skeleton by approximate names or recolor the character's UVs.
+ bool left=false,right=false;
+ for(int i=0;i<renderer.m_nCachedBones;++i)
+ {
+  left=left||!stricmp(renderer.m_nCachedBoneNames[i],"Bip01 L Hand");
+  right=right||!stricmp(renderer.m_nCachedBoneNames[i],"Bip01 R Hand");
+ }
+ if(!left||!right)return;
+ const std::string path=oc2_gloves::WorldModelPath(*choice);
+ model=IEngineStudio.Mod_ForName(path.c_str(),false);
+ auto *gloveHeader=model&&model->type==mod_studio?static_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(model)):nullptr;
+ if(!HeaderRange(gloveHeader,gloveHeader?gloveHeader->boneindex:0,gloveHeader?gloveHeader->numbones:0,sizeof(mstudiobone_t))||
+    gloveHeader->numbones>MAXSTUDIOBONES){model=nullptr;return;}
+ auto *bodyHeader=renderer.m_pStudioHeader;
+ renderer.m_pStudioHeader=gloveHeader;
+ bool ready=false;
+ {OC2_InventoryGloveMaterialScope materials(renderer,resource,false);ready=materials.Ready();}
+ renderer.m_pStudioHeader=bodyHeader;
+ if(!ready){model=nullptr;return;}
+ if(!HeaderRange(bodyHeader,bodyHeader->bodypartindex,bodyHeader->numbodyparts,sizeof(mstudiobodyparts_t)))return;
+ auto *parts=reinterpret_cast<mstudiobodyparts_t *>(reinterpret_cast<byte *>(bodyHeader)+bodyHeader->bodypartindex);
+ if(!HeaderRange(bodyHeader,bodyHeader->boneindex,bodyHeader->numbones,sizeof(mstudiobone_t)))return;
+ const auto *bones=reinterpret_cast<const mstudiobone_t *>(reinterpret_cast<byte *>(bodyHeader)+bodyHeader->boneindex);
+ for(int p=0;p<bodyHeader->numbodyparts;++p)
+ {
+  const auto &part=parts[p];
+  if(part.base<=0||part.nummodels<=0||!HeaderRange(bodyHeader,part.modelindex,part.nummodels,sizeof(mstudiomodel_t)))continue;
+  auto &sub=reinterpret_cast<mstudiomodel_t *>(reinterpret_cast<byte *>(bodyHeader)+part.modelindex)[(entity->curstate.body/part.base)%part.nummodels];
+  if(!memchr(sub.name,0,sizeof(sub.name))||sub.numverts<=0||sub.nummesh<=0||
+     !HeaderRange(bodyHeader,sub.vertinfoindex,sub.numverts,1))continue;
+  const std::string name=oc2_inventory::Lower(sub.name);
+  if(name.find("glove")==std::string::npos&&name.find("hand")==std::string::npos)continue;
+  const auto *bindings=reinterpret_cast<const byte *>(bodyHeader)+sub.vertinfoindex;
+  bool handsOnly=true;
+  for(int v=0;v<sub.numverts&&handsOnly;++v)
+  {
+   if(bindings[v]>=bodyHeader->numbones){handsOnly=false;break;}
+   const auto &bone=bones[bindings[v]];
+   if(!memchr(bone.name,0,sizeof(bone.name))){handsOnly=false;break;}
+   const std::string boneName=oc2_inventory::Lower(bone.name);
+   handsOnly=boneName.find("hand")!=std::string::npos||boneName.find("wrist")!=std::string::npos||boneName.find("forearm")!=std::string::npos;
+  }
+  if(handsOnly)hidden.push_back(Saved(&sub.nummesh,sub.nummesh));
+ }
+ replacementBody=LegacyGloveBody(renderer.m_pRenderModel);
+ if(hidden.empty()&&!replacementBody){model=nullptr;return;}
+ header=gloveHeader;
+ for(auto &part:hidden)*part.address=0;
+}
+
+OC2_InventoryPlayerGloveScope::~OC2_InventoryPlayerGloveScope()
+{
+ for(auto it=hidden.rbegin();it!=hidden.rend();++it)*it->address=it->value;
+ auto found=worldGloveDraws.find(std::make_pair(player,corpse?corpseTag:0));
+ if(found!=worldGloveDraws.end()&&found->second.resource==resource&&found->second.time==renderer.m_clTime)
+  for(const auto &part:hidden)found->second.restored=found->second.restored&&*part.address==part.value;
+}
+
+void OC2_InventoryPlayerGloveScope::Draw(alight_s &lighting,float *lightdir)
+{
+ if(!model||!header||(hidden.empty()&&!replacementBody))return;
+ auto *bodyHeader=renderer.m_pStudioHeader;
+ auto *bodyModel=renderer.m_pRenderModel;
+ const cl_entity_t savedEntity=*renderer.m_pCurrentEntity;
+ auto *savedPart=renderer.m_pBodyPart;auto *savedSub=renderer.m_pSubModel;
+ const int faceFlags=IEngineStudio.GetForceFaceFlags();
+ renderer.m_pRenderModel=model;renderer.m_pStudioHeader=static_cast<studiohdr_t *>(header);
+ auto &state=renderer.m_pCurrentEntity->curstate;
+ renderer.m_pCurrentEntity->model=model;state.body=0;state.skin=0;state.sequence=0;state.frame=0;state.framerate=0;state.animtime=renderer.m_clTime;
+ IEngineStudio.StudioSetHeader(renderer.m_pStudioHeader);IEngineStudio.SetRenderModel(model);
+ WorldGloveDraw record;record.player=player;record.resource=resource;record.corpse=corpse;record.tag=corpseTag;
+ record.legacy=replacementBody;
+ record.entity=savedEntity.index;record.hidden=int(hidden.size());record.time=renderer.m_clTime;record.model=model->name;
+ {
+  OC2_InventoryGloveMaterialScope materials(renderer,resource,false);
+  if(materials.Ready())
+  {
+   renderer.StudioMergeBones(model);
+   IEngineStudio.StudioSetupLighting(&lighting);
+   IEngineStudio.StudioSetRemapColors(renderer.m_nTopColor,renderer.m_nBottomColor);
+   renderer.StudioRenderModel(lightdir);record.swaps=materials.Swaps();
+  }
+ }
+ *renderer.m_pCurrentEntity=savedEntity;renderer.m_pRenderModel=bodyModel;renderer.m_pStudioHeader=bodyHeader;
+ renderer.m_pBodyPart=savedPart;renderer.m_pSubModel=savedSub;
+ // StudioSaveBones remains the owner's pose for following weapon/addon draws.
+ for(int i=0;i<renderer.m_nCachedBones;++i)
+ {
+  memcpy((*renderer.m_pbonetransform)[i],renderer.m_rgCachedBoneTransform[i],sizeof(float)*12);
+  memcpy((*renderer.m_plighttransform)[i],renderer.m_rgCachedLightTransform[i],sizeof(float)*12);
+ }
+ IEngineStudio.StudioSetHeader(bodyHeader);IEngineStudio.SetRenderModel(bodyModel);
+ IEngineStudio.StudioSetupLighting(&lighting);IEngineStudio.StudioSetRemapColors(renderer.m_nTopColor,renderer.m_nBottomColor);
+ IEngineStudio.SetForceFaceFlags(faceFlags);
+ record.restored=renderer.m_pStudioHeader==bodyHeader&&renderer.m_pCurrentEntity->model==savedEntity.model;
+ for(int i=0;i<renderer.m_nCachedBones;++i)
+  record.restored=record.restored&&!memcmp((*renderer.m_pbonetransform)[i],renderer.m_rgCachedBoneTransform[i],sizeof(float)*12)&&
+   !memcmp((*renderer.m_plighttransform)[i],renderer.m_rgCachedLightTransform[i],sizeof(float)*12);
+ worldGloveDraws[std::make_pair(player,corpse?corpseTag:0)]=record;
+ // Diagnostics are bounded even during long sessions with many corpses.
+ if(worldGloveDraws.size()>128)worldGloveDraws.erase(worldGloveDraws.begin());
 }

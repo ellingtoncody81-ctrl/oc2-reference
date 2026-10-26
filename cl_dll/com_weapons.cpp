@@ -26,6 +26,16 @@
 #include "wpn_shared/oc2_reload.h"
 #include "wpn_shared/oc2_presentation.h"
 #include "weapon_fire_feedback.h"
+#include "viewmodel_motion.h"
+#include "ref_params.h"
+#include "com_model.h"
+#include "usercmd.h"
+#include "studio.h"
+#include "studio_util.h"
+#include <stdint.h>
+#include <string.h>
+
+extern int g_iUser1;
 
 // g_runfuncs is true if this is the first time we've "predicated" a particular movement/firing
 //  command.  If it is 1, then we should play events/sounds etc., otherwise, we just will be
@@ -77,21 +87,193 @@ void COM_Log( char *pszFile, char *fmt, ...)
 static int g_currentanim;
 static int g_currentweapon;
 
+namespace
+{
+struct WeaponMotionSample
+{
+	double time=0, sampleTime=0, start=0, commandTime=0;
+	int weapon=0, state=0, clip=0, fromClip=0, toClip=0, sequence=0, change=0, layers=0;
+	int events=0, runfuncs=0, msec=0, sends=0, forced=0, blocked=0, ground=0, loop=0, snap=0;
+	unsigned seed=0;
+	uint32_t pose=0;
+	float frame=0, vz=0, pitch=0, eye[3]={}, gun[3]={}, punch[3]={}, hand[3]={};
+	float poseStep=0, angleStep=0, positionRms=0, positionPeak=0, rotationRms=0, rotationPeak=0;
+	char model[96]={}, label[32]={};
+};
+struct WeaponMotionCapture
+{
+	bool active=false, viewValid=false, previous=false;
+	int count=0, dropped=0, sends=0, forced=0, blocked=0, previousBones=0;
+	char tag[48]="capture";
+	WeaponMotionSample view, prediction, rows[2048];
+	float previousMatrices[MAXSTUDIOBONES][3][4]={};
+	float previousPosition[MAXSTUDIOBONES][3]={}, previousRotation[MAXSTUDIOBONES][4]={};
+} g_motion;
+
+void WeaponMotionBegin()
+{
+	const char *tag=gEngfuncs.Cmd_Argc()>1 ? gEngfuncs.Cmd_Argv(1) : "capture";
+	const size_t length=strlen(tag);
+	if (!length || length>=sizeof(g_motion.tag)) { gEngfuncs.Con_Printf("weaponmotion: invalid tag\n");return; }
+	for (size_t i=0;i<length;++i)
+		if (!((tag[i]>='a'&&tag[i]<='z') || (tag[i]>='A'&&tag[i]<='Z') ||
+			(tag[i]>='0'&&tag[i]<='9') || tag[i]=='_'))
+			{ gEngfuncs.Con_Printf("weaponmotion: invalid tag\n");return; }
+	g_motion.active=false;g_motion.count=g_motion.dropped=0;g_motion.previous=false;
+	g_motion.sends=g_motion.forced=g_motion.blocked=0;
+	strcpy(g_motion.tag,tag);g_motion.active=true;
+	gEngfuncs.Con_Printf("weaponmotion: begin tag=%s capacity=2048\n",g_motion.tag);
+}
+
+void WeaponMotionEnd()
+{
+	g_motion.active=false;
+	gEngfuncs.Con_Printf("weaponmotion: end tag=%s frames=%d dropped=%d\n",g_motion.tag,g_motion.count,g_motion.dropped);
+}
+
+void WeaponMotionDump()
+{
+	char path[1024];
+	snprintf(path,sizeof(path),"%s/weapon_motion_%s.log",gEngfuncs.pfnGetGameDirectory(),g_motion.tag);
+	FILE *file=fopen(path,"ab");
+	if (!file) { gEngfuncs.Con_Printf("weaponmotion: save failed path=%s\n",path);return; }
+	fprintf(file,"capture tag=%s frames=%d dropped=%d active=%d\n",g_motion.tag,g_motion.count,g_motion.dropped,int(g_motion.active));
+	fputs("time,sample,start,weapon,state,clip,model,label,seq,frame,change,layers,snap,loop,events,sends,forced,replay_blocked,ground,vz,pitch,eye_x,eye_y,eye_z,gun_x,gun_y,gun_z,punch_x,punch_y,punch_z,pose_hash,pose_step,angle_step,hand_x,hand_y,hand_z,cmd_time,cmd_msec,cmd_seed,cmd_runfuncs,from_clip,to_clip,pos_rms,pos_peak,rot_rms,rot_peak\n",file);
+	for (int i=0;i<g_motion.count;++i)
+	{
+		const WeaponMotionSample &r=g_motion.rows[i];
+		fprintf(file,"%.9f,%.9f,%.9f,%d,%d,%d,%s,%s,%d,%.6f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%08x,%.6f,%.6f,%.6f,%.6f,%.6f,%.9f,%d,%u,%d,%d,%d,%.6f,%.6f,%.6f,%.6f\n",
+			r.time,r.sampleTime,r.start,r.weapon,r.state,r.clip,r.model,r.label,r.sequence,r.frame,r.change,r.layers,r.snap,r.loop,
+			r.events,r.sends,r.forced,r.blocked,r.ground,r.vz,r.pitch,r.eye[0],r.eye[1],r.eye[2],r.gun[0],r.gun[1],r.gun[2],
+			r.punch[0],r.punch[1],r.punch[2],r.pose,r.poseStep,r.angleStep,r.hand[0],r.hand[1],r.hand[2],
+			r.commandTime,r.msec,r.seed,r.runfuncs,r.fromClip,r.toClip,r.positionRms,r.positionPeak,r.rotationRms,r.rotationPeak);
+	}
+	fclose(file);
+	gEngfuncs.Con_Printf("weaponmotion: saved tag=%s frames=%d dropped=%d path=%s\n",g_motion.tag,g_motion.count,g_motion.dropped,path);
+}
+}
+
+void HUD_WeaponMotionInit()
+{
+	static bool initialized=false;
+	if (initialized) return;
+	initialized=true;
+	gEngfuncs.pfnAddCommand("weapon_motion_begin",WeaponMotionBegin);
+	gEngfuncs.pfnAddCommand("weapon_motion_end",WeaponMotionEnd);
+	gEngfuncs.pfnAddCommand("weapon_motion_dump",WeaponMotionDump);
+}
+
+void HUD_WeaponMotionPrediction(const local_state_s *from, const local_state_s *to,
+	const usercmd_s *command, int runfuncs, double time, unsigned int seed)
+{
+	if (!g_motion.active || !from || !to || !command) return;
+	const int id=to->client.m_iId;
+	g_motion.prediction.commandTime=time;g_motion.prediction.msec=command->msec;
+	g_motion.prediction.seed=seed;g_motion.prediction.runfuncs=runfuncs;
+	g_motion.prediction.fromClip=id>0&&id<32?from->weapondata[id].m_iClip:-1;
+	g_motion.prediction.toClip=id>0&&id<32?to->weapondata[id].m_iClip:-1;
+}
+
+void HUD_WeaponMotionView(const ref_params_s *view, int weapon, int state, int clip)
+{
+	g_motion.viewValid=view&&view->health>0&&!view->spectator&&!g_iUser1;
+	if (!g_motion.active || !g_motion.viewValid) return;
+	g_motion.view=g_motion.prediction;
+	g_motion.view.weapon=weapon;g_motion.view.state=state;g_motion.view.clip=clip;
+	g_motion.view.ground=view->onground!=0;g_motion.view.vz=view->simvel[2];
+	g_motion.view.pitch=view->viewangles[0];
+	const cl_entity_t *gun=gEngfuncs.GetViewModel();
+	for (int axis=0;axis<3;++axis)
+	{
+		g_motion.view.eye[axis]=view->vieworg[axis];
+		g_motion.view.gun[axis]=gun?gun->origin[axis]:0;
+		g_motion.view.punch[axis]=view->punchangle[axis];
+	}
+}
+
+void HUD_WeaponMotionPose(const char *model, const void *data,
+	const float pos[][3], const float q[][4], double time, double sampleTime,
+	double start, int sequence, float frame, int change, int layers, bool snap)
+{
+	if (!g_motion.active || !g_motion.viewValid) return;
+	if (g_motion.count && g_motion.rows[g_motion.count-1].time==time) return;
+	if (g_motion.count==2048) { ++g_motion.dropped;return; }
+	const studiohdr_t *header=static_cast<const studiohdr_t *>(data);
+	if (!header || header->numbones<=0 || header->numbones>MAXSTUDIOBONES || sequence<0 || sequence>=header->numseq) return;
+	WeaponMotionSample row=g_motion.view;
+	row.time=time;row.sampleTime=sampleTime;row.start=start;row.sequence=sequence;
+	row.frame=frame;row.change=change;row.layers=layers;row.snap=snap;
+	row.events=g_iShotsFired;row.sends=g_motion.sends;row.forced=g_motion.forced;row.blocked=g_motion.blocked;
+	strncpy(row.model,model?model:"none",sizeof(row.model)-1);
+	const mstudioseqdesc_t &desc=reinterpret_cast<const mstudioseqdesc_t *>(reinterpret_cast<const byte *>(header)+header->seqindex)[sequence];
+	strncpy(row.label,desc.label,sizeof(row.label)-1);row.loop=(desc.flags&STUDIO_LOOPING)!=0;
+	const mstudiobone_t *bones=reinterpret_cast<const mstudiobone_t *>(reinterpret_cast<const byte *>(header)+header->boneindex);
+	float matrices[MAXSTUDIOBONES][3][4];
+	const bool compare=g_motion.previous&&g_motion.previousBones==header->numbones&&
+		g_motion.count&&strcmp(g_motion.rows[g_motion.count-1].model,row.model)==0;
+	for (int bone=0;bone<header->numbones;++bone)
+	{
+		float rotation[4],local[3][4];memcpy(rotation,q[bone],sizeof(rotation));QuaternionMatrix(rotation,local);
+		for (int axis=0;axis<3;++axis) local[axis][3]=pos[bone][axis];
+		if (bones[bone].parent>=0&&bones[bone].parent<bone) ConcatTransforms(matrices[bones[bone].parent],local,matrices[bone]);
+		else memcpy(matrices[bone],local,sizeof(local));
+		if (!stricmp(bones[bone].name,"v_weapon.Bip01_R_Hand"))
+			for (int axis=0;axis<3;++axis) row.hand[axis]=matrices[bone][axis][3];
+		if (compare)
+		{
+			float localDistance=0,quaternionDot=0;
+			for (int axis=0;axis<3;++axis)
+			{
+				const float delta=pos[bone][axis]-g_motion.previousPosition[bone][axis];localDistance+=delta*delta;
+			}
+			for (int axis=0;axis<4;++axis) quaternionDot+=q[bone][axis]*g_motion.previousRotation[bone][axis];
+			localDistance=sqrtf(localDistance);row.positionRms+=localDistance*localDistance;
+			if (localDistance>row.positionPeak) row.positionPeak=localDistance;
+			quaternionDot=fabsf(quaternionDot);if (quaternionDot>1) quaternionDot=1;
+			const float localAngle=2*acosf(quaternionDot)*57.2957795f;
+			row.rotationRms+=localAngle*localAngle;if (localAngle>row.rotationPeak) row.rotationPeak=localAngle;
+			float distance=0,trace=0;
+			for (int axis=0;axis<3;++axis)
+			{
+				const float delta=matrices[bone][axis][3]-g_motion.previousMatrices[bone][axis][3];distance+=delta*delta;
+				for (int column=0;column<3;++column) trace+=matrices[bone][axis][column]*g_motion.previousMatrices[bone][axis][column];
+			}
+			distance=sqrtf(distance);if (distance>row.poseStep) row.poseStep=distance;
+			float cosine=(trace-1)*.5f;cosine=cosine<-1?-1:cosine>1?1:cosine;
+			const float angle=acosf(cosine)*57.2957795f;if (angle>row.angleStep) row.angleStep=angle;
+		}
+	}
+	row.positionRms=sqrtf(row.positionRms/header->numbones);row.rotationRms=sqrtf(row.rotationRms/header->numbones);
+	row.pose=2166136261u;
+	const byte *bytes=reinterpret_cast<const byte *>(matrices);
+	for (size_t i=0;i<header->numbones*sizeof(matrices[0]);++i) row.pose=(row.pose^bytes[i])*16777619u;
+	memcpy(g_motion.previousMatrices,matrices,header->numbones*sizeof(matrices[0]));
+	memcpy(g_motion.previousPosition,pos,header->numbones*sizeof(pos[0]));
+	memcpy(g_motion.previousRotation,q,header->numbones*sizeof(q[0]));
+	g_motion.previous=true;g_motion.previousBones=header->numbones;
+	g_motion.rows[g_motion.count++]=row;
+}
+
 struct ReloadAnimationSnapshot
 {
 	bool active = false, shield = false;
-	int weapon = 0, animation = 0, model = 0;
+	int weapon = 0, animation = 0, model = 0, fireEvents = 0;
+	unsigned action = 0;
 	float remaining = 0;
 	double deadline = 0, sampled = 0;
 } g_reloadAnimation;
 
 struct ReloadAnimationDisplay
 {
-	bool active = false, repaired = false;
+	bool active = false, repaired = false, bound = false, superseded = false, shield = false;
 	int weapon = 0, animation = 0, model = 0, repairs = 0, reason = 0;
+	int engineSequence = 0, fireEvents = 0;
+	unsigned action = 0;
 	double deadline = 0, start = 0, engineStart = 0, time = 0;
 	float elapsed = 0, observed = 0;
 } g_reloadDisplay;
+
+static unsigned g_weaponAnimationAction = 0;
 
 void HUD_UpdateReloadAnimation(const local_state_s *state, double predictedTime)
 {
@@ -113,76 +295,104 @@ void HUD_UpdateReloadAnimation(const local_state_s *state, double predictedTime)
 	g_reloadAnimation.model = state->client.viewmodel; g_reloadAnimation.remaining = remaining;
 	g_reloadAnimation.deadline = predictedTime + remaining;
 	g_reloadAnimation.sampled = gEngfuncs.GetClientTime();
+	g_reloadAnimation.action = g_weaponAnimationAction;
+	g_reloadAnimation.fireEvents = g_iShotsFired;
 }
 
 void HUD_ApplyReloadAnimation(cl_entity_s *view, int weapon, bool shield, double time)
 {
 	if (!view || time-time != 0) return;
-	if (time < g_reloadDisplay.time)
-		g_reloadDisplay.active = g_reloadDisplay.repaired = false;
+	// Small server-clock corrections are not new animation instances. Keep the
+	// display start so the renderer can hold its already reached sample.
+	if (time < g_reloadDisplay.time-.5)
+		g_reloadDisplay = ReloadAnimationDisplay();
 	g_reloadDisplay.time = time;
+	const bool sameContext = g_reloadDisplay.bound && weapon == g_reloadDisplay.weapon &&
+		shield == g_reloadDisplay.shield && view->curstate.modelindex == g_reloadDisplay.model;
+	const bool ownSample = sameContext && g_reloadDisplay.repaired &&
+		view->curstate.sequence == g_reloadDisplay.animation && view->curstate.animtime == g_reloadDisplay.start;
+	const bool engineSample = sameContext && view->curstate.sequence == g_reloadDisplay.engineSequence &&
+		view->curstate.animtime == g_reloadDisplay.engineStart;
+	const bool newAction = sameContext && (g_weaponAnimationAction != g_reloadDisplay.action ||
+		g_iShotsFired != g_reloadDisplay.fireEvents || (!ownSample && !engineSample));
+	if (newAction)
+	{
+		// CL_FireEvents runs after prediction and before the view is drawn. An
+		// accepted fire/idle instance must win over a preceding reload snapshot,
+		// including replays of that same obsolete predicted reload on later frames.
+		g_reloadDisplay.superseded = true;
+		g_reloadDisplay.repaired = false;
+		g_reloadDisplay.reason = 3;
+	}
 	if (!g_reloadAnimation.active || weapon != g_reloadAnimation.weapon ||
 		shield != g_reloadAnimation.shield || view->curstate.modelindex != g_reloadAnimation.model)
 	{
 		// A repaired clock may finish on its terminal pose while R is held.
 		// Keep that correction until a real new animation changes the engine
 		// start/sequence; do not resurrect a cancelled reload or override fire.
-		if (g_reloadDisplay.repaired && weapon == g_reloadDisplay.weapon &&
-			view->curstate.modelindex == g_reloadDisplay.model && view->curstate.sequence == g_reloadDisplay.animation &&
-			view->curstate.animtime == g_reloadDisplay.engineStart)
+		if (g_reloadDisplay.repaired && !g_reloadDisplay.superseded && sameContext &&
+			view->curstate.sequence == g_reloadDisplay.animation && (ownSample || engineSample))
 			view->curstate.animtime = g_reloadDisplay.start;
 		else g_reloadDisplay.repaired = false;
 		g_reloadDisplay.active = false;
 		return;
 	}
-	const bool changed = !g_reloadDisplay.active || weapon != g_reloadDisplay.weapon ||
+	const bool changed = !sameContext ||
 		g_reloadAnimation.animation != g_reloadDisplay.animation ||
+		g_reloadAnimation.action != g_reloadDisplay.action ||
 		fabs(g_reloadAnimation.deadline-g_reloadDisplay.deadline) > .2;
 	if (changed)
 	{
 		g_reloadDisplay.repaired = false;
+		g_reloadDisplay.bound = true; g_reloadDisplay.superseded = false;
 		g_reloadDisplay.weapon = weapon; g_reloadDisplay.animation = g_reloadAnimation.animation;
-		g_reloadDisplay.model = g_reloadAnimation.model;
+		g_reloadDisplay.model = g_reloadAnimation.model; g_reloadDisplay.shield = shield;
+		g_reloadDisplay.action = g_reloadAnimation.action; g_reloadDisplay.fireEvents = g_reloadAnimation.fireEvents;
+		g_reloadDisplay.engineSequence = view->curstate.sequence; g_reloadDisplay.engineStart = view->curstate.animtime;
 	}
 	g_reloadDisplay.active = true; g_reloadDisplay.deadline = g_reloadAnimation.deadline;
+	if (g_reloadDisplay.superseded || g_reloadAnimation.action != g_weaponAnimationAction ||
+		g_reloadDisplay.fireEvents != g_iShotsFired)
+	{
+		g_reloadDisplay.superseded = true; g_reloadDisplay.active = g_reloadDisplay.repaired = false;
+		g_reloadDisplay.reason = 3;
+		return;
+	}
 	const float duration = oc2_reload::Duration(weapon,g_reloadAnimation.animation,shield,0);
 	const float elapsed = duration-g_reloadAnimation.remaining+static_cast<float>(time-g_reloadAnimation.sampled);
-	if (!oc2_reload::Finite(elapsed) || elapsed < -.1f || elapsed >= duration) return;
+	if (!oc2_reload::Finite(elapsed) || duration <= 0) return;
 	g_reloadDisplay.elapsed = elapsed > 0 ? elapsed : 0;
 	g_reloadDisplay.observed = static_cast<float>(time-view->curstate.animtime);
 	const bool sequenceMismatch = view->curstate.sequence != g_reloadAnimation.animation;
 	const bool staleClock = !g_reloadDisplay.repaired &&
 		fabs(g_reloadDisplay.observed-g_reloadDisplay.elapsed) > .15f;
-	if (sequenceMismatch || staleClock)
+	if (!g_reloadDisplay.repaired && elapsed >= -.1f && elapsed < duration && (sequenceMismatch || staleClock))
 	{
 		// Source has animation parity for a new instance of the same sequence.
 		// GoldSrc only has its sequence number, so recover a missing instance
 		// from the existing predicted reload lock, never from an R key press.
-		HUD_ClearWeaponFlash();
-		g_currentanim = g_reloadAnimation.animation; g_currentweapon = weapon;
-		gEngfuncs.pfnWeaponAnim(g_currentanim,view->curstate.body);
-		view->curstate.sequence = g_currentanim; view->curstate.frame = 0;
 		g_reloadDisplay.start = static_cast<float>(time-g_reloadDisplay.elapsed);
 		g_reloadDisplay.repaired = true; ++g_reloadDisplay.repairs;
 		g_reloadDisplay.reason = sequenceMismatch ? 1 : 2;
 	}
 	if (g_reloadDisplay.repaired)
 	{
-		// pfnWeaponAnim queues the engine clock for the next view setup. Only
-		// presentation is corrected here; magazine events and firing locks
-		// continue using the unchanged predicted/server reload state.
-		if (view->curstate.animtime != g_reloadDisplay.start)
-			g_reloadDisplay.engineStart = view->curstate.animtime;
+		// This is only the current render sample, never an engine animation
+		// command. In particular, do not clear weaponstarttime from rendering.
+		// Keep the existing correction across the terminal frame: prediction can
+		// still report 5ms remaining when this render is already 16ms later.
+		view->curstate.sequence = g_reloadDisplay.animation; view->curstate.frame = 0;
 		view->curstate.animtime = g_reloadDisplay.start;
 	}
 }
 
 void HUD_DumpReloadAnimation()
 {
-	gEngfuncs.Con_Printf("oc2reloadsync: active=%d weapon=%d seq=%d remaining=%.6f expected_elapsed=%.6f observed_elapsed=%.6f repaired=%d repairs=%d reason=%d deadline=%.6f\n",
+	gEngfuncs.Con_Printf("oc2reloadsync: active=%d weapon=%d seq=%d remaining=%.6f expected_elapsed=%.6f observed_elapsed=%.6f repaired=%d repairs=%d reason=%d deadline=%.6f bound=%d superseded=%d action=%u fire_events=%d engine_start=%.6f display_start=%.6f\n",
 		g_reloadAnimation.active,g_reloadAnimation.weapon,g_reloadAnimation.animation,g_reloadAnimation.remaining,
 		g_reloadDisplay.elapsed,g_reloadDisplay.observed,g_reloadDisplay.repaired,g_reloadDisplay.repairs,
-		g_reloadDisplay.reason,g_reloadAnimation.deadline);
+		g_reloadDisplay.reason,g_reloadAnimation.deadline,g_reloadDisplay.bound,g_reloadDisplay.superseded,
+		g_reloadDisplay.action,g_reloadDisplay.fireEvents,g_reloadDisplay.engineStart,g_reloadDisplay.start);
 }
 
 /*
@@ -194,12 +404,16 @@ Change weapon model animation
 */
 void HUD_SendWeaponAnim( int iAnim, int iWeaponId, int iBody, int iForce )
 {
+	if (g_motion.active) { ++g_motion.sends;if (iForce) ++g_motion.forced;if (!g_runfuncs&&!iForce) ++g_motion.blocked; }
 	if( g_runfuncs || iForce )
 	{
 		if (g_currentweapon != iWeaponId || oc2_presentation::Find(iWeaponId,iAnim) ||
 			oc2_reload::Find(iWeaponId,iAnim,g_bHoldingShield))
 			HUD_ClearWeaponFlash();
 		g_reloadDisplay.active = g_reloadDisplay.repaired = false;
+		g_reloadDisplay.bound = g_reloadDisplay.superseded = false;
+		g_reloadAnimation.active = false;
+		++g_weaponAnimationAction;
 		g_currentanim = iAnim;
 		g_currentweapon = iWeaponId;
 

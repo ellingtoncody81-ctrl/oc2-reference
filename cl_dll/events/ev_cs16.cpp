@@ -24,6 +24,7 @@
 
 #include "eventscripts.h"
 #include "oc2_ragdoll.h"
+#include "skin_inventory_client.h"
 #include "ev_hldm.h"
 
 #include "r_efx.h"
@@ -780,6 +781,7 @@ void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAn
 	{
 		if (g_NextDeadPlayerTag >= 0x7ffffffe) g_NextDeadPlayerTag = 0;
 		model->entity.curstate.iuser3 = ++g_NextDeadPlayerTag;
+		OC2_InventoryCaptureCorpseGlove(&model->entity, playerIndex);
 		model->flags = (FTENT_CLIENTCUSTOM|FTENT_PERSIST|FTENT_SPRANIMATE|FTENT_FADEOUT|FTENT_COLLIDEWORLD|FTENT_BODYTRACE);
 		model->frameMax = 255.0f;
 		model->entity.curstate.framerate = 1.0f;

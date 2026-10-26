@@ -3,6 +3,7 @@
 class CStudioModelRenderer;
 struct cl_entity_s;
 struct model_s;
+struct alight_s;
 namespace oc2_gloves { struct Entry; }
 void OC2_InventoryInit();
 void OC2_InventoryVidInit();
@@ -20,19 +21,53 @@ bool OC2_InventoryCharmOverride(int weapon,int &texture,bool &hide);
 int OC2_InventoryViewPlayer();
 const oc2_gloves::Entry *OC2_InventoryPlayerGlove(int player);
 void OC2_InventoryGloveDrawn(int player,int resource,int parts,const char *model,int body,int skin);
+void OC2_InventoryCaptureCorpseGlove(cl_entity_s *corpse,int player);
+class OC2_InventoryGloveBodyModelScope
+{
+public:
+ // Drawing only: the canonical owner/model/header remains in force during
+ // animation, live-pose capture, ragdoll registration and ragdoll application.
+ explicit OC2_InventoryGloveBodyModelScope(CStudioModelRenderer &renderer,int player=0);
+ ~OC2_InventoryGloveBodyModelScope();
+private:
+ CStudioModelRenderer &renderer;
+ model_s *original=nullptr;
+ void *header=nullptr,*bodyPart=nullptr,*subModel=nullptr;
+};
+
+// One body draw owns the temporary suppression of its original hand mesh.
+// Draw() follows StudioSaveBones, then restores the body pose/render header.
+class OC2_InventoryPlayerGloveScope
+{
+public:
+ explicit OC2_InventoryPlayerGloveScope(CStudioModelRenderer &renderer,int player=0);
+ ~OC2_InventoryPlayerGloveScope();
+ void Draw(alight_s &lighting,float *lightdir);
+private:
+ struct Saved {int *address;int value;Saved(int *p,int v):address(p),value(v){}};
+ CStudioModelRenderer &renderer;
+ std::vector<Saved> hidden;
+ model_s *model=nullptr;
+ void *header=nullptr;
+ int resource=0,player=0,corpseTag=0;
+ bool corpse=false;
+ bool replacementBody=false;
+};
 
 class OC2_InventoryGloveMaterialScope
 {
 public:
- explicit OC2_InventoryGloveMaterialScope(CStudioModelRenderer &renderer,int resource);
+ explicit OC2_InventoryGloveMaterialScope(CStudioModelRenderer &renderer,int resource,bool record=true);
  ~OC2_InventoryGloveMaterialScope();
  OC2_InventoryGloveMaterialScope(const OC2_InventoryGloveMaterialScope &)=delete;
  OC2_InventoryGloveMaterialScope &operator=(const OC2_InventoryGloveMaterialScope &)=delete;
  bool Ready() const { return ready; }
+ int Swaps() const { return int(saved.size()); }
 private:
  struct Saved {int *address;int value;Saved(int *p,int v):address(p),value(v){}};
  std::vector<Saved> saved;
  bool ready=false;
+ bool record=true;
 };
 
 // Changes are scoped to one weapon draw. Shared model materials and following

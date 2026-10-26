@@ -26,6 +26,7 @@ struct PlayerLoadout
  bool snapshot=false;
  int glove=0;
  unsigned gloveRevision=0;
+ bool botGloveAssigned=false;
 };
 PlayerLoadout players[33];
 
@@ -141,13 +142,31 @@ void SendGlove(int operation,int index=0,int resource=0,CBasePlayer *target=null
  if(operation==oc2_gloves::Upsert){WRITE_BYTE(index);WRITE_LONG(resource);}
  MESSAGE_END();
 }
+void EquipBotGlove(CBasePlayer *player)
+{
+ if(!player||!player->IsBot())return;
+ auto &state=PlayerState(player);
+ if(state.userid<=0)return; // Fake-client construction may precede its userid.
+ if(state.botGloveAssigned)return;
+ // A wearable belongs to the player connection, never to an acquired gun.
+ // Keep it across deaths/rounds; a new userid receives a new random choice.
+ state.botGloveAssigned=true;
+ state.glove=gloveCatalog.empty()?0:gloveCatalog[RANDOM_LONG(0,int(gloveCatalog.size())-1)].id;
+ SendGlove(oc2_gloves::Upsert,player->entindex(),state.glove);
+ ALERT(at_console,"oc2gloveserver: bot player=%d userid=%d resource=%d catalog=%u\n",
+  player->entindex(),state.userid,state.glove,unsigned(gloveCatalog.size()));
+}
 void GloveSnapshot(CBasePlayer *target)
 {
  SendGlove(oc2_gloves::Reset,0,0,target);
  for(int i=1;i<=gpGlobals->maxClients&&i<=32;++i)
  {
   auto *peer=UTIL_PlayerByIndex(i);
-  if(peer&&!peer->IsDormant())SendGlove(oc2_gloves::Upsert,i,peer->IsBot()?0:PlayerState(peer).glove,target);
+  if(peer&&!peer->IsDormant())
+  {
+   EquipBotGlove(peer);
+   SendGlove(oc2_gloves::Upsert,i,PlayerState(peer).glove,target);
+  }
  }
 }
 void Snapshot(CBasePlayer *player)
@@ -166,6 +185,15 @@ void Dump()
   const auto &a=entry.second;
   ALERT(at_console,"oc2item: serial=%d entity=%d owner=%d box=%d weapon=%d definition=%d skin=%d stickers=%d/%d/%d/%d origin=%d flags=%d\n",
    a.serial,a.entity,a.owner,a.box,a.weapon,a.definition,a.skin,a.stickers[0],a.stickers[1],a.stickers[2],a.stickers[3],a.originUserid,a.flags);
+ }
+ for(int i=1;i<=gpGlobals->maxClients&&i<=32;++i)
+ {
+  auto *peer=UTIL_PlayerByIndex(i);
+  if(!peer||peer->IsDormant())continue;
+  EquipBotGlove(peer);
+  const auto &state=PlayerState(peer);
+  ALERT(at_console,"oc2gloveserver_player: player=%d userid=%d bot=%d resource=%d revision=%u assigned=%d\n",
+   i,state.userid,int(peer->IsBot()),state.glove,state.gloveRevision,int(state.botGloveAssigned));
  }
 }
 bool ArgumentNumber(int index,int maximum,int &value)
@@ -312,7 +340,8 @@ void OC2_ItemsClientConnected(CBasePlayer *player)
  players[player->entindex()]=PlayerLoadout();
  auto &state=players[player->entindex()];
  state.userid=GETPLAYERUSERID(player->edict());state.snapshot=!player->IsBot();
- SendGlove(oc2_gloves::Upsert,player->entindex(),0);
+ if(player->IsBot())EquipBotGlove(player);
+ else SendGlove(oc2_gloves::Upsert,player->entindex(),0);
 }
 void OC2_ItemsClientDisconnected(CBasePlayer *player)
 {
@@ -323,6 +352,7 @@ void OC2_ItemsClientDisconnected(CBasePlayer *player)
 void OC2_ItemsAcquire(CBasePlayerItem *item,CBasePlayer *player)
 {
  if(!item||!player||(item->m_iId!=WEAPON_KNIFE&&oc2_accessories::Index(item->m_iId)<0))return;
+ EquipBotGlove(player);
  auto &a=item->m_oc2Appearance;
  if(!a.serial)
  {
@@ -340,7 +370,8 @@ void OC2_ItemsFrame()
  for(int i=1;i<=gpGlobals->maxClients&&i<=32;++i)
  {
   auto *player=UTIL_PlayerByIndex(i);
-  if(!player||player->IsBot()||player->IsDormant())continue;
+  if(!player||player->IsDormant())continue;
+  if(player->IsBot()){EquipBotGlove(player);continue;}
   auto &state=PlayerState(player);
   if(state.snapshot&&!player->m_fInitHUD)Snapshot(player);
   if(!state.pending.empty()&&gpGlobals->time>state.deadline)state.pending.clear();
@@ -348,6 +379,20 @@ void OC2_ItemsFrame()
 }
 bool OC2_ItemsCommand(CBasePlayer *player,const char *command)
 {
+ if(FStrEq(command,"oc2_glove_test"))
+ {
+  // Explicit local verification only; changes server memory, never a DAT.
+  if(!player||player->entindex()!=1||IS_DEDICATED_SERVER()||CVAR_GET_FLOAT("sv_cheats")==0||CMD_ARGC()!=3)return true;
+  int index=0,resource=0;
+  if(!ArgumentNumber(1,32,index)||index<1||!ArgumentNumber(2,std::numeric_limits<int>::max(),resource)||
+     (resource&&!oc2_gloves::FindEntry(gloveCatalog,resource)))return true;
+  auto *target=UTIL_PlayerByIndex(index);
+  if(!target||target->IsDormant())return true;
+  auto &state=PlayerState(target);state.glove=resource;state.botGloveAssigned=target->IsBot();
+  SendGlove(oc2_gloves::Upsert,index,resource);
+  ALERT(at_console,"oc2gloveserver: test player=%d resource=%d\n",index,resource);
+  return true;
+ }
  if(FStrEq(command,"oc2_glove"))
  {
   if(!player||player->IsBot()||player->entindex()<1||player->entindex()>32)return true;

@@ -28,6 +28,13 @@ struct Config { unsigned revision=1;int resource=0;std::uint64_t instance=0; };
 inline Config DefaultConfig() { return Config(); }
 inline const Entry *FindEntry(const Catalog &catalog,int resource)
 { if(resource<=0)return nullptr;for(const auto &entry:catalog)if(entry.id==resource)return &entry;return nullptr; }
+// Derived wearables retain their category's authored mesh/UV/materials. They
+// use the player hand bones, while the independent viewmodel remains intact.
+inline std::string WorldModelPath(const Entry &entry)
+{
+ const std::size_t slash=entry.model.find_last_of('/');
+ return "models/oc2/gloves/world/"+entry.model.substr(slash==std::string::npos?0:slash+1);
+}
 inline std::uint64_t Instance(int resource)
 { return resource>0?(std::uint64_t(3)<<32)+static_cast<unsigned>(resource):0; }
 inline bool Equip(Config &config,int resource)
