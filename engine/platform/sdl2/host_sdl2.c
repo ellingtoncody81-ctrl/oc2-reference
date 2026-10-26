@@ -51,9 +51,9 @@ static void SDLash_KeyEvent( SDL_KeyboardEvent key )
 			{
 				keynum = keynum - SDL_SCANCODE_A + 1;
 				CL_CharEvent( keynum );
+				return;
 			}
-
-			return;
+			// Modifiers and navigation still need their normal key events.
 		}
 
 		// the console key closes the console regardless of the layout, everywhere else it's a character

@@ -1130,6 +1130,7 @@ int Con_Visible( void );
 qboolean Con_FixedFont( void );
 void Con_VidInit( void );
 void Con_Shutdown( void );
+void Con_FreeWindowFont( void );
 void Con_ToggleConsole_f( void );
 void Con_ClearNotify( void );
 void Con_DrawDebug( void );
@@ -1147,6 +1148,8 @@ cl_font_t *Con_GetFont( int num );
 int Con_DrawString( int x, int y, const char *string, const rgba_t setColor ); // legacy, use cl_font.c
 void GAME_EXPORT Con_DrawStringLen( const char *pText, int *length, int *height ); // legacy, use cl_font.c
 void Con_CharEvent( int key );
+void Con_MouseMove( int x, int y );
+void Con_MouseEvent( int key, qboolean down );
 void Key_Console( int key );
 void Key_Message( int key );
 void Con_FastClose( void );

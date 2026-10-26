@@ -760,7 +760,9 @@ void GAME_EXPORT Key_Event( int key, int down )
 		keys[key].repeats = 0;
 	}
 
-	VGui_KeyEvent( key, down );
+	// Console typing belongs to its own window; release earlier game/VGUI keys normally.
+	if( cls.key_dest != key_console || !down )
+		VGui_KeyEvent( key, down );
 
 	// console key is hardcoded, so the user can never unbind it
 	if( key == '`' || key == '~' )

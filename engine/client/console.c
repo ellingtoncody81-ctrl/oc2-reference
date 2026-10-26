@@ -83,6 +83,7 @@ typedef struct con_lineinfo_s
 	char		*start;
 	size_t		length;
 	double		addtime;		// notify stuff
+	unsigned int	serial;         // stable identity for selecting lines across ring eviction
 } con_lineinfo_t;
 
 typedef struct history_line_s
@@ -153,6 +154,13 @@ static void Con_InvalidateFonts( void );
 
 static void Con_LoadHistory( con_history_t *self );
 static void Con_SaveHistory( con_history_t *self );
+static void Field_KeyDownEvent( field_t *edit, int key );
+static void Con_InputCompletion( void );
+static void Con_Clear_f( void );
+static qboolean Con_BackgroundMapActive( void );
+void Key_Console( int key );
+
+#include "console_window.h"
 
 /*
 ================
@@ -173,6 +181,8 @@ static void Con_Clear_f( void )
 {
 	con.lines_count = 0;
 	con.backscroll = 0; // go to end
+	con_window.generation++;
+	con_window.selectionA = con_window.selectionB = 0;
 }
 
 /*
@@ -278,23 +288,17 @@ void Con_ToggleConsole_f( void )
 
 	if( cls.key_dest == key_console )
 	{
-		// closing console
-		if( cls.state != ca_active || Con_BackgroundMapActive( ))
-		{
-			// not in game or in background mode - return to menu
-			// UI_SetActiveMenu(true) reactivates menu without resetting history
-			UI_SetActiveMenu( true );
-		}
-		else
-		{
-			// in game - return to game
-			UI_SetActiveMenu( false );
-		}
+		Con_WindowClose();
 	}
 	else
 	{
 		// opening console - just switch key_dest, don't call UI_SetActiveMenu
 		// which would reset menu state via on_menu_hide()
+		Con_WindowLayout();
+		con_window.returnDest = cls.key_dest;
+		con_window.focus = 0;
+		con_window.historyMenu = false;
+		con_window.candidateCount = 0;
 		Key_SetKeyDest( key_console );
 	}
 }
@@ -443,6 +447,7 @@ static void Con_AddLine( const char *line, int length, qboolean newline )
 		p->start = putpos;
 		p->length = length;
 		p->addtime = cl.time;
+		p->serial = ++con_window.generation;
 	}
 	else
 	{
@@ -453,6 +458,7 @@ static void Con_AddLine( const char *line, int length, qboolean newline )
 		putpos[p->length] = '\0';
 		p->addtime = cl.time;
 		p->length++;
+		con_window.generation++;
 	}
 }
 
@@ -810,6 +816,7 @@ void Con_Init( void )
 
 	Cmd_AddCommand( "toggleconsole", Con_ToggleConsole_f, "opens or closes the console" );
 	Cmd_AddRestrictedCommand( "clear", Con_Clear_f, "clear console history" );
+	Cmd_AddRestrictedCommand( "console_window_dump", Con_WindowDump_f, "show native console window state" );
 	Cmd_AddCommand( "messagemode", Con_MessageMode_f, "enable message mode \"say\"" );
 	Cmd_AddCommand( "messagemode2", Con_MessageMode2_f, "enable message mode \"say_team\"" );
 	Cmd_AddCommand( "contimes", Con_SetTimes_f, "change number of console overlay lines (4-64)" );
@@ -825,6 +832,7 @@ Con_Shutdown
 */
 void Con_Shutdown( void )
 {
+	Con_WindowFreeFont();
 	con.initialized = false;
 
 	if( con.buffer )
@@ -836,6 +844,12 @@ void Con_Shutdown( void )
 	con.buffer = NULL;
 	con.lines = NULL;
 	Con_SaveHistory( &con.history );
+}
+
+/* Renderer owns the GL lifetime; the console also keeps CPU/GDI font state. */
+void Con_FreeWindowFont( void )
+{
+	Con_WindowFreeFont();
 }
 
 /*
@@ -1472,13 +1486,8 @@ CONSOLE LINE EDITING
 */
 static void Con_InputCompletion( void )
 {
-	if( !con_showcompletion.value )
-		return;
-
-	// keep a copy of console input
 	con.input_completion = con.input;
-
-	Con_CompleteCommand( &con.input_completion, false );
+	Con_WindowCompletion();
 }
 
 /*
@@ -1490,17 +1499,12 @@ Handles history and console scrollback
 */
 void Key_Console( int key )
 {
+	if( Con_WindowKey( key )) return;
 	// exit the console by pressing MINUS on NSwitch
 	// or both Back(Select)/Start buttons for everyone else
 	if( key == K_BACK_BUTTON || key == K_START_BUTTON || key == K_ESCAPE )
 	{
-		if( cls.state == ca_active && !cl.background )
-		{
-			UI_SetActiveMenu( false ); // we are in game, prevent menu from drawing
-			Key_SetKeyDest( key_game );
-		}
-		else
-			UI_SetActiveMenu( true );
+		Con_WindowClose();
 		return;
 	}
 
@@ -1533,6 +1537,8 @@ void Key_Console( int key )
 		con.input.widthInChars = con.linewidth;
 		Con_Bottom();
 		Con_ClearField( &con.input_completion );
+		con_window.candidateCount = 0;
+		con_window.historyMenu = false;
 
 		if( cls.state == ca_disconnected )
 		{
@@ -1667,43 +1673,6 @@ DRAWING
 */
 /*
 ================
-Con_DrawInput
-
-The input line scrolls horizontally if typing goes beyond the right edge
-================
-*/
-static void Con_DrawInput( int lines )
-{
-	// don't draw anything (always draw if not active)
-	if( cls.key_dest != key_console || !con.curFont )
-		return;
-
-	int y = lines - ( con.curFont->charHeight * 2 );
-	CL_DrawCharacter( con.curFont->charWidths[' '], y, ']', g_color_table[7], con.curFont, 0 );
-	int x = Field_DrawInputLine( con.curFont->charWidths[' ']*2, y, &con.input, 255, true );
-
-	// HACKHACK: avoid rendering issues when scroll != 0
-	if( con_showcompletion.value && con.input.scroll == 0 )
-	{
-		int len = Q_strlen( con.input.buffer );
-
-		if( FBitSet( con_showcompletion.flags, FCVAR_CHANGED ))
-		{
-			Con_InputCompletion();
-			ClearBits( con_showcompletion.flags, FCVAR_CHANGED );
-		}
-
-		// Con_CompleteCommand destroys the buffer. Need to figure out how to make it append only
-		if( Q_strlen(con.input_completion.buffer) > len && !Q_strncmp( con.input.buffer, con.input_completion.buffer, len ))
-		{
-			con.input_completion.scroll = len;
-			Field_DrawInputLine( con.curFont->charWidths[' ']*2 + x, y, &con.input_completion, 128, false );
-		}
-	}
-}
-
-/*
-================
 Con_DrawDebugLines
 
 Custom debug messages
@@ -1836,63 +1805,6 @@ static void Con_DrawNotify( void )
 
 /*
 ================
-Con_DrawConsoleLine
-
-Draws a line of the console; returns its height in lines.
-If alpha is 0, the line is not drawn, but still wrapped and its height
-returned.
-================
-*/
-static int Con_DrawConsoleLine( int y, int lineno )
-{
-	con_lineinfo_t	*li = &CON_LINES( lineno );
-
-	if( !li || !li->start || *li->start == '\1' )
-		return 0;	// this string will be shown only at notify
-
-	if( y >= con.curFont->charHeight )
-	{
-		float x = con.curFont->charWidths[' '];
-
-		CL_DrawString( x, y, li->start, g_color_table[7], con.curFont, FONT_DRAW_UTF8 );
-	}
-
-	return con.curFont->charHeight;
-}
-
-/*
-================
-Con_LastVisibleLine
-
-Calculates the last visible line index and how much to show
-of it based on con.backscroll.
-================
-*/
-static void Con_LastVisibleLine( int *lastline )
-{
-	int lines_seen = 0;
-
-	con.backscroll = Q_max( 0, con.backscroll );
-	*lastline = 0;
-
-	// now count until we saw con_backscroll actual lines
-	for( int i = CON_LINES_COUNT - 1; i >= 0; i-- )
-	{
-		// line is the last visible line?
-		*lastline = i;
-
-		if( lines_seen + 1 > con.backscroll && lines_seen <= con.backscroll )
-			return;
-
-		lines_seen += 1;
-	}
-
-	// if we get here, no line was on screen - scroll so that one line is visible then.
-	con.backscroll = lines_seen - 1;
-}
-
-/*
-================
 Con_DrawConsole
 
 Draws the console with the solid background
@@ -1900,82 +1812,7 @@ Draws the console with the solid background
 */
 static void Con_DrawSolidConsole( int lines )
 {
-	int	x, y;
-	float	fraction;
-	int	start;
-	int	stringLen, charH;
-	string	curbuild;
-	byte	color[4];
-
-	if( lines <= 0 ) return;
-
-	// draw the background
-	ref.dllFuncs.GL_SetRenderMode( kRenderNormal );
-	ref.dllFuncs.Color4ub( 255, 255, 255, 255 ); // to prevent grab color from screenfade
-	if( refState.width * 3 / 4 < refState.height && lines >= refState.height )
-		ref.dllFuncs.R_DrawStretchPic( 0, lines - refState.height, refState.width, refState.height - refState.width * 3 / 4, 0, 0, 1, 1, R_GetBuiltinTexture( REF_BLACK_TEXTURE ));
-	ref.dllFuncs.R_DrawStretchPic( 0, lines - refState.width * 3 / 4, refState.width, refState.width * 3 / 4, 0, 0, 1, 1, con.background );
-
-	if( !con.curFont || !host.allow_console )
-		return; // nothing to draw
-
-	// draw current version
-	memcpy( color, g_color_table[7], sizeof( color ));
-
-	Q_snprintf( curbuild, MAX_STRING, XASH_ENGINE_NAME " %i/" XASH_VERSION " (%s-%s build %i)", PROTOCOL_VERSION, Q_buildos(), Q_buildarch(), Q_buildnum( ));
-
-	Con_DrawStringLen( curbuild, &stringLen, &charH );
-
-	start = refState.width - stringLen;
-	fraction = lines / (float)refState.height;
-	color[3] = Q_min( fraction * 2.0f, 1.0f ) * 255; // fadeout version number
-
-#if XASH_MOBILE_PLATFORM
-	// the top of the screen might be hidden by the on-screen keyboard panning
-	Con_DrawString( start, lines - charH, curbuild, color );
-#else
-	Con_DrawString( start, 0, curbuild, color );
-#endif
-
-	// draw the text
-	if( CON_LINES_COUNT > 0 )
-	{
-		int	ymax = lines - (con.curFont->charHeight * 2.0f);
-		int	lastline;
-
-		Con_LastVisibleLine( &lastline );
-		y = ymax - con.curFont->charHeight;
-
-		if( con.backscroll )
-		{
-			start = con.curFont->charWidths[' ']; // offset one space at left screen side
-
-			// draw red arrows to show the buffer is backscrolled
-			CL_SetFontColor( con.curFont, g_color_table[1] );
-			for( x = 0; x < con.linewidth; x += 4 )
-				CL_DrawCharacter( ( x + 1 ) * start, y, '^', NULL, con.curFont, FONT_DRAW_NOCOLOR );
-			y -= con.curFont->charHeight;
-		}
-		x = lastline;
-
-		while( 1 )
-		{
-			y -= Con_DrawConsoleLine( y, x );
-
-			// top of console buffer or console window
-			if( x == 0 || y < con.curFont->charHeight )
-				break;
-			x--;
-		}
-	}
-
-	// draw the input prompt, user text, and cursor if desired
-	Con_DrawInput( lines );
-
-	y = lines - ( con.curFont->charHeight * 1.2f );
-	SCR_DrawFPS( Q_max( y, 4 )); // to avoid to hide fps counter
-
-	ref.dllFuncs.Color4ub( 255, 255, 255, 255 );
+	if( lines > 0 && con.curFont && host.allow_console ) Con_WindowDraw();
 }
 
 /*
@@ -2103,10 +1940,8 @@ static int Con_DestHeight( void )
 	if( !host.allow_console || cls.key_dest != key_console )
 		return 0; // none visible
 
-	if( cls.state < ca_active || cl.first_frame )
-		return refState.height;	// full screen
-
-	return refState.height >> 1;	// half screen
+	Con_WindowLayout();
+	return con_window.h;
 }
 
 /*
@@ -2123,15 +1958,11 @@ qboolean Con_GetInputRect( int *x, int *y, int *w, int *h )
 
 	if( cls.key_dest == key_console )
 	{
-		int lines = Con_DestHeight();
-
-		if( lines <= 0 )
-			return false;
-
-		*x = con.curFont->charWidths[' '];
-		*y = lines - con.curFont->charHeight * 2;
-		*w = refState.width - *x;
-		*h = con.curFont->charHeight;
+		Con_WindowLayout();
+		*x = con_window.focus == 1 ? con_window.x + 20 : con_window.fieldX;
+		*y = con_window.focus == 1 ? con_window.toolsY + 2 : con_window.inputY + 3;
+		*w = con_window.focus == 1 ? con_window.w - 334 : con_window.fieldW;
+		*h = con_window.rowHeight;
 		return true;
 	}
 
@@ -2170,21 +2001,7 @@ void Con_RunConsole( void )
 	Con_SetColor( );
 
 	con.showlines = Con_DestHeight();
-
-	float lines_per_frame = fabs( scr_conspeed.value ) * host.realframetime;
-
-	if( con.showlines < con.vislines )
-	{
-		con.vislines -= lines_per_frame;
-		if( con.showlines > con.vislines )
-			con.vislines = con.showlines;
-	}
-	else if( con.showlines > con.vislines )
-	{
-		con.vislines += lines_per_frame;
-		if( con.showlines < con.vislines )
-			con.vislines = con.showlines;
-	}
+	con.vislines = con.showlines;
 
 	if( FBitSet( con_charset.flags|con_fontscale.flags|con_fontnum.flags|cl_charset.flags|con_oldfont.flags, FCVAR_CHANGED ))
 	{
@@ -2241,6 +2058,7 @@ void Con_CharEvent( int key )
 			Con_ToggleConsole_f();
 			return;
 		}
+		if( Con_WindowChar( key )) return;
 
 		Field_CharEvent( &con.input, key );
 		Con_InputCompletion();
@@ -2297,6 +2115,8 @@ INTERNAL RESOURCE
 */
 void Con_VidInit( void )
 {
+	Con_WindowFreeFont();
+	con_window.fontHeight = 0;
 	const uint flags = TF_IMAGE|TF_ALLOW_NEAREST;
 
 	if( !con.historyLoaded )
@@ -2374,6 +2194,8 @@ immediately close the console
 */
 void Con_FastClose( void )
 {
+	con_window.capture = 0;
+	con_window.candidateCount = 0;
 	Con_ClearField( &con.input );
 	Con_ClearNotify();
 	con.showlines = 0;

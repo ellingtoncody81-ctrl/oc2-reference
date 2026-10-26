@@ -453,6 +453,8 @@ static const ref_api_t gEngfuncs =
 
 static void R_UnloadProgs( void )
 {
+	// Release console textures while the renderer and its GL context still live.
+	Con_FreeWindowFont();
 	if( !ref.hInstance ) return;
 
 	// deinitialize renderer

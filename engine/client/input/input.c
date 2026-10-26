@@ -360,6 +360,11 @@ static void IN_MouseMove( void )
 
 	oldx = x;
 	oldy = y;
+	if( cls.key_dest == key_console )
+	{
+		Con_MouseMove( x, y );
+		return;
+	}
 
 	VGui_MouseMove( x, y );
 
@@ -374,12 +379,21 @@ IN_MouseEvent
 */
 void IN_MouseEvent( int key, int down )
 {
+	static unsigned int consoleButtons;
 	if( !in_mouseinitialized )
 		return;
 
 	if( down )
 		SetBits( in_mstate, BIT( key ));
 	else ClearBits( in_mstate, BIT( key ));
+	// Consume both halves of a console click, even when its button closes the window.
+	if( (cls.key_dest == key_console && down) || FBitSet( consoleButtons, BIT( key )))
+	{
+		if( down ) SetBits( consoleButtons, BIT( key ));
+		else ClearBits( consoleButtons, BIT( key ));
+		Con_MouseEvent( K_MOUSE1 + key, down );
+		return;
+	}
 
 	// touch emulation overrides all input
 	if( Touch_WantVisibleCursor( ))
