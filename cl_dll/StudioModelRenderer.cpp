@@ -1898,6 +1898,11 @@ void CStudioModelRenderer::StudioRenderFinal_Hardware(void)
 
 	rendermode = IEngineStudio.GetForceFaceFlags() ? kRenderTransAdd : m_pCurrentEntity->curstate.rendermode;
 	IEngineStudio.SetupRenderer(rendermode);
+	// Looking down during a jump exposes the inner waist/torso surfaces.
+	// Keep depth testing, but do not cull those faces on our own body.
+	const bool twoSidedBody = OC2_LegsIsEntity(m_pCurrentEntity);
+	if (twoSidedBody)
+		gEngfuncs.pTriAPI->CullFace(TRI_NONE);
 
 	/*if (m_pCvarDrawEntities->value == 2)
 	{
@@ -1933,6 +1938,8 @@ void CStudioModelRenderer::StudioRenderFinal_Hardware(void)
 	//	IEngineStudio.StudioDrawAbsBBox();
 
 	IEngineStudio.RestoreRenderer();
+	if (twoSidedBody)
+		gEngfuncs.pTriAPI->CullFace(TRI_FRONT);
 }
 
 void CStudioModelRenderer::StudioRenderFinal(void)

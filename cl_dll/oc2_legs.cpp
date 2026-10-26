@@ -319,9 +319,14 @@ void OC2_LegsCreateEntity()
     s_lastSubmitted = s_submitted;
 }
 
+bool OC2_LegsIsEntity(const cl_entity_s *entity)
+{
+    return entity == &s_entity;
+}
+
 bool OC2_LegsBlend(CStudioModelRenderer &renderer, float pos[][3], float q[][4])
 {
-    if (renderer.m_pCurrentEntity != &s_entity) return false;
+    if (!OC2_LegsIsEntity(renderer.m_pCurrentEntity)) return false;
     const mstudioseqdesc_t *descs = reinterpret_cast<const mstudioseqdesc_t *>(
         reinterpret_cast<const byte *>(renderer.m_pStudioHeader) + renderer.m_pStudioHeader->seqindex);
     static float movePos[MAXSTUDIOBONES][3], duckPos[MAXSTUDIOBONES][3], runPos[MAXSTUDIOBONES][3];
@@ -336,10 +341,13 @@ bool OC2_LegsBlend(CStudioModelRenderer &renderer, float pos[][3], float q[][4])
     renderer.StudioSlerpBones(duckQ, duckPos, moveQ, movePos, s_duckMove);
     // Stance is the real eye/hull transition, with no second sequence fade.
     renderer.StudioSlerpBones(q, pos, duckQ, duckPos, s_stanceWeight);
-    if (s_jumpWeight > 0.0f)
+    // This rig has an upright jump clip but no crouch-jump pose. Preserve the
+    // duck layer under the lowered eye; the airborne clock keeps advancing.
+    const float jumpWeight = s_jumpWeight * (1.0f - s_stanceWeight);
+    if (jumpWeight > 0.0f)
     {
         Sample(renderer, descs, 6, s_jumpPhase, movePos, moveQ);
-        renderer.StudioSlerpBones(q, pos, moveQ, movePos, s_jumpWeight);
+        renderer.StudioSlerpBones(q, pos, moveQ, movePos, jumpWeight);
     }
     return true;
 }
