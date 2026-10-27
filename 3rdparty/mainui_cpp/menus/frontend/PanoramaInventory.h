@@ -20,6 +20,7 @@ public:
     int selected=0,hover=-1;
     int previewWidth=200,previewHeight=114;
     bool pagedLayout=false;
+    bool fitToSector=false;
     void Draw() override;
     bool KeyDown(int key) override;
     bool KeyUp(int key) override;
@@ -61,7 +62,7 @@ public:
     bool KeyUp(int key) override;
     bool MouseMove(int x,int y) override;
 private:
-    enum { Pistol,SMG,Rifle,Sniper,Heavy,Knife,Glove,CategoryCount,CardCount=9,WheelPageSize=5 };
+    enum { Pistol,SMG,Rifle,Sniper,Heavy,Knife,Glove,CategoryCount,CardCount=9 };
     void _Init() override;
     void _VidInit() override;
     void Think() override;
@@ -77,6 +78,7 @@ private:
     void Button(CMenuAction &button,const char *name,const char *tag,bool primary=false);
     int Right() const;
     int Pages() const;
+    int WheelPageSize() const { return m_category==Knife?6:5; }
     int WheelPages() const;
     int SavedSkin() const;
     std::string ItemName() const;

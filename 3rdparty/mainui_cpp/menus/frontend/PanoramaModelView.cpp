@@ -878,7 +878,14 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     float mins[3],maxs[3];if(!Bounds(*geometry,body,scene.mode==3,mins,maxs))return false;
     float center[3];for(int axis=0;axis<3;++axis)center[axis]=(mins[axis]+maxs[axis])*.5f;
     float normal[3]={0,-1,0};
-    if(scene.mode==1&&geometry->mounts.valid)std::memcpy(normal,geometry->mounts.side.normal,sizeof(normal));
+    if(scene.mode==1&&geometry->mounts.valid)
+    {
+        // The dual pistols have two opposing sticker sides. Frame the second
+        // pistol's real side so its muzzle faces left like the other pistols.
+        const auto &mounts=geometry->mounts;
+        const auto &side=scene.weapon==10&&mounts.regions.size()>1?mounts.regions[1].side:mounts.side;
+        std::memcpy(normal,side.normal,sizeof(normal));
+    }
     const float baseYaw=std::atan2(normal[1],normal[0]),basePitch=std::asin(std::max(-1.f,std::min(1.f,normal[2])));
     const float yaw=baseYaw+scene.yaw*kRadians,pitch=std::max(-1.4f,std::min(1.4f,basePitch+scene.pitch*kRadians));
     float direction[3]={std::cos(pitch)*std::cos(yaw),std::cos(pitch)*std::sin(yaw),std::sin(pitch)};

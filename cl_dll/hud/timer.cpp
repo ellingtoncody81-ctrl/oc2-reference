@@ -88,7 +88,7 @@ bool CHudTimer::DrawBomb(float time, float center, float top, float scale) const
 	const bool planted=state == hud_presentation::Planted;
 	const int texture=match_ui::Texture(planted?"gfx/vgui/c4icon.tga":"gfx/vgui/c4defused.tga");
 	if (!texture) return false;
-	const auto rect=hud_presentation::BombRect(center,top,scale);
+	const auto rect=hud_presentation::BombRect(center,top,scale,hud_presentation::Bomb(state));
 	m_bombDrawTime=time;m_bombDrawState=state;m_bombDrawTexture=texture;
 	m_bombDrawRect[0]=rect.x;m_bombDrawRect[1]=rect.y;m_bombDrawRect[2]=rect.width;m_bombDrawRect[3]=rect.height;
 	m_bombDrawAlpha=planted?hud_presentation::BombAlpha(time):255;
@@ -144,10 +144,13 @@ int CHudTimer::Draw( float fTime )
 		// The no-avatar fallback keeps the same enlarged top-center timer;
 		// placing it at the bottom would overlap the team badge/card.
 		const float s=hud_readability::Scale(match_ui::Scale());
-		if (DrawBomb(fTime,ScreenWidth*.5f,5*s,s)) return 1;
 		char text[32];snprintf(text,sizeof(text),"%d:%02d",minutes,seconds);
 		const float height=26*s,width=match_ui::TextWidth(text,height);
-		FillRGBABlend(int(ScreenWidth*.5f-width*.5f-12*s),int(8*s),int(width+24*s),int(height+12*s),8,12,18,195);
+		const int bomb=BombState();
+		const float frameWidth=(bomb==hud_presentation::Planted || bomb==hud_presentation::Defused)
+			? max(width+24*s,80*s) : width+24*s;
+		FillRGBABlend(int((ScreenWidth-frameWidth)*.5f),int(8*s),int(frameWidth),int(height+12*s),8,12,18,195);
+		if (DrawBomb(fTime,ScreenWidth*.5f,5*s,s)) return 1;
 		match_ui::Text(text,ScreenWidth*.5f-width*.5f,14*s,height,{r,g,b});
 		m_right=int(ScreenWidth*.5f+width*.5f);
 		return 1;

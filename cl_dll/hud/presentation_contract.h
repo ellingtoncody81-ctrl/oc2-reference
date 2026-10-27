@@ -22,8 +22,8 @@ inline int BombAlpha(float time)
 struct Rect { float x,y,width,height; };
 inline float CenterY(float height)
 {
-    // APK enginefuncs[31] -> sub_44410: inlined CL_CenterPrint(text, .25).
-    return float(int(double(height * 1.25f) * 0.578034682));
+    // Match the original client CenterPrint anchor at one quarter screen height.
+    return float(int(height * .25f));
 }
 inline float CenterExpansion(float elapsed, float remaining)
 {
@@ -41,11 +41,13 @@ inline float CenterExpansion(float elapsed, float remaining)
     }
     return value < 0 ? 0 : value > 1 ? 1 : value;
 }
-inline Rect BombRect(float center, float top, float scale)
+inline Rect BombRect(float center, float top, float scale, Bomb state)
 {
-    // The APK deliberately maps the complete 360x80 texture to 120x70.
-    // Its source image is pre-stretched; alpha cropping/aspect containment
-    // would undo this layout and make the C4 device look wide and flat.
-    return {center-60*scale,top+10*scale,120*scale,70*scale};
+    // Keep the original 120:70 drawing proportions, scaled into the time row.
+    // The two 360x80 images have different transparent margins: center the
+    // visible vertical bounds (3..54 planted, 7..43 defused) at row y=23.
+    const float height = (140.0f/3.0f)*scale;
+    const float visibleCenter = state == Defused ? 25.0f : 28.5f;
+    return {center-40*scale,top+23*scale-height*visibleCenter/80.0f,80*scale,height};
 }
 }

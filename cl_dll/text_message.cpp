@@ -69,8 +69,7 @@ int CHudTextMessage::Draw(float time)
 {
 	if (!m_centerText[0] || time<m_centerStart || time>=m_centerEnd || (gHUD.m_iHideHUDDisplay&HIDEHUD_ALL)) return 1;
 	if (!g_pMenu) return 1;
-	// The APK's pfnCenterPrint wrapper maps .25 to .72254 of screen height.
-	// CL_DrawCenterPrint keeps white text and animates the backdrop over .3 s.
+	// Keep the original upper-screen anchor and the animated backdrop.
 	const float height=max(12,gHUD.GetCharHeight()),available=ScreenWidth*.9f;
 	const auto lines=hud_unicode::WrapLines(m_centerText,height,available);
 	const float lineHeight=hud_unicode::LineHeight(height);
@@ -79,7 +78,7 @@ int CHudTextMessage::Draw(float time)
 	float widest=0;
 	for (const auto &line:lines) widest=max(widest,hud_unicode::FixedLabelWidth(line.c_str(),height));
 	const float padding=20.0f/hud_unicode::LabelScale();
-	// Preserve the APK anchor unless a translated multiline block reaches the
+	// Preserve the anchor unless a translated multiline block reaches the
 	// lower screen edge, as HudText's existing YPosition already does.
 	y=max(padding,min(y,float(ScreenHeight)-float(lines.size())*lineHeight-padding));
 	const int panelWidth=int((widest+2*padding)*expansion);
@@ -106,7 +105,7 @@ int CHudTextMessage::Draw(float time)
 }
 void CHudTextMessage::UserCmd_PresentationDump()
 {
-	const auto rect=hud_presentation::BombRect(ScreenWidth*.5f,5,1);
+	const auto rect=hud_presentation::BombRect(ScreenWidth*.5f,5,1,hud_presentation::Bomb(gHUD.m_Timer.BombState()));
 	gEngfuncs.Con_Printf("hudpresentation: time=%.3f bomb=%d alpha=%d apk_rect=%.1f,%.1f,%.1f,%.1f received=%u suppressed=%u center_draws=%u token=%s dest=%d center_start=%.3f center_end=%.3f center=%s\n",
 		gHUD.m_flTime,gHUD.m_Timer.BombState(),hud_presentation::BombAlpha(gHUD.m_flTime),rect.x,rect.y,rect.width,rect.height,
 		m_received,m_suppressed,m_drawn,m_lastToken,m_lastDestination,m_centerStart,m_centerEnd,m_centerText);

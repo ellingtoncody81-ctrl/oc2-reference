@@ -41,10 +41,45 @@ Point CMenuPanoramaWheel::SlotCenter(int slot) const
 
 void CMenuPanoramaWheel::SlotBounds(int slot,Point &position,Size &size) const
 {
-    // Use the card's exact viewport and camera fit. Transparent viewport corners
-    // are not geometry and must not shrink every item in the wheel.
-    size=Size(Q_max(1,previewWidth),Q_max(1,previewHeight+int(28*uiStatic.scaleY)));
-    position=SlotCenter(slot)-Point(size.w/2,size.h/2);
+    // Keep existing card-sized previews unless this category needs more room.
+    const Point p=GetRenderPosition(),center=SlotCenter(slot);
+    const Size z=GetRenderSize();
+    const int fullWidth=Q_max(1,previewWidth),fullHeight=Q_max(1,previewHeight+int(28*uiStatic.scaleY));
+    size=Size(fullWidth,fullHeight);
+    position=center-Point(size.w/2,size.h/2);
+    if(!fitToSector)return;
+    const double cx=p.x+z.w/2,cy=p.y+z.h/2,r=Q_min(z.w,z.h)/2;
+    const double angle=-kPi*.5+2*kPi*slot/Q_max(1,int(entries.size()));
+    const double halfAngle=kPi*.98/Q_max(1,int(entries.size()));
+    const auto fits=[&](int width,int height)
+    {
+        const int left=center.x-width/2,top=center.y-height/2;
+        const double x0=left-cx,x1=left+width-cx,y0=top-cy,y1=top+height-cy;
+        const double nearX=x0>0?x0:x1<0?x1:0,nearY=y0>0?y0:y1<0?y1:0;
+        if(nearX*nearX+nearY*nearY<r*r*InnerRadiusSquared())return false;
+        for(double x:{x0,x1})for(double y:{y0,y1})
+        {
+            if(x*x+y*y>r*r)return false;
+            if(entries.size()>1)
+            {
+                double delta=std::atan2(y,x)-angle;
+                while(delta>kPi)delta-=2*kPi;
+                while(delta<-kPi)delta+=2*kPi;
+                if(std::abs(delta)>halfAngle)return false;
+            }
+        }
+        return true;
+    };
+    if(fits(fullWidth,fullHeight))return;
+    double low=0,high=1;
+    for(int i=0;i<24;++i)
+    {
+        const double scale=(low+high)*.5;
+        if(fits(Q_max(1,int(fullWidth*scale)),Q_max(1,int(fullHeight*scale))))low=scale;
+        else high=scale;
+    }
+    size=Size(Q_max(1,int(fullWidth*low)),Q_max(1,int(fullHeight*low)));
+    position=center-Point(size.w/2,size.h/2);
 }
 
 bool CMenuPanoramaWheel::MouseMove(int x,int y){hover=Hit(x,y);return true;}
@@ -110,10 +145,12 @@ void CMenuPanoramaWheel::Draw()
     for(int i=0;i<int(entries.size());++i)
     {
         Point item;Size box;SlotBounds(i,item,box);
-        const int modelHeight=Q_max(1,previewHeight);
-        const int labelHeight=Q_max(1,box.h-modelHeight);
+        const bool fitted=box.w!=previewWidth||box.h!=previewHeight+int(28*uiStatic.scaleY);
+        const int labelHeight=fitted?Q_max(1,g_FontMgr->GetFontTall(uiStatic.hTinyFont)):Q_max(1,box.h-previewHeight);
+        const int modelHeight=fitted?Q_max(1,box.h-labelHeight):Q_max(1,previewHeight);
         if(entries[i].model)entries[i].model->DrawAt(item.x,item.y,box.w,modelHeight);
-        DrawLabel(item+Point(0,box.h-labelHeight),Size(box.w,labelHeight),entries[i].name.c_str(),entries.size()>7?12:14,ink,true);
+        if(box.h>labelHeight)
+            DrawLabel(item+Point(0,modelHeight),Size(box.w,labelHeight),entries[i].name.c_str(),fitted?12:entries.size()>7?12:14,ink,true);
     }
     DrawLabel(Point(cx-int(radius*.42),cy-int(42*uiStatic.scaleY)),Size(int(radius*.84),int(38*uiStatic.scaleY)),
         "OC2",27,ink,true);
@@ -151,7 +188,7 @@ void CMenuPanoramaInventory::Text(int x,int y,int w,int h,const char *text,int h
 {DrawLabel(Pixel(x,y),Size(w,h).Scale(),text,height,color,bold,align);}
 int CMenuPanoramaInventory::Right()const{return uiStatic.width*60/100;}
 int CMenuPanoramaInventory::Pages()const{return Q_max(1,(int(m_options.size())+CardCount-1)/CardCount);}
-int CMenuPanoramaInventory::WheelPages()const{return m_category>=Knife?Q_max(1,(int(m_wheelKeys.size())+WheelPageSize-1)/WheelPageSize):1;}
+int CMenuPanoramaInventory::WheelPages()const{return m_category>=Knife?Q_max(1,(int(m_wheelKeys.size())+WheelPageSize()-1)/WheelPageSize()):1;}
 const char *CMenuPanoramaInventory::CategoryName(int category)
 {
     static const char *names[]={u8"\u624b\u67aa",u8"\u5fae\u578b\u51b2\u950b\u67aa",u8"\u6b65\u67aa",u8"\u72d9\u51fb\u6b65\u67aa",u8"\u91cd\u578b\u6b66\u5668",u8"\u8fd1\u6218\u6b66\u5668",u8"\u624b\u5957"};
@@ -227,7 +264,7 @@ void CMenuPanoramaInventory::_VidInit()
     m_search.SetRect(right,228,rw,28);
     const int gap=10,cw=(rw-gap*2)/3,ch=126;
     for(int i=0;i<CardCount;++i)m_cards[i].SetRect(right+(i%3)*(cw+gap),272+(i/3)*(ch+gap),cw,ch);
-    m_previous.SetRect(right,686,42,30);m_next.SetRect(w-76,686,42,30);
+    m_previous.SetRect(right,676,42,30);m_next.SetRect(w-76,676,42,30);
     m_back.SetRect(98,722,132,32);m_refresh.SetRect(w-114,31,80,32);
     m_inspect.SetRect(92,172,w*73/100-110,480);
     const int side=w*73/100,sideWidth=w-side-40;
@@ -266,14 +303,14 @@ void CMenuPanoramaInventory::OpenKnife(int definition)
     if(definition<0)return;
     m_category=Knife;m_definition=definition;m_wheelPage=0;Show();
     const auto found=std::find(m_wheelKeys.begin(),m_wheelKeys.end(),definition);
-    if(found!=m_wheelKeys.end()){m_wheelPage=int(found-m_wheelKeys.begin())/WheelPageSize;BuildWheel();}
+    if(found!=m_wheelKeys.end()){m_wheelPage=int(found-m_wheelKeys.begin())/WheelPageSize();BuildWheel();}
 }
 void CMenuPanoramaInventory::OpenGloves()
 {
     m_category=Glove;Reload();
     if(const auto *entry=oc2_gloves::FindEntry(m_gloveCatalog,m_gloveConfig.resource))
         for(int i=0;i<9;++i)if(entry->collection==oc2_inventory_labels::GloveFamilyKey(i))m_family=i;
-    m_wheelPage=m_family/WheelPageSize;Show();
+    m_wheelPage=m_family/WheelPageSize();Show();
 }
 int CMenuPanoramaInventory::SavedSkin()const
 {
@@ -314,7 +351,7 @@ void CMenuPanoramaInventory::BuildWheel()
     if(m_category==Knife){m_wheelKeys.push_back(0);for(const auto &e:m_catalog)if(e.kind==oc2_inventory::Kind::Knife)m_wheelKeys.push_back(e.definition);}
     if(m_category==Glove)for(int i=0;i<9;++i)m_wheelKeys.push_back(i);
     m_wheelPage=Q_min(m_wheelPage,WheelPages()-1);
-    const int start=m_category>=Knife?m_wheelPage*WheelPageSize:0,finish=m_category>=Knife?Q_min(start+WheelPageSize,int(m_wheelKeys.size())):int(m_wheelKeys.size());
+    const int start=m_category>=Knife?m_wheelPage*WheelPageSize():0,finish=m_category>=Knife?Q_min(start+WheelPageSize(),int(m_wheelKeys.size())):int(m_wheelKeys.size());
     for(int i=start;i<finish;++i)
     {
         CMenuPanoramaWheel::Item item;item.key=m_wheelKeys[i];
@@ -343,6 +380,7 @@ void CMenuPanoramaInventory::BuildWheel()
         if(item.model)item.model->SetInteractive(false);
         m_wheel.entries.push_back(item);
     }
+    m_wheel.fitToSector=m_category==Pistol||m_category==Knife;
     m_wheel.selected=0;
     const int key=m_category<Knife?m_weapon:m_category==Knife?m_definition:m_family;
     for(int i=0;i<int(m_wheel.entries.size());++i)if(m_wheel.entries[i].key==key)m_wheel.selected=i;
@@ -390,12 +428,12 @@ void CMenuPanoramaInventory::RefreshCards()
 void CMenuPanoramaInventory::SetCategory(int category)
 {
     m_category=category;m_wheelPage=m_page=0;m_search.SetBuffer("");m_query.clear();
-    if(category==Glove)m_wheelPage=m_family/WheelPageSize;
+    if(category==Glove)m_wheelPage=m_family/WheelPageSize();
     if(category==Knife)
     {
         int index=0;
         if(m_definition)for(const auto &e:m_catalog)if(e.kind==oc2_inventory::Kind::Knife){++index;if(e.definition==m_definition)break;}
-        m_wheelPage=index/WheelPageSize;
+        m_wheelPage=index/WheelPageSize();
     }
     if(category<Knife&&WeaponCategory(m_weapon)!=category)
         for(int weapon:oc2_accessories::kWeaponIds)if(WeaponCategory(weapon)==category){m_weapon=weapon;break;}
@@ -535,13 +573,13 @@ void CMenuPanoramaInventory::Draw()
         Text(right,207,rw,18,u8"\u641c\u7d22\u76ae\u80a4\u6216\u6536\u85cf",11,Ink());
         char count[160];std::snprintf(count,sizeof(count),u8"%u \u6b3e\u76ae\u80a4  /  %d - %d  /  \u7b2c %d / %d \u9875",unsigned(m_options.size()),
             m_options.empty()?0:m_page*CardCount+1,Q_min((m_page+1)*CardCount,int(m_options.size())),m_page+1,Pages());
-        Text(right+54,689,rw-108,22,count,12,Muted(),false,QM_CENTER);
+        Text(right+54,680,rw-108,22,count,12,Muted(),false,QM_CENTER);
         if(WheelPages()>1)
         {
             char wheelPage[128];std::snprintf(wheelPage,sizeof(wheelPage),u8"第 %d / %d 页 · 点击皮肤检视与装备",m_wheelPage+1,WheelPages());
-            Text(174,694,right-272,18,wheelPage,11,Ink(),false,QM_CENTER);
+            Text(174,682,right-272,18,wheelPage,11,Ink(),false,QM_CENTER);
         }
-        else Text(174,691,right-272,18,u8"\u70b9\u51fb\u76ae\u80a4\u8fdb\u884c\u4e09\u7ef4\u68c0\u89c6\u4e0e\u88c5\u5907",11,Ink(),false,QM_CENTER);
+        else Text(174,682,right-272,18,u8"\u70b9\u51fb\u76ae\u80a4\u8fdb\u884c\u4e09\u7ef4\u68c0\u89c6\u4e0e\u88c5\u5907",11,Ink(),false,QM_CENTER);
         if(m_options.empty())Text(right+20,385,rw-40,56,u8"\u6ca1\u6709\u5339\u914d\u7684\u76ae\u80a4",22,Muted(),false,QM_CENTER);
     }
     else
