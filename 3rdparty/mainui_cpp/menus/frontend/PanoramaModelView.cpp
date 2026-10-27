@@ -236,6 +236,7 @@ struct Geometry
     int knifeSequence=-1;
     geo::MountCache mounts;
     mutable std::map<std::pair<int,bool>,CachedBounds> bounds;
+    mutable std::map<std::pair<int,int>,CachedBounds> regionBounds;
     bool valid=false;
 };
 std::map<std::string,std::unique_ptr<Geometry>> geometries;
@@ -312,6 +313,35 @@ bool Bounds(const Geometry &geometry,int body,bool gloves,float mins[3],float ma
     cached.valid=found;std::memcpy(cached.mins,mins,sizeof(cached.mins));std::memcpy(cached.maxs,maxs,sizeof(cached.maxs));
     return found;
 }
+bool RegionBounds(const Geometry &geometry,int body,int region,float mins[3],float maxs[3])
+{
+    if(region<0||std::size_t(region)>=geometry.mounts.regions.size())return false;
+    auto &cached=geometry.regionBounds[std::make_pair(body,region)];
+    if(cached.attempted)
+    {
+        std::memcpy(mins,cached.mins,sizeof(cached.mins));std::memcpy(maxs,cached.maxs,sizeof(cached.maxs));
+        return cached.valid;
+    }
+    cached.attempted=true;
+    const auto &bones=geometry.mounts.regions[region].weaponBones;
+    const auto *materials=Materials(geometry.header);bool found=false;
+    for(int a=0;a<3;++a){mins[a]=1e20f;maxs[a]=-1e20f;}
+    for(const auto &triangle:geometry.mesh.triangles)
+    {
+        if(!Active(geometry.mesh,triangle,body)||triangle.placeholder)continue;
+        const int material=Material(geometry.header,triangle.material);
+        if(material<0||HiddenMaterial(materials[material].name,false))continue;
+        for(const auto &corner:triangle.corner)
+        {
+            if(std::find(bones.begin(),bones.end(),corner.bone)==bones.end())continue;
+            float point[3];Transform(geometry.bind[corner.bone].m,corner.p,point);
+            for(int a=0;a<3;++a){mins[a]=std::min(mins[a],point[a]);maxs[a]=std::max(maxs[a],point[a]);}
+            found=true;
+        }
+    }
+    cached.valid=found;std::memcpy(cached.mins,mins,sizeof(cached.mins));std::memcpy(cached.maxs,maxs,sizeof(cached.maxs));
+    return found;
+}
 void Cross(const float *a,const float *b,float *out)
 {out[0]=a[1]*b[2]-a[2]*b[1];out[1]=a[2]*b[0]-a[0]*b[2];out[2]=a[0]*b[1]-a[1]*b[0];}
 void PrincipalAxes(const std::vector<std::array<float,3>> &points,float axes[3][3])
@@ -375,7 +405,7 @@ int FindBone(const Geometry &geometry,const char *suffix)
     }
     return -1;
 }
-const Geometry::CachedBounds &PresentationFrame(const Geometry &geometry,int body,bool gloves)
+const Geometry::CachedBounds &PresentationFrame(const Geometry &geometry,int body,bool gloves,int definition)
 {
     auto &frame=geometry.bounds[std::make_pair(body,gloves)];if(frame.framed)return frame;frame.framed=true;
     PrincipalAxes(frame.points,frame.axes);
@@ -388,6 +418,26 @@ const Geometry::CachedBounds &PresentationFrame(const Geometry &geometry,int bod
     // Reversing depth also reverses up, keeping the spine above the edge
     // without the left/right reversal caused by a 180-degree image roll.
     if(!gloves)for(float &v:frame.axes[1])v=-v;
+    if(!gloves&&definition==522)
+    {
+        // The Stiletto's handle dominates the whole-model covariance. Its
+        // blade lies at the positive end of the signed longitudinal axis.
+        float minimum=1e20f,maximum=-1e20f;
+        for(const auto &point:frame.points)
+        {const float value=Dot(point.data(),frame.axes[0]);minimum=std::min(minimum,value);maximum=std::max(maximum,value);}
+        std::vector<std::array<float,3>> blade;
+        for(const auto &point:frame.points)
+            if(Dot(point.data(),frame.axes[0])>minimum+(maximum-minimum)*.6f)blade.push_back(point);
+        if(blade.size()>=3)
+        {
+            float bladeAxes[3][3];PrincipalAxes(blade,bladeAxes);
+            const float along=Dot(bladeAxes[1],frame.axes[0]);
+            for(int a=0;a<3;++a)frame.axes[1][a]=bladeAxes[1][a]-along*frame.axes[0][a];
+            Normalize(frame.axes[1]);
+            int dominant=0;for(int a=1;a<3;++a)if(std::fabs(frame.axes[1][a])>std::fabs(frame.axes[1][dominant]))dominant=a;
+            if(frame.axes[1][dominant]<0)for(float &v:frame.axes[1])v=-v;
+        }
+    }
     Cross(frame.axes[1],frame.axes[0],frame.axes[2]);
     if(gloves)
     {
@@ -519,6 +569,40 @@ public:
         {Set(materials[i].index,texture);++materialSwaps;if(masked)Set(materials[i].flags,materials[i].flags|0x0040);}
     }
     int SwapCount() const{return materialSwaps;}
+    void HideOtherRegion(const Geometry &geometry,int body,int region)
+    {
+        if(!header||region<0||std::size_t(region)>=geometry.mounts.regions.size())return;
+        const auto &keep=geometry.mounts.regions[region].weaponBones;
+        const auto *parts=reinterpret_cast<const mstudiobodyparts_t *>(reinterpret_cast<const byte *>(header)+header->bodypartindex);
+        for(int p=0;p<header->numbodyparts;++p)
+        {
+            if(parts[p].base<=0||parts[p].nummodels<=0)continue;
+            const auto *models=reinterpret_cast<const mstudiomodel_t *>(reinterpret_cast<const byte *>(header)+parts[p].modelindex);
+            const auto &model=models[(body/parts[p].base)%parts[p].nummodels];
+            auto *vertices=reinterpret_cast<float (*)[3]>(reinterpret_cast<byte *>(header)+model.vertindex);
+            const auto *bones=reinterpret_cast<const byte *>(header)+model.vertinfoindex;
+            for(int v=0;v<model.numverts;++v)
+            {
+                const int bone=bones[v];bool other=false;
+                if(std::find(keep.begin(),keep.end(),bone)!=keep.end())continue;
+                for(std::size_t r=0;r<geometry.mounts.regions.size();++r)if(int(r)!=region)
+                {
+                    const auto &list=geometry.mounts.regions[r].weaponBones;
+                    if(std::find(list.begin(),list.end(),bone)!=list.end()){other=true;break;}
+                }
+                if(!other)continue;
+                // Collapse the other pistol to one point outside the view. The
+                // original vertex data is restored immediately after rendering.
+                const auto &bind=geometry.bind[bone];const float target[3]={10000,10000,10000};
+                for(int a=0;a<3;++a)
+                {
+                    SavedFloat entry;entry.address=&vertices[v][a];entry.value=vertices[v][a];savedVertices.push_back(entry);
+                    vertices[v][a]=0;
+                    for(int k=0;k<3;++k)vertices[v][a]+=bind.m[k][a]*(target[k]-bind.m[k][3]);
+                }
+            }
+        }
+    }
     void PresentGloves(const Geometry &geometry,int body,const Geometry::CachedBounds &frame)
     {
         if(!header)return;
@@ -669,10 +753,10 @@ int OC2_PreviewAppearance::Swaps() const
 
 struct CMenuPanoramaModelView::Scene
 {
-    int mode=1,team=2,weapon=28,definition=0,skin=0,glove=0;
+    int mode=1,team=2,weapon=28,definition=0,skin=0,glove=0,accessoryRegion=-1;
     oc2_inventory::WeaponState appearance;
     oc2_accessories::WeaponConfig accessories;
-    bool interactive=true,dragging=false,rendering=false;
+    bool interactive=true,dragging=false,rendering=false,dualUnfold=false;
     float yaw=0,pitch=0,zoom=1;
     int x=0,y=0,width=0,height=0,lastX=0,lastY=0;
     std::string lastModel;
@@ -702,7 +786,7 @@ CMenuPanoramaModelView::CMenuPanoramaModelView():m_scene(new Scene)
     eFocusAnimation=QM_HIGHLIGHTIFFOCUS;
     SetWeapon(28);
 }
-CMenuPanoramaModelView::~CMenuPanoramaModelView(){delete m_scene;}
+CMenuPanoramaModelView::~CMenuPanoramaModelView(){delete m_dualView;delete m_scene;}
 void CMenuPanoramaModelView::SetLobby(int team,int weaponId)
 {m_scene->mode=0;m_scene->team=team==1?1:2;m_scene->weapon=weaponId;}
 void CMenuPanoramaModelView::SetWeapon(int weaponId,int skinId)
@@ -734,9 +818,13 @@ void CMenuPanoramaModelView::SetAppearance(const oc2_inventory::WeaponState &sta
 }
 void CMenuPanoramaModelView::SetAccessoryPreview(const std::string &pattern,unsigned count)
 {m_scene->overridePreview=true;m_scene->previewPattern=pattern;m_scene->previewCount=count;}
+void CMenuPanoramaModelView::SetAccessoryRegion(int region){m_scene->accessoryRegion=region;}
+void CMenuPanoramaModelView::SetDualUnfold(bool enabled){m_scene->dualUnfold=enabled;}
 bool CMenuPanoramaModelView::ProjectAccessory(int,float u,float v,float &x,float &y,float &scale) const
 {
     const Scene &scene=*m_scene;if(!scene.projectionValid||!scene.geometry)return false;
+    const int n=int(scene.geometry->mounts.regions.size());
+    if(scene.accessoryRegion>=0&&n>0&&std::min(n-1,int(std::max(0.f,std::min(1.f,u))*n))!=scene.accessoryRegion)return false;
     geo::Mount mount;if(!geo::FindMount(scene.geometry->mounts,u,v,mount))return false;
     float point[3];Transform(scene.geometry->bind[mount.bone].m,mount.origin,point);
     return scene.Project(point,x,y,&scale);
@@ -749,6 +837,7 @@ bool CMenuPanoramaModelView::UnprojectAccessory(float x,float y,float &u,float &
     const int count=cache.regions.empty()?1:int(cache.regions.size());float best=1e30f;bool found=false;
     for(int region=0;region<count;++region)
     {
+        if(scene.accessoryRegion>=0&&region!=scene.accessoryRegion)continue;
         const auto &part=cache.regions.empty()?cache:cache.regions[region];
         const float denom=Dot(ray,part.side.normal);if(std::fabs(denom)<1e-6f)continue;
         float relative[3];for(int a=0;a<3;++a)relative[a]=part.side.origin[a]-scene.camera[a];
@@ -756,11 +845,16 @@ bool CMenuPanoramaModelView::UnprojectAccessory(float x,float y,float &u,float &
         for(int a=0;a<3;++a)relative[a]=scene.camera[a]+ray[a]*distance-part.side.origin[a];
         const float pu=(Dot(relative,part.side.axisX)-part.minUV[0])/(part.maxUV[0]-part.minUV[0]);
         const float pv=(Dot(relative,part.side.axisY)-part.minUV[1])/(part.maxUV[1]-part.minUV[1]);
-        // An off-surface cursor has no new mount. Clamping it into every region
-        // made the nearest candidate jump to another piece of the weapon.
-        if(pu<0.f||pu>1.f||pv<0.f||pv>1.f)continue;
+        // The split view selects a single gun up front. Its actual surface
+        // can be in front of the reference plane, so a ray through an edge
+        // can intersect that plane just outside its rectangle. Use a clamped
+        // seed there; the final screen-space check still rejects empty space.
+        // In the ordinary view keep the existing multi-region rejection.
+        if(scene.accessoryRegion<0&&(pu<0.f||pu>1.f||pv<0.f||pv>1.f))continue;
         const float cu=std::max(0.f,std::min(1.f,pu)),cv=std::max(0.f,std::min(1.f,pv));
-        float sx,sy,scale;const float candidateU=(region+cu)/count;
+        float sx,sy,scale;const float regionMin=float(region)/count;
+        const float regionMax=region+1<count?std::nextafter(float(region+1)/count,regionMin):1.f;
+        const float candidateU=std::min(regionMax,(region+cu)/count);
         if(!ProjectAccessory(0,candidateU,cv,sx,sy,scale))continue;
         const float score=(sx-x)*(sx-x)+(sy-y)*(sy-y);
         if(score<best){best=score;u=candidateU;v=cv;found=true;}
@@ -770,11 +864,15 @@ bool CMenuPanoramaModelView::UnprojectAccessory(float x,float y,float &u,float &
         float px,py,scale,ux,uy,vx,vy;
         if(!ProjectAccessory(0,u,v,px,py,scale))break;
         if((px-x)*(px-x)+(py-y)*(py-y)<.04f)break;
-        const float du=u<.999f?.001f:-.001f,dv=v<.999f?.001f:-.001f;
+        const float localMax=scene.accessoryRegion>=0?float(scene.accessoryRegion+1)/count:1.f;
+        const float du=u+.001f<localMax?.001f:-.001f,dv=v<.999f?.001f:-.001f;
         if(!ProjectAccessory(0,u+du,v,ux,uy,scale)||!ProjectAccessory(0,u,v+dv,vx,vy,scale))break;
         const float a=(ux-px)/du,b=(vx-px)/dv,c=(uy-py)/du,d=(vy-py)/dv,det=a*d-b*c;
         if(std::fabs(det)<1e-4f)break;
-        u=std::max(0.f,std::min(1.f,u+((x-px)*d-(y-py)*b)/det));
+        const float minU=scene.accessoryRegion>=0?float(scene.accessoryRegion)/count:0.f;
+        const float maxU=scene.accessoryRegion>=0&&scene.accessoryRegion+1<count?
+            std::nextafter(float(scene.accessoryRegion+1)/count,minU):1.f;
+        u=std::max(minU,std::min(maxU,u+((x-px)*d-(y-py)*b)/det));
         v=std::max(0.f,std::min(1.f,v+((y-py)*a-(x-px)*c)/det));
     }
     if(!found)return false;
@@ -820,6 +918,29 @@ void CMenuPanoramaModelView::Draw(){DrawAt(m_scPos.x,m_scPos.y,m_scSize.w,m_scSi
 bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
 {
     Scene &scene=*m_scene;scene.x=x;scene.y=y;scene.width=width;scene.height=height;
+    if(scene.dualUnfold&&scene.mode==1&&scene.weapon==10&&width>=2&&height>0&&
+        gpGlobals&&!scene.rendering&&x>=0&&y>=0&&x+width<=gpGlobals->scrWidth&&y+height<=gpGlobals->scrHeight)
+    {
+        if(!m_dualView)m_dualView=new CMenuPanoramaModelView();
+        scene.dualUnfold=false;scene.accessoryRegion=0;
+        const int leftWidth=width/2;
+        const bool left=DrawAt(x,y,leftWidth,height);
+        Scene &right=*m_dualView->m_scene;
+        right.mode=scene.mode;right.weapon=scene.weapon;right.skin=scene.skin;
+        right.appearance=scene.appearance;right.accessories=scene.accessories;
+        right.overridePreview=scene.overridePreview;right.previewPattern=scene.previewPattern;
+        right.previewCount=scene.previewCount;right.accessoryRegion=1;
+        right.yaw=scene.yaw;right.pitch=scene.pitch;right.zoom=scene.zoom;
+        const bool drawnRight=m_dualView->DrawAt(x+width-leftWidth,y,leftWidth,height);
+        scene.dualUnfold=true;scene.accessoryRegion=-1;
+        // Mouse input for the full-size item includes both viewports.
+        scene.x=x;scene.y=y;scene.width=width;scene.height=height;
+        // A pair has no single projection or attachment rectangle.
+        scene.projectionValid=false;scene.attachmentValid[0]=scene.attachmentValid[1]=false;
+        scene.lastAccessories+=right.lastAccessories;
+        scene.lastDrawSucceeded=left&&drawnRight;
+        return scene.lastDrawSucceeded;
+    }
     scene.lastDrawSucceeded=false;scene.lastMaterialSwaps=scene.lastAccessories=0;
     scene.projectionValid=false;scene.attachmentValid[0]=scene.attachmentValid[1]=false;
     scene.lastModel.clear();scene.lastModelType=-1;
@@ -875,7 +996,10 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     Geometry *geometry=Mesh(path,scene.entity,scene.mode==2);if(!geometry)return false;
     scene.geometry=geometry;
     scene.lastModel=scene.entity.model->name;scene.lastModelType=scene.entity.model->type;
-    float mins[3],maxs[3];if(!Bounds(*geometry,body,scene.mode==3,mins,maxs))return false;
+    float mins[3],maxs[3];
+    const bool split=scene.mode==1&&scene.weapon==10&&scene.accessoryRegion>=0&&
+        RegionBounds(*geometry,body,scene.accessoryRegion,mins,maxs);
+    if(!split&&!Bounds(*geometry,body,scene.mode==3,mins,maxs))return false;
     float center[3];for(int axis=0;axis<3;++axis)center[axis]=(mins[axis]+maxs[axis])*.5f;
     float normal[3]={0,-1,0};
     if(scene.mode==1&&geometry->mounts.valid)
@@ -883,7 +1007,8 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         // The dual pistols have two opposing sticker sides. Frame the second
         // pistol's real side so its muzzle faces left like the other pistols.
         const auto &mounts=geometry->mounts;
-        const auto &side=scene.weapon==10&&mounts.regions.size()>1?mounts.regions[1].side:mounts.side;
+        const auto &side=split?mounts.regions[scene.accessoryRegion].side:
+            scene.weapon==10&&mounts.regions.size()>1?mounts.regions[1].side:mounts.side;
         std::memcpy(normal,side.normal,sizeof(normal));
     }
     const float baseYaw=std::atan2(normal[1],normal[0]),basePitch=std::asin(std::max(-1.f,std::min(1.f,normal[2])));
@@ -894,7 +1019,7 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     const Geometry::CachedBounds *frame=nullptr;
     if(scene.mode==2||scene.mode==3)
     {
-        frame=&PresentationFrame(*geometry,body,scene.mode==3);
+        frame=&PresentationFrame(*geometry,body,scene.mode==3,scene.definition);
         std::memcpy(center,frame->center,sizeof(center));
         const float sy=std::sin(scene.yaw*kRadians),cy=std::cos(scene.yaw*kRadians);
         const float sp=std::sin(scene.pitch*kRadians),cp=std::cos(scene.pitch*kRadians);
@@ -917,6 +1042,27 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         else for(int axis=0;axis<3;++axis)delta[axis]=((corner&(1<<axis))?maxs[axis]:mins[axis])-center[axis];
         distance=std::max(distance,std::max(std::fabs(Dot(delta,right))/tanX,std::fabs(Dot(delta,up))/tanY)+Dot(delta,direction));
     }
+    if(split&&geometry->mounts.regions.size()==2)
+    {
+        // Both pistols use the larger required distance, so a model unit has
+        // the same on-screen size in each half even when their bounds differ.
+        const int other=1-scene.accessoryRegion;float otherMin[3],otherMax[3];
+        if(RegionBounds(*geometry,body,other,otherMin,otherMax))
+        {
+            const auto &side=geometry->mounts.regions[other].side;
+            const float otherYaw=std::atan2(side.normal[1],side.normal[0])+scene.yaw*kRadians;
+            const float otherPitch=std::max(-1.4f,std::min(1.4f,
+                std::asin(std::max(-1.f,std::min(1.f,side.normal[2])))+scene.pitch*kRadians));
+            const float od[3]={std::cos(otherPitch)*std::cos(otherYaw),std::cos(otherPitch)*std::sin(otherYaw),std::sin(otherPitch)};
+            const float oright[3]={-std::sin(otherYaw),std::cos(otherYaw),0};
+            const float oup[3]={-std::sin(otherPitch)*std::cos(otherYaw),-std::sin(otherPitch)*std::sin(otherYaw),std::cos(otherPitch)};
+            for(int corner=0;corner<8;++corner)
+            {
+                float delta[3];for(int a=0;a<3;++a)delta[a]=(otherMax[a]-otherMin[a])*.5f*((corner&(1<<a))?1.f:-1.f);
+                distance=std::max(distance,std::max(std::fabs(Dot(delta,oright))/tanX,std::fabs(Dot(delta,oup))/tanY)+Dot(delta,od));
+            }
+        }
+    }
     distance=std::max(5.f,distance*1.13f/scene.zoom);
     scene.normalizedScale=1.f/(2*distance*tanY);
     for(int axis=0;axis<3;++axis)view.vieworigin[axis]=center[axis]+direction[axis]*distance;
@@ -929,6 +1075,7 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     view.viewangles[2]=std::atan2(-Dot(right,levelUp),Dot(right,levelRight))*kDegrees;
     DrawOverride weaponOverride;
     if(!weaponOverride.Freeze(*geometry,body,scene.mode==3))return false;
+    if(split)weaponOverride.HideOtherRegion(*geometry,body,scene.accessoryRegion);
     if(scene.mode==3&&frame)weaponOverride.PresentGloves(*geometry,body,*frame);
     if(skin)weaponOverride.Replace(skin->material,Texture(skin->file));
     if(gloves)
@@ -944,8 +1091,10 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     oc2_accessories::WeaponConfig config=scene.accessories;
     if(scene.appearance.charm)config.charm=scene.appearance.charm>0;
     Geometry *statGeometry=nullptr,*charmGeometry=nullptr;
-    const bool drawStat=scene.mode==1&&config.stattrak&&Attachment(*geometry,config,false,scene.stat,statGeometry);
-    const bool drawCharm=scene.mode==1&&config.charm&&Attachment(*geometry,config,true,scene.charm,charmGeometry);
+    const auto inRegion=[&](float u){return !split||std::min(int(geometry->mounts.regions.size())-1,
+        int(std::max(0.f,std::min(1.f,u))*geometry->mounts.regions.size()))==scene.accessoryRegion;};
+    const bool drawStat=scene.mode==1&&config.stattrak&&inRegion(config.statU)&&Attachment(*geometry,config,false,scene.stat,statGeometry);
+    const bool drawCharm=scene.mode==1&&config.charm&&inRegion(config.charmU)&&Attachment(*geometry,config,true,scene.charm,charmGeometry);
     if(drawStat&&scene.overridePreview)scene.stat.curstate.body=int(scene.previewCount);
     DrawOverride statOverride,charmOverride;
     if(drawStat)statOverride.Freeze(*statGeometry,scene.stat.curstate.body,false);

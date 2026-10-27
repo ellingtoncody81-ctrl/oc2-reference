@@ -148,15 +148,23 @@ public:
             UI_FillRect(p.x,p.y+z.h*i/4,z.w,1,PackRGBA(124,146,161,35));
         }
         if(!appearance||!draft)return;
-        m_model.SetInteractive(false);m_model.SetAppearance(*appearance,draft);
-        m_model.SetAccessoryPreview(sticker,count);
-        if(!m_model.DrawAt(p.x,p.y,z.w,z.h))
+        const int n=weapon==10?2:1;bool drawn=true;
+        for(int i=0;i<n;++i)
+        {
+            CMenuPanoramaModelView &model=m_modelsView[i];
+            model.SetInteractive(false);model.SetAppearance(*appearance,draft);
+            model.SetAccessoryPreview(sticker,count);model.SetAccessoryRegion(n==2?i:-1);
+            const int viewWidth=z.w/n,x0=p.x+(i?z.w-viewWidth:0);
+            drawn=model.DrawAt(x0,p.y,viewWidth,z.h)&&drawn;
+        }
+        if(!drawn)
             oc2_panorama::DrawText(p,z,u8"3D 预览加载中",16,PackRGBA(160,175,189,255),false,QM_CENTER);
         DrawSelection();
     }
     void Dump()
     {
-        m_model.Dump("accessory_detail");
+        m_modelsView[0].Dump("accessory_detail");
+        if(weapon==10)m_modelsView[1].Dump("accessory_detail_right");
         Pane panes[2];const int n=Panes(panes);
         for(int i=0;i<n;++i)
         {
@@ -177,7 +185,7 @@ private:
     struct Box {Point p;Size z;};
     std::array<Preview,24> m_previews{};Attachment m_models[2];Bounds m_stamp,m_digits[6];
     std::string m_frame,m_digitFiles[6];Point m_grab;
-    CMenuPanoramaModelView m_model;
+    CMenuPanoramaModelView m_modelsView[2];
     static bool SafeImage(const std::string &s)
     {return !s.empty()&&s.size()<81&&s.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")==std::string::npos&&s.find("..") == std::string::npos;}
     static bool ReadBounds(std::istringstream &s,Bounds &b)
@@ -234,19 +242,36 @@ private:
     Point Anchor(int i)const
     {
         float u,v;Position(i,u,v);float x=0,y=0,scale=0;
-        if(!m_model.ProjectAccessory(i,u,v,x,y,scale))return GetRenderPosition();
+        const int region=weapon==10?Q_min(1,int(u*2)):0;
+        if(!m_modelsView[region].ProjectAccessory(i,u,v,x,y,scale))return GetRenderPosition();
         return Point(int(std::lround(x)),int(std::lround(y)));
     }
     Box AttachmentBox(int i)const
     {
         float left=0,top=0,right=0,bottom=0;
-        if(!m_model.AttachmentBounds(i,left,top,right,bottom))return {Point(),Size(0,0)};
+        float u,v;Position(i,u,v);const int region=weapon==10?Q_min(1,int(u*2)):0;
+        if(!m_modelsView[region].AttachmentBounds(i,left,top,right,bottom))return {Point(),Size(0,0)};
+        if(weapon==10)
+        {
+            const Point p=GetRenderPosition();const Size z=GetRenderSize();
+            const int x0=p.x+(region?z.w-z.w/2:0);
+            left=Q_max(left,float(x0));right=Q_min(right,float(x0+z.w/2));
+            top=Q_max(top,float(p.y));bottom=Q_min(bottom,float(p.y+z.h));
+            if(right<=left||bottom<=top)return {Point(),Size(0,0)};
+        }
         const int x=int(std::floor(left)),y=int(std::floor(top));
         return {Point(x,y),Size(Q_max(1,int(std::ceil(right))-x),Q_max(1,int(std::ceil(bottom))-y))};
     }
     bool HitAttachment(int i)const
     {
         const Box b=AttachmentBox(i);if(b.z.w<=0||b.z.h<=0)return false;const int tolerance=3;
+        if(weapon==10)
+        {
+            float u,v;Position(i,u,v);const int region=Q_min(1,int(u*2));
+            const Point p=GetRenderPosition();const Size z=GetRenderSize();
+            const int x0=p.x+(region?z.w-z.w/2:0);
+            if(uiStatic.cursorX<x0||uiStatic.cursorX>=x0+z.w/2)return false;
+        }
         return UI_CursorInRect(Point(b.p.x-tolerance,b.p.y-tolerance),Size(b.z.w+2*tolerance,b.z.h+2*tolerance));
     }
     void DrawSelection()
@@ -254,8 +279,11 @@ private:
         if(!draft)return;const Box b=AttachmentBox(selected);
         if(b.z.w<=0||b.z.h<=0)return;
         const Point p=GetRenderPosition();const Size z=GetRenderSize();
-        const int x=Q_max(p.x,b.p.x-2),y=Q_max(p.y,b.p.y-2);
-        const int right=Q_min(p.x+z.w,b.p.x+b.z.w+2),bottom=Q_min(p.y+z.h,b.p.y+b.z.h+2);
+        float u,v;Position(selected,u,v);const int region=weapon==10?Q_min(1,int(u*2)):0;
+        const int leftEdge=p.x+(weapon==10&&region?z.w-z.w/2:0);
+        const int rightEdge=leftEdge+(weapon==10?z.w/2:z.w);
+        const int x=Q_max(leftEdge,b.p.x-2),y=Q_max(p.y,b.p.y-2);
+        const int right=Q_min(rightEdge,b.p.x+b.z.w+2),bottom=Q_min(p.y+z.h,b.p.y+b.z.h+2);
         const int w=right-x,h=bottom-y;if(w<=0||h<=0)return;
         const unsigned ink=PackRGBA(224,194,119,220);
         UI_FillRect(x,y,w,1,ink);UI_FillRect(x,y+h-1,w,1,ink);UI_FillRect(x,y,1,h,ink);UI_FillRect(x+w-1,y,1,h,ink);
@@ -264,7 +292,10 @@ private:
     {
         const float x=float(uiStatic.cursorX-m_grab.x),y=float(uiStatic.cursorY-m_grab.y);
         float nextU=0,nextV=0;
-        if(m_model.UnprojectAccessory(x,y,nextU,nextV))SetPosition(nextU,nextV,false);
+        const Point p=GetRenderPosition();const Size z=GetRenderSize();
+        const int region=weapon==10&&x>=p.x+z.w/2?1:0;
+        if(weapon==10&&region&&x<p.x+z.w-z.w/2)return;
+        if(m_modelsView[region].UnprojectAccessory(x,y,nextU,nextV))SetPosition(nextU,nextV,false);
     }
 };
 

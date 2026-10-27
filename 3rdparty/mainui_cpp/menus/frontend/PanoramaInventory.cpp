@@ -240,7 +240,7 @@ void CMenuPanoramaInventory::_Init()
         SET_EVENT_MULTI(m_cards[i].onReleased,{static_cast<CMenuPanoramaInventory*>(pSelf->Parent())->SelectCard(pSelf);});
     }
     m_search.SetNameAndStatus("",nullptr,"pano_search");m_search.iMaxLength=80;m_search.bAllowColorstrings=false;AddItem(m_search);
-    m_inspect.SetNameAndStatus("",nullptr,"pano_model");m_inspect.SetInteractive(true);AddItem(m_inspect);
+    m_inspect.SetNameAndStatus("",nullptr,"pano_model");m_inspect.SetInteractive(true);m_inspect.SetDualUnfold(true);AddItem(m_inspect);
     Button(m_closeInspect,u8"< \u8fd4\u56de\u76ae\u80a4\u5217\u8868","pano_close_inspect");m_closeInspect.onReleased=VoidCb(&CMenuPanoramaInventory::CloseInspect);
     Button(m_equip,u8"\u88c5\u5907","pano_equip",true);m_equip.onReleased=VoidCb(&CMenuPanoramaInventory::Equip);
     Button(m_accessories,u8"\u6302\u4ef6\u4e0e\u8ba1\u6570\u5668","pano_attachments");m_accessories.onReleased=VoidCb(&CMenuPanoramaInventory::OpenAccessories);
@@ -258,8 +258,8 @@ void CMenuPanoramaInventory::_VidInit()
     const int tabGap=7,tabWidth=(w-132-tabGap*(CategoryCount-1))/CategoryCount;
     for(int i=0;i<CategoryCount;++i)m_categories[i].SetRect(98+i*(tabWidth+tabGap),112,tabWidth,42);
     m_wheel.pagedLayout=m_category>=Knife;
-    const int wheelSize=Q_min(m_wheel.pagedLayout?512:500,right-140),wheelX=98+(right-140-wheelSize)/2;
-    m_wheel.SetRect(wheelX,m_wheel.pagedLayout?180:186,wheelSize,wheelSize);
+    const int wheelSize=Q_min(460,right-140),wheelX=98+(right-140-wheelSize)/2;
+    m_wheel.SetRect(wheelX,196,wheelSize,wheelSize);
     m_wheelPrevious.SetRect(112,676,44,30);m_wheelNext.SetRect(right-74,676,44,30);
     m_search.SetRect(right,228,rw,28);
     const int gap=10,cw=(rw-gap*2)/3,ch=126;
@@ -342,8 +342,8 @@ bool CMenuPanoramaInventory::IsEquipped(int id)const
 void CMenuPanoramaInventory::BuildWheel()
 {
     m_wheel.pagedLayout=m_category>=Knife;
-    const int diameter=Q_min(m_wheel.pagedLayout?512:500,Right()-140);
-    m_wheel.SetRect(98+(Right()-140-diameter)/2,m_wheel.pagedLayout?180:186,diameter,diameter);
+    const int diameter=Q_min(460,Right()-140);
+    m_wheel.SetRect(98+(Right()-140-diameter)/2,196,diameter,diameter);
     m_wheel.VidInit();
     m_wheelKeys.clear();m_wheel.entries.clear();m_wheel.title=CategoryName(m_category);
     if(m_category<Knife)
@@ -466,7 +466,7 @@ void CMenuPanoramaInventory::SyncInspect()
     const auto profile=oc2_local_profiles::Resolve(m_profiles,m_weapon,m_selection);
     for(int i=0;i<4;++i)
     {
-        const int id=profile.appearance.stickers[i];char line[160];
+        const int id=profile.appearance.stickers[oc2_sticker_display::PhysicalSlot(m_weapon,i)];char line[160];
         const std::string name=oc2_inventory_labels::Sticker(m_catalog,id);
         std::snprintf(line,sizeof(line),u8"\u8d34\u7eb8 %c   %s",'A'+i,name.c_str());m_stickers[i].SetText(line);
     }

@@ -16,6 +16,10 @@ public:
     void SetAppearance(const oc2_inventory::WeaponState &state,
         const oc2_accessories::WeaponConfig *accessories=nullptr);
     void SetAccessoryPreview(const std::string &pattern,unsigned count);
+    // Select one real gun in the dual-pistol attachment editor; -1 is normal view.
+    void SetAccessoryRegion(int region);
+    // Expand Elite into both real sticker sides in full-size detail views.
+    void SetDualUnfold(bool enabled);
     bool ProjectAccessory(int kind,float u,float v,float &screenX,float &screenY,float &pixelsPerUnit) const;
     bool UnprojectAccessory(float screenX,float screenY,float &u,float &v) const;
     bool AttachmentBounds(int kind,float &left,float &top,float &right,float &bottom) const;
@@ -32,6 +36,7 @@ public:
     bool MouseMove(int x,int y) override;
 private:
     struct Scene;
+    CMenuPanoramaModelView *m_dualView=nullptr;
     Scene *m_scene;
     CMenuPanoramaModelView(const CMenuPanoramaModelView &)=delete;
     CMenuPanoramaModelView &operator=(const CMenuPanoramaModelView &)=delete;
