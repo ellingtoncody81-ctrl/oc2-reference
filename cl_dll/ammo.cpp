@@ -817,6 +817,9 @@ int CHudAmmo::MsgFunc_Brass( const char *pszName, int iSize, void *pbuf )
 	int BounceSoundType = reader.ReadByte();
 	int Life = reader.ReadByte();
 	int Client = reader.ReadByte();
+	if (EV_ShellDebugEnabled())
+		gEngfuncs.Con_Printf("oc2shell brass t=%.6f shooter=%d local=%d model=%d sound=%d life=%d\n",
+			gEngfuncs.GetClientTime(), Client, EV_IsLocal(Client), ModelIndex, BounceSoundType, Life);
 
 	if (EV_IsLocal(Client))
 	{

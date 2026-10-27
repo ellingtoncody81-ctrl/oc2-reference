@@ -34,13 +34,13 @@ inline void Limit(float value[3], float maximum)
 }
 
 inline Motion Dampen(const Motion &bob, const float sway[3], float landDip,
-                     float mouseRoll, float speedRatio)
+					 float mouseRoll, float speedRatio, bool optical = false)
 {
     Motion result;
     result.speedRatio = Safe(speedRatio);
     if (result.speedRatio < 0) result.speedRatio = 0;
     if (result.speedRatio > 1) result.speedRatio = 1;
-    result.bobGain = 0.20f;
+    result.bobGain = optical ? 1.50f : 0.20f;
     // The local Source controller uses 0.1 stationary / 0.3 running looseness.
     result.inertiaGain = 0.10f + 0.20f * result.speedRatio;
     for (int axis = 0; axis < 3; ++axis)
@@ -52,7 +52,7 @@ inline Motion Dampen(const Motion &bob, const float sway[3], float landDip,
     result.position[2] -= Safe(landDip) * 0.10f;
     result.angles[2] += Safe(mouseRoll) * result.inertiaGain;
     Limit(result.position, 0.12f);
-    Limit(result.angles, 0.20f);
+    Limit(result.angles, optical ? 0.90f : 0.20f);
     return result;
 }
 }

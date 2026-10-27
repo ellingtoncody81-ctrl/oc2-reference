@@ -811,7 +811,9 @@ void DLLEXPORT HUD_TempEntUpdate (
 			// Cull to PVS (not frustum cull, just PVS)
 			if ( !(pTemp->flags & FTENT_NOMODEL ) )
 			{
-				if ( !Callback_AddVisibleEntity( &pTemp->entity ) )
+				const int visible = Callback_AddVisibleEntity( &pTemp->entity );
+				EV_ShellDebugFrame(pTemp, visible, client_time);
+				if ( !visible )
 				{
 					if ( !(pTemp->flags & FTENT_PERSIST) ) 
 					{

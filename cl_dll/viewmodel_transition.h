@@ -57,7 +57,10 @@ public:
 		{
 			if (m_count == 2) { m_old[0] = m_old[1]; m_count = 1; }
 			Layer old = m_current;
-			old.fadeStart = next.sampleTime;
+			// The departing layer was last sampled at this time. Starting the
+			// fade at the new draw instead would hold it at full weight for an
+			// extra render frame, especially visible at low frame rates.
+			old.fadeStart = old.sampleTime;
 			old.duration = .2f;
 			m_old[m_count++] = old;
 		}

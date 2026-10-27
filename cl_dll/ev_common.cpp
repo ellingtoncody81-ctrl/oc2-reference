@@ -37,6 +37,57 @@ extern vec3_t v_origin, v_angles;
 
 int g_iRShell, g_iPShell, g_iShotgunShell;
 
+static cvar_t *s_shellDebug;
+struct ShellDebugRecord
+{
+	TEMPENTITY *temp;
+	float die;
+	int id, samples;
+};
+static ShellDebugRecord s_shellRecords[64] = {};
+static int s_shellSerial;
+
+bool EV_ShellDebugEnabled()
+{
+	return s_shellDebug && s_shellDebug->value != 0.0f;
+}
+
+void EV_ShellDebugAllocation(TEMPENTITY *temp, int model, int soundtype,
+	const float *origin, const float *velocity, float life)
+{
+	const int id = ++s_shellSerial;
+	if (temp)
+	{
+		ShellDebugRecord &record = s_shellRecords[id % 64];
+		record.temp = temp;
+		record.die = temp->die;
+		record.id = id;
+		record.samples = 0;
+	}
+	const model_t *actual = temp ? temp->entity.model : NULL;
+	gEngfuncs.Con_Printf("oc2shell alloc id=%d t=%.6f model=%d sound=%d life=%.3f ptr=%p actual=%s origin=%.4f,%.4f,%.4f vel=%.4f,%.4f,%.4f actualvel=%.4f,%.4f,%.4f\n",
+		id, gEngfuncs.GetClientTime(), model, soundtype, life, (void *)temp,
+		actual ? actual->name : "NULL", origin[0], origin[1], origin[2], velocity[0], velocity[1], velocity[2],
+		temp ? temp->entity.baseline.origin[0] : 0.0f, temp ? temp->entity.baseline.origin[1] : 0.0f,
+		temp ? temp->entity.baseline.origin[2] : 0.0f);
+}
+
+void EV_ShellDebugFrame(TEMPENTITY *temp, int visible, double time)
+{
+	if (!EV_ShellDebugEnabled()) return;
+	for (int i = 0; i < 64; ++i)
+	{
+		ShellDebugRecord &record = s_shellRecords[i];
+		if (record.temp != temp || record.die != temp->die || record.samples >= 6) continue;
+		++record.samples;
+		gEngfuncs.Con_Printf("oc2shell frame id=%d t=%.6f ptr=%p visible=%d model=%s pos=%.4f,%.4f,%.4f vel=%.4f,%.4f,%.4f\n",
+			record.id, time, (void *)temp, visible, temp->entity.model ? temp->entity.model->name : "NULL",
+			temp->entity.origin[0], temp->entity.origin[1], temp->entity.origin[2],
+			temp->entity.baseline.origin[0], temp->entity.baseline.origin[1], temp->entity.baseline.origin[2]);
+		return;
+	}
+}
+
 static bool EV_GetScoutVirtualPort(cl_entity_t *view, studiohdr_t *header,
 	int attachment, Vector &port)
 {
@@ -216,6 +267,7 @@ That was what we were going to do, but we ran out of time...oh well.
 */
 void Game_HookEvents( void )
 {
+	s_shellDebug = CVAR_CREATE("oc2_shell_debug", "0", 0);
 	HOOK_EVENT( ak47, FireAK47 );
 	HOOK_EVENT( aug, FireAUG );
 	HOOK_EVENT( awp, FireAWP );

@@ -1042,6 +1042,10 @@ void EXT_FUNC CBasePlayerWeapon::__API_HOOK(ItemPostFrame)()
 
 	if (m_pPlayer->m_flEjectBrass != 0 && m_pPlayer->m_flEjectBrass <= gpGlobals->time)
 	{
+		cvar_t *shellDebug = CVAR_GET_POINTER("oc2_shell_debug");
+		if (shellDebug && shellDebug->value != 0.0f && m_iId == WEAPON_M3)
+			ALERT(at_console, "oc2shell server_emit t=%.6f shooter=%d due=%.6f\n",
+				gpGlobals->time, m_pPlayer->entindex(), m_pPlayer->m_flEjectBrass);
 		m_pPlayer->m_flEjectBrass = 0;
 		EjectBrassLate();
 	}
@@ -1121,6 +1125,12 @@ void EXT_FUNC CBasePlayerWeapon::__API_HOOK(ItemPostFrame)()
 			{
 				// reload when reload is pressed, or if no buttons are down and weapon is empty.
 				Reload();
+				if (PrimaryAmmoIndex() >= 0 && PrimaryAmmoIndex() < MAX_AMMO_SLOTS &&
+					oc2_reload::IdleAfterHeldReload(m_iId,m_pPlayer->pev->weaponanim,
+						m_pPlayer->HasShield() != FALSE,m_iClip,iMaxClip(),
+						m_pPlayer->m_rgAmmo[PrimaryAmmoIndex()],m_flTimeWeaponIdle-UTIL_WeaponTimeBase(),
+						m_fInReload != FALSE,(m_pPlayer->pev->button & (IN_ATTACK | IN_ATTACK2)) != 0))
+					WeaponIdle();
 			}
 		}
 	}
@@ -1794,6 +1804,16 @@ int CBasePlayerWeapon::SecondaryAmmoIndex()
 
 void CBasePlayerWeapon::Holster(int skiplocal)
 {
+	// Nova's delayed pump casing belongs to this weapon. If it is holstered
+	// before the pump, do not let the next weapon eject that pending casing.
+	if (m_iId == WEAPON_M3)
+	{
+		cvar_t *shellDebug = CVAR_GET_POINTER("oc2_shell_debug");
+		if (shellDebug && shellDebug->value != 0.0f && m_pPlayer->m_flEjectBrass != 0.0f)
+			ALERT(at_console, "oc2shell server_cancel t=%.6f shooter=%d due=%.6f\n",
+				gpGlobals->time, m_pPlayer->entindex(), m_pPlayer->m_flEjectBrass);
+		m_pPlayer->m_flEjectBrass = 0;
+	}
 	const bool cancelReload = m_fInReload || (oc2_reload::Shotgun(m_iId) && m_fInSpecialReload != 0);
 	AdvanceReload(); // A reached insertion survives switching; an earlier switch cancels it.
 	if (cancelReload)

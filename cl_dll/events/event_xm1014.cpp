@@ -40,6 +40,9 @@ void EV_FireXM1014(event_args_t *args)
 	Vector velocity(args->velocity);
 	Vector forward, right, up;
 	AngleVectors(angles, forward, right, up);
+	if (EV_ShellDebugEnabled())
+		gEngfuncs.Con_Printf("oc2shell shot weapon=xm1014 t=%.6f shooter=%d local=%d\n",
+			gEngfuncs.GetClientTime(), idx, EV_IsLocal(idx));
 	Vector shellVelocity, shellOrigin;
 	if (EV_IsLocal(idx))
 	{

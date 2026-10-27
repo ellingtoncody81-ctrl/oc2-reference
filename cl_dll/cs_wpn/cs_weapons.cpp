@@ -874,7 +874,15 @@ void CBasePlayerWeapon::ItemPostFrame( void )
 			if (m_flFamasShoot == 0 && m_flGlock18Shoot == 0)
 			{
 				if (!(m_iWeaponState & WPNSTATE_SHIELD_DRAWN))
+				{
 					Reload();
+					if (m_iPrimaryAmmoType >= 0 && m_iPrimaryAmmoType < MAX_AMMO_SLOTS &&
+						oc2_reload::IdleAfterHeldReload(m_iId,m_pPlayer->pev->weaponanim,
+							m_pPlayer->HasShield() != FALSE,m_iClip,iMaxClip(),
+							m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType],m_flTimeWeaponIdle-UTIL_WeaponTimeBase(),
+							m_fInReload != FALSE,(m_pPlayer->pev->button & (IN_ATTACK | IN_ATTACK2)) != 0))
+						WeaponIdle();
+				}
 			}
 		}
 	}

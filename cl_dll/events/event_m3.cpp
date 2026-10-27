@@ -39,6 +39,9 @@ void EV_FireM3(event_args_t *args)
 	Vector angles(args->angles);
 	Vector forward, right, up;
 	AngleVectors(angles, forward, right, up);
+	if (EV_ShellDebugEnabled())
+		gEngfuncs.Con_Printf("oc2shell shot weapon=m3 t=%.6f shooter=%d local=%d\n",
+			gEngfuncs.GetClientTime(), idx, EV_IsLocal(idx));
 	if (EV_IsLocal(idx))
 	{
 		++g_iShotsFired;

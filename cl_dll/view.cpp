@@ -459,16 +459,14 @@ static void V_PositionADS(ref_params_s *params,cl_entity_s *view,const view_ads_
 			for(int local=0;local<3;++local)
 				sightShift[axis]+=(after[axis][local]-before[axis][local])*profile->center[local]*(local==1?hand:1.0f);
 		}
-		const float side=DotProduct(sightShift,right),rise=DotProduct(sightShift,up);
 		for(int axis=0;axis<3;++axis)
 		{
-			view->origin[axis]-=right[axis]*side+up[axis]*rise;
+			// Keep the measured optic center fixed in all three dimensions.
+			// Limiting this compensation independently would move the aperture
+			// away from the dot when the weapon rotates farther from its pivot.
+			view->origin[axis]-=sightShift[axis];
 			s_ADSMotionPosition[axis]=view->origin[axis]-anchoredOrigin[axis];
 		}
-		// The pivot correction also counts toward the established ADS bound.
-		view_ads_motion::Limit(s_ADSMotionPosition,0.12f);
-		for(int axis=0;axis<3;++axis)
-			view->origin[axis]=anchoredOrigin[axis]+s_ADSMotionPosition[axis];
 	}
 	// Report the actual float deltas surviving the final ADS placement, rather
 	// than upstream StepBob values that used to be overwritten at gain=1.
@@ -1673,7 +1671,8 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 	const float adsSpeed=gHUD.cl_bobstyle && gHUD.cl_bobstyle->value==view_bob::kStyleModern?
 		s_BobState.speed_in:sqrtf(pparams->simvel[0]*pparams->simvel[0]+pparams->simvel[1]*pparams->simvel[1]);
 	const view_ads_motion::Motion adsMotion=view_ads_motion::Dampen(adsBob,adsSway,
-		effects.land_dip,effects.mouse_roll,flMaxSpeed>0?adsSpeed/flMaxSpeed:0);
+		effects.land_dip,effects.mouse_roll,flMaxSpeed>0?adsSpeed/flMaxSpeed:0,
+		s_ADS.weapon==8 || s_ADS.weapon==27);
 	if( gHUD.viewmodel_bob_debug && gHUD.viewmodel_bob_debug->value && bVmActive && !pparams->paused )
 	{
 		if( effects.land_dip > s_flHudLandPeak ) s_flHudLandPeak = effects.land_dip;

@@ -110,6 +110,8 @@ struct Body
     bool headshot;
     bool sleeping;
     int quietFrames;
+    int stationaryFrames;
+    Vector stationaryAnchor;
     unsigned int steps;
     unsigned int contacts;
     int catchupSteps;
@@ -133,6 +135,7 @@ struct Body
     Frame baseFrame;
     Frame basePelvisFrame;
     Vector hingeNormal[4];
+    unsigned char hingeStop[4];
     int boneOwner[MAXSTUDIOBONES];
     Vector boneParentOffset[MAXSTUDIOBONES];
     Vector boneVelocity[MAXSTUDIOBONES];
@@ -415,9 +418,23 @@ void SolveHinge(Body &body, int chain, const Frame &frame)
     // its straight position or fold sideways when its foot catches the floor.
     const float limit = chain < 2 ? 2.60f : 2.65f;
     const float signedAngle = atan2f(Dot(lower, bend), Dot(lower, upper));
-    // Near a fully folded joint, atan2 crosses -pi/pi. Resolve toward the
-    // nearby flexion stop instead of snapping all the way to straight.
-    const float angle = signedAngle < -1.5708f ? limit : Clamp(signedAngle, 0.015f, limit);
+    // Outside the permitted arc, remember which stop was selected until the
+    // joint re-enters the interior. Otherwise a contact oscillating across the
+    // negative-angle branch boundary switches the target between straight and
+    // fully folded every solver iteration, injecting large limb velocities.
+    float angle;
+    if (signedAngle < 0.0f)
+    {
+        if (!body.hingeStop[chain])
+            body.hingeStop[chain] = signedAngle < -1.5708f ? 2 : 1;
+        angle = body.hingeStop[chain] == 2 ? limit : 0.015f;
+    }
+    else
+    {
+        angle = Clamp(signedAngle, 0.015f, limit);
+        if (signedAngle > 0.075f && signedAngle < limit - 0.075f)
+            body.hingeStop[chain] = 0;
+    }
     const Vector desired = (upper * cosf(angle) + bend * sinf(angle)) * body.rest[last];
     const Vector correction = (desired - lower) * 0.85f;
     const float middleWeight = 1.0f / kMass[middle], lastWeight = 1.0f / kMass[last];
@@ -642,6 +659,30 @@ void CollideSamples(Body &body, SampleContact *contacts)
         }
         if (active) ++body.contacts;
     }
+}
+
+bool StationaryForSleep(Body &body, bool supported, float motion, float worstError)
+{
+    // Source also settles a ragdoll whose root stays in a small region even
+    // if contact constraints keep an extremity oscillating. Require support,
+    // bounded whole-body motion and joint error so an active fall or badly
+    // distorted skeleton cannot be frozen by a stationary pelvis.
+    if (!supported || motion >= 0.5f || worstError >= 2.0f)
+    {
+        body.stationaryFrames = 0;
+        return false;
+    }
+    const Vector root = body.joints[PELVIS].position;
+    const Vector delta = root - body.stationaryAnchor;
+    if (!body.stationaryFrames || fabsf(delta.x) > 1.0f ||
+        fabsf(delta.y) > 1.0f || fabsf(delta.z) > 1.0f)
+    {
+        body.stationaryAnchor = root;
+        body.stationaryFrames = 1;
+    }
+    else
+        ++body.stationaryFrames;
+    return body.stationaryFrames >= 360;
 }
 
 void Simulate(Body &body, float dt)
@@ -922,7 +963,9 @@ void Simulate(Body &body, float dt)
             if (samples[i].active[contact] && samples[i].normal[contact].z > 0.5f) supported = true;
     body.quietFrames = supported && motion < 0.06f && worstError < 0.8f
         ? body.quietFrames + 1 : 0;
+    const bool stationary = StationaryForSleep(body, supported, motion, worstError);
     if (body.quietFrames > 60 ||
+        stationary ||
         (supported && body.lastTime - body.birth > 12.0 && motion < 0.12f && worstError < 1.2f))
     {
         body.sleeping = true;
@@ -1454,6 +1497,7 @@ static void Advance(Body &body, double now)
     {
         body.sleeping = false;
         body.quietFrames = 0;
+        body.stationaryFrames = 0;
         body.accumulator = 0;
         body.lastTime = now;
     }

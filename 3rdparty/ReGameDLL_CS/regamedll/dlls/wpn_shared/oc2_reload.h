@@ -61,6 +61,15 @@ inline const Sequence *Find(int weapon, int animation, bool shield = false)
 
 inline bool Shotgun(int id) { return id == 21 || id == 5; }
 inline bool Finite(float value) { return value - value == 0; }
+// Holding reload must not suppress the existing idle/shotgun finish once a
+// completed reload has no further ammunition to load. This only selects the
+// existing animation state machine; it does not change the reload timers.
+inline bool IdleAfterHeldReload(int weapon, int animation, bool shield, int clip, int maximum,
+	int reserve, float idleRemaining, bool inReload, bool attacking)
+{
+	return Find(weapon,animation,shield) && maximum > 0 && !inReload && !attacking &&
+		Finite(idleRemaining) && idleRemaining <= 0 && (clip >= maximum || reserve <= 0);
+}
 inline int Milliseconds(float seconds)
 {
 	return Finite(seconds) && seconds >= 0 && seconds <= 60 ?

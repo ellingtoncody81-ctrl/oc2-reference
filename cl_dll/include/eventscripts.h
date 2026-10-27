@@ -73,6 +73,10 @@ bool EV_GetViewModelAttachmentPoint( int player, int attachment, float *worldPoi
 void EV_FireWeaponTracer( int player, int attachment, const float *fallbackStart, const float *end );
 void EV_FlushViewModelTracers( struct cl_entity_s *view );
 void EV_ClearViewModelTracers();
+bool EV_ShellDebugEnabled();
+void EV_ShellDebugAllocation(struct tempent_s *temp, int model, int soundtype,
+	const float *origin, const float *velocity, float life);
+void EV_ShellDebugFrame(struct tempent_s *temp, int visible, double time);
 void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAnimTime, int iSequence, int iBody, int playerIndex);
 
 
@@ -139,7 +143,9 @@ Bullet shell casings
 inline void EV_EjectBrass( float *origin, float *velocity, float rotation, int model, int soundtype, float life = 2.5f )
 {
 	Vector angles(0.0f, 0.0f, rotation);
-	gEngfuncs.pEfxAPI->R_TempModel( origin, velocity, angles, life, model, soundtype );
+	TEMPENTITY *temp = gEngfuncs.pEfxAPI->R_TempModel( origin, velocity, angles, life, model, soundtype );
+	if (EV_ShellDebugEnabled())
+		EV_ShellDebugAllocation(temp, model, soundtype, origin, velocity, life);
 }
 
 

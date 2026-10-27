@@ -79,6 +79,29 @@ void EV_FireElite( event_args_s *args, bool isRight )
 	{
 		EV_GetDefaultShellInfo( args, origin, velocity, ShellVelocity, ShellOrigin, forward, right, up, 20.0, -12.0, 4.0, 0);
 	}
+	// Eject away from the firing pistol. The two viewmodel ports can swap
+	// screen sides when the viewmodel is mirrored, so use their actual positions.
+	float side = isRight ? 1.0f : -1.0f;
+	if (EV_IsLocal(idx) && gHUD.cl_righthand && gHUD.cl_righthand->value == 0.0f)
+		side = -side;
+	Vector leftPort(0, 0, 0), rightPort(0, 0, 0);
+	const bool leftPortValid = EV_IsLocal(idx) && EV_GetViewModelAttachmentPoint(idx, 2, leftPort);
+	const bool rightPortValid = leftPortValid && EV_GetViewModelAttachmentPoint(idx, 3, rightPort);
+	if (leftPortValid && rightPortValid)
+	{
+		const float separation = DotProduct(rightPort - leftPort, right);
+		if (separation > 0.01f || separation < -0.01f)
+			side = (isRight ? separation : -separation) > 0.0f ? 1.0f : -1.0f;
+	}
+	const float lateral = DotProduct(ShellVelocity - velocity, right);
+	if (lateral * side < 0.0f)
+		ShellVelocity = ShellVelocity - right * (2.0f * lateral);
+	if (EV_ShellDebugEnabled())
+		gEngfuncs.Con_Printf("oc2shell shot weapon=elite t=%.6f shooter=%d hand=%s local=%d leftok=%d rightok=%d left=%.4f,%.4f,%.4f right=%.4f,%.4f,%.4f axis=%.5f,%.5f,%.5f player=%.4f,%.4f,%.4f origin=%.4f,%.4f,%.4f velocity=%.4f,%.4f,%.4f\n",
+			gEngfuncs.GetClientTime(), idx, isRight ? "right" : "left", EV_IsLocal(idx), leftPortValid, rightPortValid,
+			leftPort.x, leftPort.y, leftPort.z, rightPort.x, rightPort.y, rightPort.z,
+			right.x, right.y, right.z, velocity.x, velocity.y, velocity.z,
+			ShellOrigin.x, ShellOrigin.y, ShellOrigin.z, ShellVelocity.x, ShellVelocity.y, ShellVelocity.z);
 	EV_EjectBrass(ShellOrigin, ShellVelocity, angles[ YAW ], g_iPShell, TE_BOUNCE_SHELL);
 
 	PLAY_EVENT_SOUND( SOUNDS_NAME );
