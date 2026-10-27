@@ -177,6 +177,12 @@ void CM3::PrimaryAttack()
 	m_pPlayer->pev->punchangle.x += pitch;
 	m_pPlayer->pev->punchangle.y += yaw;
 	m_pPlayer->m_flEjectBrass = gpGlobals->time + .45f;
+#ifndef CLIENT_DLL
+	cvar_t *shellDebug = CVAR_GET_POINTER("oc2_shell_debug");
+	if (shellDebug && shellDebug->value != 0.0f)
+		ALERT(at_console, "oc2shell server_schedule t=%.6f shooter=%d due=%.6f\n",
+			gpGlobals->time, m_pPlayer->entindex(), m_pPlayer->m_flEjectBrass);
+#endif
 }
 
 void CM3::Reload()
