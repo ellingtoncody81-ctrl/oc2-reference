@@ -9,6 +9,25 @@
 #include "PanoramaInventoryLabels.h"
 #include "keydefs.h"
 
+// Presentation order on the default sticker-side preview. Values are the
+// original material/profile slots; saved appearances always keep that order.
+namespace oc2_sticker_display
+{
+inline int PhysicalSlot(int weapon,int displaySlot)
+{
+    static const unsigned char order[24][4]={
+        {2,1,0,3}, {3,2,1,0}, {3,2,1,0}, {3,2,1,0},
+        {3,2,1,0}, {2,3,1,0}, {2,1,0,3}, {3,2,1,0},
+        {3,2,1,0}, {2,1,0,3}, {3,2,1,0}, {3,2,1,0},
+        {2,1,0,3}, {3,2,1,0}, {1,2,0,3}, {3,2,1,0},
+        {3,2,1,0}, {3,1,2,0}, {2,1,3,0}, {2,3,1,0},
+        {3,2,1,0}, {2,3,1,0}, {3,2,1,0}, {1,3,0,2}
+    };
+    const int index=oc2_accessories::Index(weapon);
+    return index>=0&&displaySlot>=0&&displaySlot<4?order[index][displaySlot]:-1;
+}
+}
+
 class CMenuPanoramaPatternCard : public CMenuAction
 {
 public:
@@ -83,7 +102,16 @@ public:
         Text(98,173,lw,24,u8"搜索图案名称或收藏",13,Ink());
         Text(right,181,rw,28,TabName(),20,Accent(),true);
         const int selection=Selection();const oc2_inventory::Entry *entry=SelectedEntry();
-        if(entry&&!oc2_inventory::IsTransparent(*entry))
+        if(!m_knife&&m_weapon==10&&m_tab>=1&&m_tab<=4)
+        {
+            DrawGunPreview(right+16,224,rw-32,238);
+            const std::string caption=selection<0?u8"已卸下":selection==0?u8"保留原贴纸":
+                std::string(u8"贴纸图案 · ")+oc2_inventory_labels::Sticker(m_catalog,selection);
+            Text(right,476,rw,44,caption.c_str(),20,Ink(),true);
+            char description[128];std::snprintf(description,sizeof(description),u8"本地图案 · 用于贴纸槽 %c",'A'+m_tab-1);
+            Text(right,522,rw,30,description,13,Muted());
+        }
+        else if(entry&&!oc2_inventory::IsTransparent(*entry))
         {
             if(!m_knife&&m_tab==0)DrawGunPreview(right+16,224,rw-32,238);
             else oc2_local_inventory::DrawImage(entry->preview,Pixel(right+16,224),Size(rw-32,238).Scale());
@@ -164,7 +192,7 @@ private:
     }
     void DrawGunPreview(int x,int y,int w,int h)
     {
-        m_preview.SetInteractive(false);m_preview.SetAppearance(m_draft,&m_accessoryDraft);
+        m_preview.SetInteractive(false);m_preview.SetDualUnfold(true);m_preview.SetAppearance(m_draft,&m_accessoryDraft);
         const Point p=Pixel(x,y);const Size z=Size(w,h).Scale();
         if(!m_preview.DrawAt(p.x,p.y,z.w,z.h))Text(x,y,w,h,u8"3D 预览加载中",16,Muted());
     }
@@ -186,7 +214,7 @@ private:
         return names[m_tab];
     }
     const char *DefaultLabel()const{return m_tab==5?u8"使用挂件页图案":m_tab?u8"保留原贴纸":u8"原版皮肤";}
-    int Selection()const{return m_knife?m_knifeDraft.skin:m_tab==0?m_draft.skin:m_tab==5?m_draft.charm:m_draft.stickers[m_tab-1];}
+    int Selection()const{return m_knife?m_knifeDraft.skin:m_tab==0?m_draft.skin:m_tab==5?m_draft.charm:m_draft.stickers[oc2_sticker_display::PhysicalSlot(m_weapon,m_tab-1)];}
     const oc2_inventory::Entry *SelectedEntry()const
     {
         if(Selection()==-1){for(const auto &entry:m_catalog)if(oc2_inventory::IsTransparent(entry))return &entry;return nullptr;}
@@ -328,7 +356,7 @@ private:
             if(m_knife)m_knifeDraft.skin=id;
             else if(!m_tab)SelectSkin(id);
             else if(m_tab==5){if(entry)oc2_inventory::ApplyCharm(m_draft,*entry);else m_draft.charm=0;m_accessoryDraft.charm=m_draft.charm!=-1;m_charmChanged=true;}
-            else{if(entry)oc2_inventory::ApplySticker(m_draft,m_tab-1,*entry);else m_draft.stickers[m_tab-1]=0;m_changedSlots|=1<<(m_tab-1);}
+            else{const int slot=oc2_sticker_display::PhysicalSlot(m_weapon,m_tab-1);if(entry)oc2_inventory::ApplySticker(m_draft,slot,*entry);else m_draft.stickers[slot]=0;m_changedSlots|=1<<slot;}
             m_dirty=true;m_error=false;m_message=u8"图案已选择，点击应用保存。";RefreshRows();return;
         }
     }
@@ -337,7 +365,7 @@ private:
         if(m_knife)m_knifeDraft.skin=id;
         else if(!m_tab)SelectSkin(id);
         else if(m_tab==5){m_draft.charm=id;m_accessoryDraft.charm=id!=-1;m_charmChanged=true;}
-        else{m_draft.stickers[m_tab-1]=id;m_changedSlots|=1<<(m_tab-1);}
+        else{const int slot=oc2_sticker_display::PhysicalSlot(m_weapon,m_tab-1);m_draft.stickers[slot]=id;m_changedSlots|=1<<slot;}
         m_dirty=true;m_error=false;m_message=u8"选择已更改，点击应用保存。";RefreshRows();
     }
     void SelectSkin(int id)
