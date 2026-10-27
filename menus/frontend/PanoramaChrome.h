@@ -70,7 +70,11 @@ public:
         {UI_FillRect(cx+int(x*k),cy+int(y*k),Q_max(1,int(std::ceil(w*k))),Q_max(1,int(std::ceil(h*k))),c);};
         auto disk=[&](int radius,unsigned c)
         {for(int y=-radius;y<=radius;++y){float x=std::sqrt(float(radius*radius-y*y));rect(-x,float(y),2*x+1,1,c);}};
-        if(icon==0)
+        if(icon==8)
+        {
+            oc2_panorama::DrawText(p+Point(6,23).Scale(),Size(52,30).Scale(),"OC2",22,ink,true,QM_CENTER);
+        }
+        else if(icon==0)
         {
             disk(17,ink);
             for(int y=-8;y<=8;++y)rect(-5,float(y),float(12-std::abs(y)),1,PackRGBA(113,137,155,255));
@@ -121,6 +125,9 @@ class CMenuPanoramaChrome
 public:
     void Init(CMenuFramework &owner,int active)
     {
+        m_home.icon=8;
+        m_home.SetNameAndStatus("大厅",nullptr,"nav_home");
+        m_home.onReleased=UI_PanoramaHome;owner.AddItem(m_home);
         static const char *names[]={"\xE6\xB8\xB8\xE7\x8E\xA9","\xE7\x89\xA9\xE5\x93\x81\xE6\xA0\x8F","\xE8\xAE\xBE\xE7\xBD\xAE","\xE9\x80\x80\xE5\x87\xBA"};
         static const char *tags[]={"nav_play","nav_inventory","nav_settings","nav_exit"};
         void (*callbacks[])()={UI_PanoramaOpenPlay,UI_PanoramaOpenInventory,UI_PanoramaOpenSettings,UI_PanoramaQuit};
@@ -134,16 +141,18 @@ public:
     void Layout()
     {
         const bool game=CL_IsActive();
+        m_home.SetRect(0,0,64,68);m_home.SetVisibility(m_visible&&!game);
         m_nav[0].icon=game?6:0;m_nav[3].icon=game?7:3;
         m_nav[0].SetRect(0,game?0:76,64,64);m_nav[1].SetRect(0,game?214:145,64,64);
         m_nav[2].SetRect(0,game?283:214,64,64);m_nav[3].SetRect(0,696,64,64);
     }
-    void SetVisible(bool visible){for(auto &nav:m_nav)nav.SetVisibility(visible);}
+    void SetVisible(bool visible){m_visible=visible;m_home.SetVisibility(visible&&!CL_IsActive());for(auto &nav:m_nav)nav.SetVisibility(visible);}
     void Draw()
     {
+        m_home.SetVisibility(m_visible&&!CL_IsActive());
         UI_FillRect(Point(0,0),Size(64,768).Scale(),PackRGBA(22,29,35,110));
-        if(!CL_IsActive())oc2_panorama::DrawText(Point(6,23).Scale(),Size(52,30).Scale(),"OC2",22,PackRGBA(255,255,255,255),true,QM_CENTER);
     }
 private:
-    CMenuPanoramaNav m_nav[4];
+    bool m_visible=true;
+    CMenuPanoramaNav m_home,m_nav[4];
 };
