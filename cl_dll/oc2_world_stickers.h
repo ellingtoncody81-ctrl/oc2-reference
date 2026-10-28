@@ -7,3 +7,4 @@ struct model_s;
 void OC2_DrawWorldStickers(CStudioModelRenderer &renderer,model_s *weapon,
                           char context,int player,int serial,float *lightdir);
 void OC2_ResetWorldStickers();
+void OC2_InitWorldStickers();

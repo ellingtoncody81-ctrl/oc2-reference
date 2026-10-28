@@ -21,6 +21,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <utility>
 
 extern engine_studio_api_t IEngineStudio;
 extern render_api_t gRenderAPI;
@@ -55,9 +56,26 @@ struct WorldGloveDraw
  bool corpse=false,restored=false,legacy=false;double time=0;std::string model;
 };
 std::map<std::pair<int,int>,WorldGloveDraw> worldGloveDraws;
-struct TextureSlot {int handle=0,frame=-1;std::uint64_t serial=0;std::string name;};
+struct TextureSlot {int handle=0,frame=-1,visibleFrame=-1;std::uint64_t serial=0,bytes=0;std::string name;};
 std::map<std::string,TextureSlot> textures;
-int textureFrame=-1;std::uint64_t textureSerial=0;
+std::map<std::string,int> textureBlockedFrame;
+std::map<std::string,std::uint64_t> textureKnownCost;
+std::map<std::string,std::string> textureVariantAliases;
+std::map<int,unsigned> texturePins;
+int textureFrame=-1,textureVisibleFrame=-1;std::uint64_t textureSerial=0,textureBytes=0;
+cvar_t *textureBudget=nullptr;
+struct TextureStats
+{
+ std::uint64_t hits=0,misses=0,reads=0,uploads=0,evictions=0,invalid=0,blocked=0,failures=0,peakBytes=0;
+ std::uint64_t layoutHits=0,layoutBuilds=0,sameFrameEvictions=0,resized=0,variantFallbacks=0;
+} textureStats;
+struct OverlayLayout
+{
+ const studiohdr_t *header=nullptr;std::string model;
+ int length=0,textureindex=0,skinindex=0,bodypartindex=0,numtextures=0,numskinref=0,numbodyparts=0;
+ std::vector<std::pair<int,int>> commands;
+};
+std::map<const model_t *,OverlayLayout> overlayLayouts;
 std::map<int,std::size_t> resourceIndices,knifeIndices;
 std::map<std::string,int> knifeModels;
 double nextRead=-1,lastRead=-1;
@@ -288,57 +306,230 @@ bool OwnTexture(const TextureSlot &slot)
 void ReleaseTexture(const TextureSlot &slot)
 { if(gRenderAPI.GL_FreeTexture&&OwnTexture(slot))gRenderAPI.GL_FreeTexture(slot.handle); }
 void ReleaseTextures()
-{ for(const auto &v:textures)ReleaseTexture(v.second);textures.clear(); }
-int Texture(const std::string &path,bool sticker)
+{ for(const auto &v:textures)ReleaseTexture(v.second);textures.clear();textureBlockedFrame.clear();textureKnownCost.clear();textureVariantAliases.clear();overlayLayouts.clear();textureBytes=0; }
+std::uint64_t TextureBudgetBytes()
 {
- if(path.empty()||!gRenderAPI.GL_LoadTexture)return 0;
- auto found=textures.find(path);
+ const float mb=textureBudget&&std::isfinite(textureBudget->value)?textureBudget->value:256.f;
+ return std::uint64_t(std::max(32.f,std::min(512.f,mb)))*1024u*1024u;
+}
+bool EvictTexture();
+void BeginTextureDraw()
+{
+ textureFrame=textureFrame==0x7fffffff?0:textureFrame+1;
+ int visibleFrame=textureFrame;
+ if(IEngineStudio.GetTimes)IEngineStudio.GetTimes(&visibleFrame,nullptr,nullptr);
+ if(textureVisibleFrame!=visibleFrame){textureVisibleFrame=visibleFrame;textureBlockedFrame.clear();}
+ while(textureBytes>TextureBudgetBytes()&&EvictTexture()){}
+}
+bool EvictTexture()
+{
+ auto oldest=textures.end();
+ for(auto i=textures.begin();i!=textures.end();++i)
+  if(i->second.frame!=textureFrame&&i->second.visibleFrame!=textureVisibleFrame&&!texturePins.count(i->second.handle)&&
+     (oldest==textures.end()||i->second.serial<oldest->second.serial))oldest=i;
+ if(oldest==textures.end())
+  for(auto i=textures.begin();i!=textures.end();++i)
+   if(i->second.frame!=textureFrame&&!texturePins.count(i->second.handle)&&
+      (oldest==textures.end()||i->second.serial<oldest->second.serial))oldest=i;
+ if(oldest==textures.end())return false;
+ if(oldest->second.visibleFrame==textureVisibleFrame)++textureStats.sameFrameEvictions;
+ textureBytes-=oldest->second.bytes;ReleaseTexture(oldest->second);textures.erase(oldest);++textureStats.evictions;return true;
+}
+std::uint64_t TextureCost(int handle)
+{
+ if(gRenderAPI.RenderGetParm)
+ {
+  const int w=gRenderAPI.RenderGetParm(PARM_TEX_WIDTH,handle),h=gRenderAPI.RenderGetParm(PARM_TEX_HEIGHT,handle);
+  if(w>0&&h>0&&w<=32768&&h<=32768)return (std::uint64_t(w)*std::uint64_t(h)*16u+2u)/3u;
+ }
+ // Conservative fallback when the renderer cannot report upload dimensions.
+ return 8u*1024u*1024u;
+}
+bool DecodeTgaRle(const byte *data,std::size_t size,std::size_t start,int channels,
+                  std::size_t rawBytes,std::vector<byte> &decoded)
+{
+ if(!data||start>size||(channels!=3&&channels!=4)||rawBytes%channels||rawBytes>16u*1024u*1024u)return false;
+ decoded.resize(rawBytes);std::size_t input=start,output=0;
+ while(output<rawBytes)
+ {
+  if(input>=size)return false;
+  const unsigned packet=data[input++];const std::size_t count=(packet&127u)+1u;
+  if(count>(rawBytes-output)/channels)return false;
+  if(packet&128u)
+  {
+   if(size-input<std::size_t(channels))return false;
+   for(std::size_t i=0;i<count;++i)std::memcpy(decoded.data()+output+i*channels,data+input,channels);
+   input+=channels;output+=count*channels;
+  }
+  else
+  {
+   const std::size_t bytes=count*channels;
+   if(size-input<bytes)return false;
+   std::memcpy(decoded.data()+output,data+input,bytes);input+=bytes;output+=bytes;
+  }
+ }
+ return true;
+}
+// Resize validated true-colour TGA (raw or RLE). Premultiplied-alpha area
+// averaging preserves transparent edges without invisible RGB contamination.
+// Unrecognised or invalid data remains on the original load path.
+bool ResizeTga(const byte *data,int size,int limit,std::vector<byte> &out)
+{
+ if(!data||size<18||limit<=0||data[1]!=0||(data[2]!=2&&data[2]!=10)||(data[17]&0xc0))return false;
+ const int channels=data[16]/8,alphaBits=data[17]&15;
+ if((channels!=3&&channels!=4)||data[16]!=channels*8||
+    (channels==3&&alphaBits!=0)||(channels==4&&alphaBits!=8))return false;
+ const int w=int(data[12])|(int(data[13])<<8),h=int(data[14])|(int(data[15])<<8);
+ const std::size_t start=18u+data[0];
+ if(w<=0||h<=0||start>std::size_t(size))return false;
+ const std::uint64_t pixelsCount=std::uint64_t(w)*std::uint64_t(h);
+ const std::uint64_t rawBytes=pixelsCount*channels;
+ // A tiny malicious RLE file must not expand into an unbounded allocation.
+ if(rawBytes>16u*1024u*1024u)return false;
+ const int longest=std::max(w,h);if(longest<=limit)return false;
+ const byte *pixels=nullptr;std::vector<byte> decoded;
+ if(data[2]==2)
+ {
+  if(rawBytes>std::size_t(size)-start)return false;
+  pixels=data+start;
+ }
+ else
+ {
+  if(!DecodeTgaRle(data,std::size_t(size),start,channels,std::size_t(rawBytes),decoded))return false;
+  pixels=decoded.data();
+ }
+ const int dw=std::max(1,(w*limit+longest/2)/longest),dh=std::max(1,(h*limit+longest/2)/longest);
+ out.resize(start+std::size_t(dw)*dh*channels);std::memcpy(out.data(),data,start);
+ out[2]=2;
+ out[12]=byte(dw&255);out[13]=byte(dw>>8);out[14]=byte(dh&255);out[15]=byte(dh>>8);
+ for(int y=0;y<dh;++y)for(int x=0;x<dw;++x)
+ {
+  const int xa=x*w,xb=(x+1)*w,ya=y*h,yb=(y+1)*h;
+  std::uint64_t total=0,weightedAlpha=0,colour[3]={};
+  for(int sy=ya/dh;sy<=(yb-1)/dh;++sy)for(int sx=xa/dw;sx<=(xb-1)/dw;++sx)
+  {
+   const int wx=std::min(xb,(sx+1)*dw)-std::max(xa,sx*dw);
+   const int wy=std::min(yb,(sy+1)*dh)-std::max(ya,sy*dh);
+   const std::uint64_t weight=std::uint64_t(wx)*wy;
+   const byte *pixel=pixels+(std::size_t(sy)*w+sx)*channels;
+   const unsigned alpha=channels==4?pixel[3]:255;
+   total+=weight;weightedAlpha+=weight*alpha;
+   for(int c=0;c<3;++c)colour[c]+=weight*alpha*pixel[c];
+  }
+  byte *pixel=out.data()+start+(std::size_t(y)*dw+x)*channels;
+  for(int c=0;c<3;++c)pixel[c]=weightedAlpha?byte((colour[c]+weightedAlpha/2)/weightedAlpha):0;
+  if(channels==4)pixel[3]=byte((weightedAlpha+total/2)/total);
+ }
+ return true;
+}
+bool PrepareTexture(const std::string &key)
+{
+ while(textures.size()>=256||textureBytes>=TextureBudgetBytes())
+  if(!EvictTexture()){textureBlockedFrame[key]=textureVisibleFrame;++textureStats.blocked;return false;}
+ const auto known=textureKnownCost.find(key);
+ if(known!=textureKnownCost.end())
+ {
+  const std::uint64_t budget=TextureBudgetBytes();
+  if(known->second>budget){textureBlockedFrame[key]=textureVisibleFrame;++textureStats.blocked;return false;}
+  while(textureBytes>budget-known->second)
+   if(!EvictTexture()){textureBlockedFrame[key]=textureVisibleFrame;++textureStats.blocked;return false;}
+ }
+ return true;
+}
+int CachedTexture(const std::string &key)
+{
+ auto found=textures.find(key);
  if(found!=textures.end())
  {
   if(OwnTexture(found->second))
-   {found->second.frame=textureFrame;found->second.serial=++textureSerial;return found->second.handle;}
-  textures.erase(found);
+   {found->second.frame=textureFrame;found->second.visibleFrame=textureVisibleFrame;found->second.serial=++textureSerial;++textureStats.hits;return found->second.handle;}
+  textureBytes-=found->second.bytes;textures.erase(found);++textureStats.invalid;
  }
- // Protect this draw only. Other players and dropped weapons may use more
- // than the budget over one frame; their completed draws can be evicted.
- while(textures.size()>=32)
- {
-  auto oldest=textures.end();
-  for(auto i=textures.begin();i!=textures.end();++i)
-   if(i->second.frame!=textureFrame&&(oldest==textures.end()||i->second.serial<oldest->second.serial))oldest=i;
-  if(oldest==textures.end())return 0; // never free an image in this draw
-  ReleaseTexture(oldest->second);textures.erase(oldest);
- }
+ return 0;
+}
+int Texture(const std::string &path,bool sticker,int maxDimension=0)
+{
+ if(path.empty()||!gRenderAPI.GL_LoadTexture)return 0;
+ const std::string requested=maxDimension>0?path+"|oc2max="+std::to_string(maxDimension):path;
+ std::string key=requested;
+ const auto alias=textureVariantAliases.find(requested);
+ if(alias!=textureVariantAliases.end())key=alias->second;
+ if(const int cached=CachedTexture(key))return cached;
+ ++textureStats.misses;
+ if(textureBlockedFrame.count(key)){++textureStats.blocked;return 0;}
+ // Prefer textures not used this frame; under pressure only evict completed,
+ // unpinned draws. This keeps an oversized working set visually correct.
+ bool prepared=maxDimension<=0||key!=requested||textureKnownCost.count(key);
+ if(prepared&&!PrepareTexture(key))return 0;
+ ++textureStats.reads;
  int size=0;byte *data=gEngfuncs.COM_LoadFile(const_cast<char *>(path.c_str()),5,&size);
- if(!data)return 0;
- if(size<=0||size>16*1024*1024){gEngfuncs.COM_FreeFile(data);return 0;}
+ if(!data){textureBlockedFrame[key]=textureVisibleFrame;++textureStats.failures;return 0;}
+ if(size<=0||size>16*1024*1024){gEngfuncs.COM_FreeFile(data);textureBlockedFrame[key]=textureVisibleFrame;++textureStats.failures;return 0;}
+ std::vector<byte> resized;
+ if(maxDimension>0&&key==requested)
+ {
+  const bool tga=path.size()>=4&&!stricmp(path.c_str()+path.size()-4,".tga");
+  if(tga&&ResizeTga(data,size,maxDimension,resized))++textureStats.resized;
+  else
+  {
+   ++textureStats.variantFallbacks;
+   if(textureVariantAliases.size()>=512&&!textureVariantAliases.count(requested))textureVariantAliases.erase(textureVariantAliases.begin());
+   textureVariantAliases[requested]=path;key=path;prepared=false;
+   if(const int cached=CachedTexture(key)){gEngfuncs.COM_FreeFile(data);return cached;}
+   if(textureBlockedFrame.count(key)){gEngfuncs.COM_FreeFile(data);++textureStats.blocked;return 0;}
+  }
+ }
+ if(!prepared&&!PrepareTexture(key)){gEngfuncs.COM_FreeFile(data);return 0;}
  // A private renderer name avoids sharing an uncounted handle with menu pics.
  // The # prefix selects the engine's supported load-from-buffer image path.
  std::uint64_t hash=14695981039346656037ull;
- for(unsigned char c:path)hash=(hash^c)*1099511628211ull;
+ for(unsigned char c:key)hash=(hash^c)*1099511628211ull;
  const std::size_t dot=path.rfind('.');
  const std::string name="#oc2_inventory_"+std::to_string(hash)+(dot==std::string::npos?".tga":path.substr(dot));
- const int handle=gRenderAPI.GL_LoadTexture(name.c_str(),data,size,sticker?TF_CLAMP:0);
+ ++textureStats.uploads;
+ const int handle=gRenderAPI.GL_LoadTexture(name.c_str(),resized.empty()?data:resized.data(),resized.empty()?size:int(resized.size()),sticker?TF_CLAMP:0);
  gEngfuncs.COM_FreeFile(data);
- if(handle)
- {
-  TextureSlot slot;slot.handle=handle;slot.frame=textureFrame;slot.serial=++textureSerial;slot.name=name;textures[path]=slot;
- }
+ if(!handle){textureBlockedFrame[key]=textureVisibleFrame;++textureStats.failures;return 0;}
+ TextureSlot slot;slot.handle=handle;slot.frame=textureFrame;slot.visibleFrame=textureVisibleFrame;
+ slot.serial=++textureSerial;slot.name=name;slot.bytes=TextureCost(handle);
+ if(textureKnownCost.size()>=512&&!textureKnownCost.count(key))textureKnownCost.erase(textureKnownCost.begin());
+ textureKnownCost[key]=slot.bytes;
+ const std::uint64_t budget=TextureBudgetBytes();
+ if(slot.bytes>budget)
+ {ReleaseTexture(slot);textureBlockedFrame[key]=textureVisibleFrame;++textureStats.blocked;return 0;}
+ while(textureBytes>budget-slot.bytes)
+  if(!EvictTexture())
+  {ReleaseTexture(slot);textureBlockedFrame[key]=textureVisibleFrame;++textureStats.blocked;return 0;}
+ textureBytes+=slot.bytes;textureStats.peakBytes=std::max(textureStats.peakBytes,textureBytes);textures[key]=slot;
  return handle;
 }
-int StickerTexture(int id)
+void PinTexture(int handle,std::vector<int> &pinned)
 {
- if(id<0)return Texture(kTransparentPath,true);
+ if(!handle)return;
+ ++texturePins[handle];pinned.push_back(handle);
+}
+void UnpinTextures(const std::vector<int> &pinned)
+{
+ for(int handle:pinned)
+ {
+  const auto found=texturePins.find(handle);
+  if(found!=texturePins.end()&&!--found->second)texturePins.erase(found);
+ }
+}
+int StickerTexture(int id,int maxDimension=0)
+{
+ if(id<0)return Texture(kTransparentPath,true,maxDimension);
  const Entry *entry=Resource(id);
- return entry&&entry->kind==Kind::Sticker?Texture(entry->file,true):0;
+ return entry&&entry->kind==Kind::Sticker?Texture(entry->file,true,maxDimension):0;
 }
 bool MaterialMatches(const std::string &list,const char *name)
 {
- std::size_t begin=0;
+ const std::size_t length=std::strlen(name);std::size_t begin=0;
  for(;;)
  {
   const std::size_t end=list.find(',',begin);
-  if(!stricmp(list.substr(begin,end==std::string::npos?end:end-begin).c_str(),name))return true;
+  const std::size_t count=(end==std::string::npos?list.size():end)-begin;
+  if(count==length&&!strnicmp(list.c_str()+begin,name,count))return true;
   if(end==std::string::npos)return false;begin=end+1;
  }
 }
@@ -358,6 +549,57 @@ bool FamilyMaterialMatches(const studiohdr_t *header,const mstudiotexture_t *mat
    if(skinrefs[family*header->numskinref+column]==texture)return true;
  }
  return false;
+}
+const OverlayLayout *GetOverlayLayout(model_t *model,studiohdr_t *header,mstudiotexture_t *materials)
+{
+ const auto old=overlayLayouts.find(model);
+ if(old!=overlayLayouts.end())
+ {
+  const auto &v=old->second;
+  if(v.header==header&&v.model==model->name&&v.length==header->length&&v.textureindex==header->textureindex&&
+     v.skinindex==header->skinindex&&v.bodypartindex==header->bodypartindex&&v.numtextures==header->numtextures&&
+     v.numskinref==header->numskinref&&v.numbodyparts==header->numbodyparts)
+  {++textureStats.layoutHits;return &v;}
+  overlayLayouts.erase(old);
+ }
+ if(header->numskinref<=0||header->numskinfamilies<=0||
+    !HeaderRange(header,header->skinindex,header->numskinref,sizeof(short))||
+    !HeaderRange(header,header->bodypartindex,header->numbodyparts,sizeof(mstudiobodyparts_t)))return nullptr;
+ auto *bytes=reinterpret_cast<byte *>(header);
+ const auto *refs=reinterpret_cast<const short *>(bytes+header->skinindex);
+ const auto *parts=reinterpret_cast<const mstudiobodyparts_t *>(bytes+header->bodypartindex);
+ std::map<int,int> commands;
+ for(int p=0;p<header->numbodyparts;++p)
+ {
+  if(!HeaderRange(header,parts[p].modelindex,parts[p].nummodels,sizeof(mstudiomodel_t)))return nullptr;
+  const auto *models=reinterpret_cast<const mstudiomodel_t *>(bytes+parts[p].modelindex);
+  for(int m=0;m<parts[p].nummodels;++m)
+  {
+   if(!HeaderRange(header,models[m].meshindex,models[m].nummesh,sizeof(mstudiomesh_t)))return nullptr;
+   const auto *meshes=reinterpret_cast<const mstudiomesh_t *>(bytes+models[m].meshindex);
+   for(int j=0;j<models[m].nummesh;++j)
+   {
+    const auto &mesh=meshes[j];
+    if(mesh.skinref<0||mesh.skinref>=header->numskinref||refs[mesh.skinref]<0||
+       refs[mesh.skinref]>=header->numtextures||mesh.triindex%int(sizeof(short))||
+       !HeaderRange(header,mesh.triindex,1,sizeof(short)))return nullptr;
+    const char *name=materials[refs[mesh.skinref]].name;
+    if(!memchr(name,0,sizeof(materials[0].name)))return nullptr;
+    int slot=-1;
+    for(int s=0;s<4;++s){char expected[]="decal_A.bmp";expected[6]=char('A'+s);if(!stricmp(name,expected)){slot=s;break;}}
+    if(slot<0)return nullptr;
+    const auto previous=commands.find(mesh.triindex);
+    if(previous!=commands.end()&&previous->second!=slot)return nullptr;
+    commands[mesh.triindex]=slot;
+   }
+  }
+ }
+ OverlayLayout v;v.header=header;v.model=model->name;v.length=header->length;v.textureindex=header->textureindex;
+ v.skinindex=header->skinindex;v.bodypartindex=header->bodypartindex;v.numtextures=header->numtextures;
+ v.numskinref=header->numskinref;v.numbodyparts=header->numbodyparts;
+ v.commands.assign(commands.begin(),commands.end());
+ if(overlayLayouts.size()>=64)overlayLayouts.clear();
+ ++textureStats.layoutBuilds;return &overlayLayouts.emplace(model,std::move(v)).first->second;
 }
 void Reload() { ReleaseTextures();OC2_ResetWorldStickers();catalogAttempted=false;ReadState(true); }
 void GloveDump()
@@ -399,6 +641,17 @@ void NetDump()
   gEngfuncs.Con_Printf("oc2appearance_draw: serial=%d entity=%d context=%c swaps=%d time=%.3f model=%s\n",d.serial,d.entity,d.context,d.swaps,d.time,d.model.c_str());
  }
 }
+void CacheDump()
+{
+ gEngfuncs.Con_Printf("oc2inventory_cache: entries=%u bytes=%llu budget=%llu peak=%llu hits=%llu misses=%llu reads=%llu uploads=%llu evictions=%llu same_frame_evictions=%llu invalid=%llu blocked=%llu failures=%llu layout_hits=%llu layout_builds=%llu resized=%llu variant_fallbacks=%llu\n",
+  unsigned(textures.size()),static_cast<unsigned long long>(textureBytes),static_cast<unsigned long long>(TextureBudgetBytes()),
+  static_cast<unsigned long long>(textureStats.peakBytes),static_cast<unsigned long long>(textureStats.hits),static_cast<unsigned long long>(textureStats.misses),
+  static_cast<unsigned long long>(textureStats.reads),static_cast<unsigned long long>(textureStats.uploads),static_cast<unsigned long long>(textureStats.evictions),static_cast<unsigned long long>(textureStats.sameFrameEvictions),
+  static_cast<unsigned long long>(textureStats.invalid),static_cast<unsigned long long>(textureStats.blocked),static_cast<unsigned long long>(textureStats.failures),
+  static_cast<unsigned long long>(textureStats.layoutHits),static_cast<unsigned long long>(textureStats.layoutBuilds),
+  static_cast<unsigned long long>(textureStats.resized),static_cast<unsigned long long>(textureStats.variantFallbacks));
+}
+void CacheResetStats() { textureStats=TextureStats();textureStats.peakBytes=textureBytes; }
 void Dump()
 {
  ReadState(true);
@@ -423,11 +676,15 @@ void Dump()
 
 void OC2_InventoryInit()
 {
+ OC2_InitWorldStickers();
  enabled=gEngfuncs.pfnRegisterVariable("cl_oc2_inventory","1",FCVAR_ARCHIVE);
+ textureBudget=gEngfuncs.pfnRegisterVariable("cl_oc2_texture_cache_mb","256",0);
  knifeInfo=gEngfuncs.pfnRegisterVariable("oc2_knife","0",FCVAR_USERINFO);
  gEngfuncs.pfnAddCommand("oc2_inventory_dump",Dump);
  gEngfuncs.pfnAddCommand("oc2_inventory_reload",Reload);
  gEngfuncs.pfnAddCommand("oc2_inventory_net_dump",NetDump);
+ gEngfuncs.pfnAddCommand("oc2_inventory_cache_dump",CacheDump);
+ gEngfuncs.pfnAddCommand("oc2_inventory_cache_reset_stats",CacheResetStats);
  gEngfuncs.pfnAddCommand("oc2_glove_dump",GloveDump);
  gEngfuncs.pfnHookUserMsg(oc2_item::kMessage,ItemMessage);
  gEngfuncs.pfnHookUserMsg(oc2_gloves::kMessage,GloveMessage);
@@ -444,6 +701,7 @@ void OC2_InventoryVidInit()
 void OC2_InventoryResetSession()
 {
  OC2_ResetWorldStickers();
+ overlayLayouts.clear();
  items.clear();draws.clear();networkReady=false;resyncSent=false;itemSnapshotStarted=false;lastSent.clear();queuedConfig.clear();upload.clear();uploadIndex=0;
  playerGloves.fill(0);gloveNetworkReady=false;lastGloveSent.clear();gloveDraw=GloveDraw();gloveShaders.clear();
  corpseGloves.clear();worldGloveDraws.clear();
@@ -590,7 +848,7 @@ OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &ren
  const char modelContext=context=='c'?'w':context;
  const char *base=strrchr(model->name,'/');base=base?base+1:model->name;
  if(!networkReady||(!firstPerson&&base[0]!=modelContext))return;
- textureFrame=textureFrame==0x7fffffff?0:textureFrame+1;
+ BeginTextureDraw();
  ReadState();Diagnostics current;current.model=model->name;
  if(!Active()||!IEngineStudio.IsHardware())return;
  auto *header=renderer.m_pStudioHeader;
@@ -616,51 +874,23 @@ OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &ren
   }
  }
  if(state)current.stickers=state->stickers;
+ const bool worldTexture=context=='p'||context=='w'||context=='c';
+ int selectedTextures[4]={};
  if(stickersOnly)
  {
   if(!state)return;
   for(int slot=0;slot<4;++slot)
-   if(state->stickers[slot]>0&&!StickerTexture(state->stickers[slot]))return;
-  if(header->numskinref<=0||header->numskinfamilies<=0||
-     !HeaderRange(header,header->skinindex,header->numskinref,sizeof(short))||
-     !HeaderRange(header,header->bodypartindex,header->numbodyparts,sizeof(mstudiobodyparts_t)))return;
+   if(state->stickers[slot]>0&&!(selectedTextures[slot]=StickerTexture(state->stickers[slot],worldTexture?256:0)))return;
+  const auto *layout=GetOverlayLayout(model,header,materials);if(!layout)return;
   auto *bytes=reinterpret_cast<byte *>(header);
-  const auto *refs=reinterpret_cast<const short *>(bytes+header->skinindex);
-  const auto *parts=reinterpret_cast<const mstudiobodyparts_t *>(bytes+header->bodypartindex);
-  std::map<int,int> commands;
-  for(int p=0;p<header->numbodyparts;++p)
-  {
-   if(!HeaderRange(header,parts[p].modelindex,parts[p].nummodels,sizeof(mstudiomodel_t)))return;
-   const auto *models=reinterpret_cast<const mstudiomodel_t *>(bytes+parts[p].modelindex);
-   for(int m=0;m<parts[p].nummodels;++m)
-   {
-    if(!HeaderRange(header,models[m].meshindex,models[m].nummesh,sizeof(mstudiomesh_t)))return;
-    const auto *meshes=reinterpret_cast<const mstudiomesh_t *>(bytes+models[m].meshindex);
-    for(int j=0;j<models[m].nummesh;++j)
-    {
-     const auto &mesh=meshes[j];
-     if(mesh.skinref<0||mesh.skinref>=header->numskinref||refs[mesh.skinref]<0||
-        refs[mesh.skinref]>=header->numtextures||mesh.triindex%int(sizeof(short))||
-        !HeaderRange(header,mesh.triindex,1,sizeof(short)))return;
-     const char *name=materials[refs[mesh.skinref]].name;
-     if(!memchr(name,0,sizeof(materials[0].name)))return;
-     int slot=-1;
-     for(int s=0;s<4;++s){char expected[]="decal_A.bmp";expected[6]=char('A'+s);if(!stricmp(name,expected)){slot=s;break;}}
-     if(slot<0)return;
-     const auto previous=commands.find(mesh.triindex);
-     if(previous!=commands.end()&&previous->second!=slot)return;
-     commands[mesh.triindex]=slot;
-    }
-   }
-  }
-  for(const auto &command:commands)if(state->stickers[command.second]<0)
+  for(const auto &command:layout->commands)if(state->stickers[command.second]<0)
   {
    auto *first=reinterpret_cast<short *>(bytes+command.first);
    hidden.push_back(SavedShort(first,*first));*first=0;
   }
  }
  if(skin&&(weapon?(skin->kind!=Kind::GunSkin||skin->weapon!=weapon):(skin->kind!=Kind::KnifeSkin||skin->definition!=current.knife)))skin=nullptr;
- const int bodyTexture=skin&&!stickersOnly?Texture(skin->file,false):0;
+ const int bodyTexture=skin&&!stickersOnly?Texture(skin->file,false,worldTexture?512:0):0;
  for(int i=0;i<header->numtextures;++i)
  {
   auto &material=materials[i];int replacement=0;
@@ -670,10 +900,10 @@ OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &ren
   {
    char name[]="decal_A.bmp";name[6]=char('A'+slot);
    if(state->stickers[slot]&&(!stickersOnly||state->stickers[slot]>0)&&!stricmp(material.name,name))
-    {replacement=StickerTexture(state->stickers[slot]);current.slotTextures[slot]=replacement;break;}
+    {replacement=stickersOnly?selectedTextures[slot]:StickerTexture(state->stickers[slot],worldTexture?256:0);current.slotTextures[slot]=replacement;break;}
   }
   if(!replacement)continue;
-  saved.push_back(Saved(&material.index,material.index));material.index=replacement;++current.swaps;
+  saved.push_back(Saved(&material.index,material.index));PinTexture(replacement,pinned);material.index=replacement;++current.swaps;
  }
  if(firstPerson)diagnostics=current;
  ready=true;
@@ -687,6 +917,7 @@ OC2_InventoryMaterialScope::~OC2_InventoryMaterialScope()
 {
  for(auto it=saved.rbegin();it!=saved.rend();++it)*it->address=it->value;
  for(auto it=hidden.rbegin();it!=hidden.rend();++it)*it->address=it->value;
+ UnpinTextures(pinned);
 }
 
 OC2_InventoryGloveMaterialScope::OC2_InventoryGloveMaterialScope(CStudioModelRenderer &renderer,int resource,bool diagnostics):record(diagnostics)
@@ -712,7 +943,7 @@ OC2_InventoryGloveMaterialScope::OC2_InventoryGloveMaterialScope(CStudioModelRen
   right=right||FamilyMaterialMatches(header,materials,index,entry->rightMaterial);
  }
  if(!left||!right)return;
- textureFrame=textureFrame==0x7fffffff?0:textureFrame+1;
+ BeginTextureDraw();
  const int leftTexture=Texture(entry->leftTexture,false),rightTexture=Texture(entry->rightTexture,false);
  if(!leftTexture||!rightTexture)return;
  for(int index=0;index<header->numtextures;++index)
@@ -724,6 +955,7 @@ OC2_InventoryGloveMaterialScope::OC2_InventoryGloveMaterialScope(CStudioModelRen
   if(!replacement)continue;
   // Keep MDL dimensions, normalized UVs, flags and bare skin families intact.
   saved.push_back(Saved(&material.index,material.index));
+  PinTexture(replacement,pinned);
   if(record)
   {
    GloveShader slot;slot.material=material.name;slot.width=material.width;slot.height=material.height;
@@ -738,6 +970,7 @@ OC2_InventoryGloveMaterialScope::~OC2_InventoryGloveMaterialScope()
 {
  if(record)for(std::size_t index=0;index<saved.size();++index)gloveShaders[index].during=*saved[index].address;
  for(auto it=saved.rbegin();it!=saved.rend();++it)*it->address=it->value;
+ UnpinTextures(pinned);
  if(record)for(std::size_t index=0;index<saved.size();++index)
  {
   gloveShaders[index].after=*saved[index].address;
@@ -775,7 +1008,7 @@ model_t *GloveBodyModel(model_t *original,int resource)
  const std::string world=oc2_gloves::WorldModelPath(*choice);
  auto *wearable=IEngineStudio.Mod_ForName(world.c_str(),false);
  if(!wearable||wearable->type!=mod_studio)return original;
- textureFrame=textureFrame==0x7fffffff?0:textureFrame+1;
+ BeginTextureDraw();
  if((!choice->leftTexture.empty()&&!Texture(choice->leftTexture,false))||
     (!choice->rightTexture.empty()&&!Texture(choice->rightTexture,false)))return original;
  auto *selected=IEngineStudio.Mod_ForName(path,false);

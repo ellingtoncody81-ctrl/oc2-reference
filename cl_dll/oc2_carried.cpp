@@ -15,19 +15,94 @@
 #include "camera.h"
 #include "pm_shared.h"
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <string>
 extern engine_studio_api_t IEngineStudio;
 
 namespace
 {
+cvar_t *carriedEnabled=nullptr;
+using CarryPerfClock=std::chrono::steady_clock;
+struct CarryPerfStats
+{
+ bool active=false;
+ double totalMs=0,prepareMs=0,bodyMs=0,utilityMs=0;
+ unsigned totalCalls=0,prepareCalls=0,bodyCalls=0,utilityCalls=0;
+} carryPerf;
+struct CarryPerfScope
+{
+ bool active;double &elapsed;unsigned &calls;CarryPerfClock::time_point start;
+ CarryPerfScope(double &ms,unsigned &count):active(carryPerf.active),elapsed(ms),calls(count)
+ {if(active)start=CarryPerfClock::now();}
+ void Stop()
+ {
+  if(!active)return;
+  elapsed+=std::chrono::duration<double,std::milli>(CarryPerfClock::now()-start).count();
+  ++calls;active=false;
+ }
+ ~CarryPerfScope(){Stop();}
+};
+void CarryPerfReset(){carryPerf=CarryPerfStats();carryPerf.active=true;}
+void CarryPerfDump()
+{
+ carryPerf.active=false;
+ gEngfuncs.Con_Printf("oc2_carry_perf: enabled=%d total_ms=%.6f total_calls=%u prepare_ms=%.6f prepare_calls=%u body_ms=%.6f body_calls=%u utility_ms=%.6f utility_calls=%u\n",
+  int(!carriedEnabled||carriedEnabled->value!=0),carryPerf.totalMs,carryPerf.totalCalls,carryPerf.prepareMs,carryPerf.prepareCalls,
+  carryPerf.bodyMs,carryPerf.bodyCalls,carryPerf.utilityMs,carryPerf.utilityCalls);
+}
 oc2_carry::State utilityState[33];
 bool utilityValid[33]={};
 bool utilitySnapshotStarted=false;
 std::string utilityLevel;
+struct CarryDrawRecord
+{
+ int weapon=0,serial=0;
+ char anchor[16]={},model[MAX_MODEL_NAME]={},directionBasis[16]={};
+ float direction[3]={};
+};
+struct CarryDrawSnapshot
+{
+ float time=0;
+ int count=0;
+ CarryDrawRecord records[12];
+};
+CarryDrawSnapshot carryDraw[33];
+void CheckUtilityLevel();
+void RememberDraw(int player,int weapon,int serial,const char *anchor,const model_t *model,
+ const char *directionBasis,const float direction[3])
+{
+ if(player<1||player>32||!model)return;
+ auto &snapshot=carryDraw[player];
+ if(snapshot.count>=12)return;
+ auto &record=snapshot.records[snapshot.count++];
+ record.weapon=weapon;record.serial=serial;
+ std::strncpy(record.anchor,anchor,sizeof(record.anchor)-1);record.anchor[sizeof(record.anchor)-1]=0;
+ std::strncpy(record.model,model->name,sizeof(record.model)-1);record.model[sizeof(record.model)-1]=0;
+ std::strncpy(record.directionBasis,directionBasis,sizeof(record.directionBasis)-1);record.directionBasis[sizeof(record.directionBasis)-1]=0;
+ for(int i=0;i<3;++i)record.direction[i]=direction[i];
+}
+void CarryDump()
+{
+ CheckUtilityLevel();
+ gEngfuncs.Con_Printf("oc2_carry: time=%.3f level=%s snapshot=%d\n",gEngfuncs.GetClientTime(),utilityLevel.c_str(),int(utilitySnapshotStarted));
+ for(int i=1;i<=32;++i)
+ {
+  if(!utilityValid[i]&&!carryDraw[i].count)continue;
+  const auto &state=utilityState[i];const auto &draw=carryDraw[i];
+  gEngfuncs.Con_Printf("oc2_carry_player: player=%d valid=%d userid=%d active=%d flash=%d he=%d smoke=%d fire=%d flags=%d draw_time=%.3f draw_count=%d\n",
+   i,int(utilityValid[i]),state.userid,state.active,state.flash,state.he,state.smoke,state.fire,state.flags,draw.time,draw.count);
+  for(int j=0;j<draw.count;++j)
+  {
+   const auto &record=draw.records[j];
+   gEngfuncs.Con_Printf("oc2_carry_draw: player=%d weapon=%d serial=%d anchor=%s model=%s direction_basis=%s direction_world=%.5f,%.5f,%.5f\n",
+    i,record.weapon,record.serial,record.anchor,record.model,record.directionBasis,record.direction[0],record.direction[1],record.direction[2]);
+  }
+ }
+}
 void ClearUtility()
 {
- for(int i=0;i<33;++i){utilityState[i]=oc2_carry::State();utilityValid[i]=false;}
+ for(int i=0;i<33;++i){utilityState[i]=oc2_carry::State();utilityValid[i]=false;carryDraw[i]=CarryDrawSnapshot();}
  utilitySnapshotStarted=false;
 }
 void CheckUtilityLevel()
@@ -136,16 +211,17 @@ void CarryBind(const mstudiobone_t &bone,float out[3][4])
  out[2][0]=-sy;out[2][1]=cy*sx;out[2][2]=cy*cx;
  for(int i=0;i<3;++i)out[i][3]=bone.value[i];
 }
-struct UtilityModel { const char *path;float x,y,z,axisX,axisY; };
-const UtilityModel flashModel={"models/w_flashbang.mdl",2.85906f,-.50960f,1.57197f,.99970f,.02446f};
-const UtilityModel heModel={"models/w_hegrenade.mdl",6.37906f,-.03460f,2.54697f,.96513f,.26176f};
-const UtilityModel smokeModel={"models/w_smokegrenade.mdl",.98406f,-.02460f,2.14198f,.99460f,.10379f};
-const UtilityModel molotovModel={"models/w_molotov.mdl",5.05342f,.57512f,3.05426f,1.f,-.00179f};
-const UtilityModel incendiaryModel={"models/w_incendiary.mdl",2.34906f,.56540f,4.10698f,.99998f,-.00556f};
+struct UtilityModel { const char *path;float x,y,z,axisX,axisY,scale; };
+const UtilityModel flashModel={"models/w_flashbang.mdl",2.85906f,-.50960f,1.57197f,.99970f,.02446f,.65f};
+const UtilityModel heModel={"models/w_hegrenade.mdl",6.37906f,-.03460f,2.54697f,.96513f,.26176f,.80f};
+const UtilityModel smokeModel={"models/w_smokegrenade.mdl",.98406f,-.02460f,2.14198f,.99460f,.10379f,.65f};
+const UtilityModel molotovModel={"models/w_molotov.mdl",5.05342f,.57512f,3.05426f,1.f,-.00179f,.75f};
+const UtilityModel incendiaryModel={"models/w_incendiary.mdl",2.34906f,.56540f,4.10698f,.99998f,-.00556f,.40f};
 
-void DrawUtility(CStudioModelRenderer &r,alight_s &lighting,float *lightdir,int anchor,
+void DrawUtility(CStudioModelRenderer &r,alight_s &lighting,float *lightdir,int player,int weapon,int anchor,
  const UtilityModel *spec,const float target[3],bool backpack)
 {
+ CarryPerfScope utilityPerf(carryPerf.utilityMs,carryPerf.utilityCalls);
  if(anchor<0)return;
  model_t *model=IEngineStudio.Mod_ForName(backpack?"models/w_backpack.mdl":spec->path,false);
  auto *header=model&&model->type==mod_studio?static_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(model)):nullptr;
@@ -161,13 +237,16 @@ void DrawUtility(CStudioModelRenderer &r,alight_s &lighting,float *lightdir,int 
   float local[3][4];CarryBind(bones[i],local);
   if(parent<0)memcpy(pose[i],local,sizeof(local));else CarryConcat(pose[parent],local,pose[i]);
  }
- float orient[3][4]={};
+ float orient[3][4]={},lightOrient[3][4]={};
  if(!backpack)
  {
   orient[0][0]=spec->axisX;orient[0][1]=spec->axisY;
   orient[1][2]=1;orient[2][0]=spec->axisY;orient[2][1]=-spec->axisX;
+  memcpy(lightOrient,orient,sizeof(orient));
+  for(int i=0;i<3;++i)for(int j=0;j<3;++j)orient[i][j]*=spec->scale;
   const float centre[3]={spec->x,spec->y,spec->z};
   for(int i=0;i<3;++i)orient[i][3]=target[i]-orient[i][0]*centre[0]-orient[i][1]*centre[1]-orient[i][2]*centre[2];
+  for(int i=0;i<3;++i)lightOrient[i][3]=orient[i][3];
  }
  const cl_entity_t savedEntity=*r.m_pCurrentEntity;
  auto *savedHeader=r.m_pStudioHeader;auto *savedModel=r.m_pRenderModel;
@@ -184,11 +263,20 @@ void DrawUtility(CStudioModelRenderer &r,alight_s &lighting,float *lightdir,int 
  if(backpack)r.StudioMergeBones(model);
  else for(int i=0;i<header->numbones;++i)
  {
-  float local[3][4];CarryConcat(orient,pose[i],local);
+  float local[3][4],lightLocal[3][4];CarryConcat(orient,pose[i],local);CarryConcat(lightOrient,pose[i],lightLocal);
   CarryConcat(r.m_rgCachedBoneTransform[anchor],local,(*r.m_pbonetransform)[i]);
-  CarryConcat(r.m_rgCachedLightTransform[anchor],local,(*r.m_plighttransform)[i]);
+  CarryConcat(r.m_rgCachedLightTransform[anchor],lightLocal,(*r.m_plighttransform)[i]);
  }
  IEngineStudio.StudioSetupLighting(&lighting);r.StudioRenderModel(lightdir);
+ float direction[3];
+ if(backpack)
+  for(int i=0;i<3;++i)direction[i]=(*r.m_pbonetransform)[0][i][0];
+ else
+  for(int i=0;i<3;++i)
+   direction[i]=r.m_rgCachedBoneTransform[anchor][i][0]*(lightOrient[0][0]*spec->axisX+lightOrient[0][1]*spec->axisY)+
+    r.m_rgCachedBoneTransform[anchor][i][1]*(lightOrient[1][0]*spec->axisX+lightOrient[1][1]*spec->axisY)+
+    r.m_rgCachedBoneTransform[anchor][i][2]*(lightOrient[2][0]*spec->axisX+lightOrient[2][1]*spec->axisY);
+ RememberDraw(player,weapon,0,backpack?"Spine2":"Pelvis",model,backpack?"root_x":"model_axis",direction);
  *r.m_pCurrentEntity=savedEntity;r.m_pStudioHeader=savedHeader;r.m_pRenderModel=savedModel;
  r.m_pBodyPart=savedPart;r.m_pSubModel=savedSub;
  memcpy(*r.m_pbonetransform,savedBones,header->numbones*sizeof(savedBones[0]));
@@ -201,12 +289,23 @@ void DrawUtility(CStudioModelRenderer &r,alight_s &lighting,float *lightdir,int 
 void OC2_CarryInit()
 {
  ClearUtility();utilityLevel.clear();gEngfuncs.pfnHookUserMsg(oc2_carry::kMessage,UtilityMessage);
+ gEngfuncs.pfnAddCommand("oc2_carry_dump",CarryDump);
+ carriedEnabled=gEngfuncs.pfnRegisterVariable("cl_oc2_carried","1",0);
+ gEngfuncs.pfnAddCommand("oc2_carry_perf_reset",CarryPerfReset);
+ gEngfuncs.pfnAddCommand("oc2_carry_perf_dump",CarryPerfDump);
 }
 void OC2_CarryFrame() { CheckUtilityLevel(); }
 
 void OC2_InventoryDrawCarried(CStudioModelRenderer &renderer,const entity_state_s *player,alight_s &lighting,float *lightdir)
 {
+ CarryPerfScope totalPerf(carryPerf.totalMs,carryPerf.totalCalls);
+ if(carriedEnabled&&carriedEnabled->value==0)return;
  const auto *entity=renderer.m_pCurrentEntity;
+ if(player&&player->number>=1&&player->number<=32&&entity&&entity->player&&entity->index==player->number)
+ {
+  carryDraw[player->number]=CarryDrawSnapshot();
+  carryDraw[player->number].time=gEngfuncs.GetClientTime();
+ }
  if(!player||player->number<1||player->number>32||!entity||!entity->player||entity->index!=player->number||player->spectator||
     g_PlayerExtraInfo[player->number].dead||
     entity->curstate.renderfx==kRenderFxDeadPlayer||CarryDeathSequence(renderer.m_pStudioHeader,player->sequence)||!IEngineStudio.IsHardware())return;
@@ -236,11 +335,12 @@ void OC2_InventoryDrawCarried(CStudioModelRenderer &renderer,const entity_state_
   const bool pistol=CarriedPistol(item.weapon);
   const int anchor=(pistol||knife)?pelvis:spine;
   if(anchor<0||(knife?drawnKnife:pistol?drawnPistol:drawnPrimary))continue;
+  CarryPerfScope preparePerf(carryPerf.prepareMs,carryPerf.prepareCalls);
   CarriedModel spec;
   model_t *model=nullptr;
+  int displayDefinition=0;
   if(knife)
   {
-   int displayDefinition=0;
    model=OC2_InventoryWorldKnifeModel(item.definition,displayDefinition);
    const CarriedKnife *choice=nullptr;
    for(const auto &candidate:carriedKnives)if(candidate.definition==displayDefinition){choice=&candidate;break;}
@@ -262,15 +362,49 @@ void OC2_InventoryDrawCarried(CStudioModelRenderer &renderer,const entity_state_
    else CarryConcat(bindPose[parent],localBind,bindPose[i]);
   }
   if(!validBones)continue;
-  float orient[3][4]={{spec.axisX,spec.axisY,0,0},{-spec.axisY,spec.axisX,0,0},{0,0,1,0}};
-  if(!knife&&!pistol)
+  // W models rest on their side. Their measured long axes have arbitrary
+  // signs: use the actual muzzle/blade end, including the paired models.
+  float ax=spec.axisX,ay=spec.axisY;
+  if((knife&&(displayDefinition==0||displayDefinition==506))||
+     (!knife&&(item.weapon==14||item.weapon==19))) {ax=-ax;ay=-ay;}
+  if(knife&&displayDefinition==516) {ax=-.966f;ay=.258f;}
+  if(!knife&&item.weapon==10) {const float x=ax;ax=-ay;ay=x;}
+  // Pelvis X points up, Y forward, Z to the player's left. Attach the
+  // primary at the spine position but use pelvis axes: the two shipped player
+  // models have substantially different Spine2 roll in their idle poses.
+  float orient[3][4]={};
+  if(knife)
   {
-   orient[1][0]=orient[1][1]=0;orient[1][2]=1;
-   orient[2][0]=spec.axisY;orient[2][1]=-spec.axisX;orient[2][2]=0;
+   orient[0][0]=-ax;orient[0][1]=-ay;
+   orient[1][0]=ay;orient[1][1]=-ax;
+   orient[2][2]=1;
+  }
+  else if(pistol)
+  {
+   orient[0][0]=-ax;orient[0][1]=-ay;
+   orient[1][0]=-ay;orient[1][1]=ax;
+   orient[2][2]=-1;
+  }
+  else
+  {
+   const float up=.8660254f,right=.5f;
+   orient[0][0]=-up*ax+right*ay;orient[0][1]=-up*ay-right*ax;
+   orient[1][2]=-1;
+   orient[2][0]=right*ax+up*ay;orient[2][1]=right*ay-up*ax;
+   if(item.weapon==15)
+   {
+    // FAMAS's sticker face is -Z in the W bind pose, unlike other guns.
+    // Rotate its side and normal 180 degrees around the unchanged muzzle.
+    orient[0][0]=-up*ax-right*ay;orient[0][1]=-up*ay+right*ax;
+    orient[1][2]=1;
+    orient[2][0]=right*ax-up*ay;orient[2][1]=right*ay+up*ax;
+   }
   }
   const float centre[3]={spec.x,spec.y,spec.z};
   const bool backpack=utility&&(utility->flags&oc2_carry::HasC4)&&utility->active!=6;
-  const float target[3]={knife||pistol?0.f:2.f,knife||pistol?0.f:backpack?-13.f:-10.f,knife?9.f:pistol?-9.f:0.f};
+  // Keep the weapon against the vest; the pack needs only a small extra
+  // offset. The former 10/13-unit gap left the rifle visibly floating.
+  const float target[3]={knife||pistol?0.f:2.f,knife||pistol?0.f:backpack?-6.5f:-6.f,knife?9.f:pistol?-9.f:0.f};
   for(int i=0;i<3;++i)orient[i][3]=target[i]-orient[i][0]*centre[0]-orient[i][1]*centre[1]-orient[i][2]*centre[2];
   const cl_entity_t savedEntity=*renderer.m_pCurrentEntity;
   auto *savedHeader=renderer.m_pStudioHeader;auto *savedModel=renderer.m_pRenderModel;
@@ -281,14 +415,32 @@ void OC2_InventoryDrawCarried(CStudioModelRenderer &renderer,const entity_state_
   memcpy(savedLights,*renderer.m_plighttransform,header->numbones*sizeof(savedLights[0]));
   renderer.m_pCurrentEntity->model=model;renderer.m_pCurrentEntity->curstate.body=0;renderer.m_pCurrentEntity->curstate.skin=0;
   renderer.m_pStudioHeader=header;renderer.m_pRenderModel=model;
+  float carryBone[3][4],carryLight[3][4];
+  memcpy(carryBone,renderer.m_rgCachedBoneTransform[anchor],sizeof(carryBone));
+  memcpy(carryLight,renderer.m_rgCachedLightTransform[anchor],sizeof(carryLight));
+  if(!knife&&!pistol&&pelvis>=0)
+   for(int row=0;row<3;++row)for(int col=0;col<3;++col)
+   {
+    carryBone[row][col]=renderer.m_rgCachedBoneTransform[pelvis][row][col];
+    carryLight[row][col]=renderer.m_rgCachedLightTransform[pelvis][row][col];
+   }
   for(int i=0;i<header->numbones;++i)
   {
    float localMatrix[3][4];CarryConcat(orient,bindPose[i],localMatrix);
-   CarryConcat(renderer.m_rgCachedBoneTransform[anchor],localMatrix,(*renderer.m_pbonetransform)[i]);
-   CarryConcat(renderer.m_rgCachedLightTransform[anchor],localMatrix,(*renderer.m_plighttransform)[i]);
+   CarryConcat(carryBone,localMatrix,(*renderer.m_pbonetransform)[i]);
+   CarryConcat(carryLight,localMatrix,(*renderer.m_plighttransform)[i]);
   }
+  preparePerf.Stop();
   IEngineStudio.StudioSetHeader(header);IEngineStudio.SetRenderModel(model);IEngineStudio.StudioSetupLighting(&lighting);
-  { OC2_InventoryMaterialScope materials(renderer,model,player->number,item.serial);renderer.StudioRenderModel(lightdir); }
+  { OC2_InventoryMaterialScope materials(renderer,model,player->number,item.serial);
+    CarryPerfScope bodyPerf(carryPerf.bodyMs,carryPerf.bodyCalls);renderer.StudioRenderModel(lightdir); }
+  float direction[3];
+  for(int i=0;i<3;++i)
+   direction[i]=carryBone[i][0]*(orient[0][0]*ax+orient[0][1]*ay)+
+    carryBone[i][1]*(orient[1][0]*ax+orient[1][1]*ay)+
+    carryBone[i][2]*(orient[2][0]*ax+orient[2][1]*ay);
+  RememberDraw(player->number,item.weapon,item.serial,knife||pistol?"Pelvis":"Spine2",model,
+   knife?"blade":"muzzle",direction);
   if(!knife)OC2_DrawWorldStickers(renderer,model,'c',player->number,item.serial,lightdir);
   *renderer.m_pCurrentEntity=savedEntity;renderer.m_pStudioHeader=savedHeader;renderer.m_pRenderModel=savedModel;
   renderer.m_pBodyPart=savedPart;renderer.m_pSubModel=savedSub;
@@ -307,14 +459,14 @@ void OC2_InventoryDrawCarried(CStudioModelRenderer &renderer,const entity_state_
  int he=utility->he-(inHand&&utility->active==4&&utility->he>0?1:0);
  int smoke=utility->smoke-(inHand&&utility->active==9&&utility->smoke>0?1:0);
  int fire=utility->fire-(inHand&&utility->active==31&&utility->fire>0?1:0);
- const float flashA[3]={-5.f,6.f,-5.f},flashB[3]={-5.f,7.f,0.f};
- const float hePos[3]={-5.f,6.f,5.f},smokePos[3]={-5.f,-5.f,7.f},firePos[3]={-5.f,-5.f,-6.f};
+ const float flashA[3]={-2.f,4.f,-6.f},flashB[3]={-2.f,4.f,-2.f};
+ const float hePos[3]={-2.f,4.f,3.f},smokePos[3]={-2.f,-3.f,6.f},firePos[3]={-2.f,-3.f,-6.f};
  if((utility->flags&oc2_carry::HasC4)&&utility->active!=6)
-  DrawUtility(renderer,lighting,lightdir,spine,nullptr,nullptr,true);
- if(flash>0)DrawUtility(renderer,lighting,lightdir,pelvis,&flashModel,flashA,false);
- if(flash>1)DrawUtility(renderer,lighting,lightdir,pelvis,&flashModel,flashB,false);
- if(he>0)DrawUtility(renderer,lighting,lightdir,pelvis,&heModel,hePos,false);
- if(smoke>0)DrawUtility(renderer,lighting,lightdir,pelvis,&smokeModel,smokePos,false);
- if(fire>0)DrawUtility(renderer,lighting,lightdir,pelvis,
+  DrawUtility(renderer,lighting,lightdir,player->number,6,spine,nullptr,nullptr,true);
+ if(flash>0)DrawUtility(renderer,lighting,lightdir,player->number,25,pelvis,&flashModel,flashA,false);
+ if(flash>1)DrawUtility(renderer,lighting,lightdir,player->number,25,pelvis,&flashModel,flashB,false);
+ if(he>0)DrawUtility(renderer,lighting,lightdir,player->number,4,pelvis,&heModel,hePos,false);
+ if(smoke>0)DrawUtility(renderer,lighting,lightdir,player->number,9,pelvis,&smokeModel,smokePos,false);
+ if(fire>0)DrawUtility(renderer,lighting,lightdir,player->number,31,pelvis,
   utility->flags&oc2_carry::Incendiary?&incendiaryModel:&molotovModel,firePos,false);
 }

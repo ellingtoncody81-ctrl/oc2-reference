@@ -66,6 +66,7 @@ public:
 private:
  struct Saved {int *address;int value;Saved(int *p,int v):address(p),value(v){}};
  std::vector<Saved> saved;
+ std::vector<int> pinned;
  bool ready=false;
  bool record=true;
 };
@@ -98,4 +99,5 @@ private:
  struct SavedShort {short *address;short value;SavedShort(short *p,short v):address(p),value(v){}};
  std::vector<Saved> saved;
  std::vector<SavedShort> hidden;
+ std::vector<int> pinned;
 };
