@@ -199,6 +199,7 @@ extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload,
 extern int g_iPlayerFlags;
 
 static view_ads::State s_ADS;
+static view_ads_motion::TurnState s_ADSTurn;
 static float s_ADSWorldFov=90.0f,s_ADSObservedTime=-1.0f;
 
 float V_CurrentADSWorldFOV() { return s_ADSWorldFov; }
@@ -974,6 +975,7 @@ void V_CalcQuakeGuns()
 void V_ResetViewModelEffects()
 {
 	s_ADS.Reset();
+	s_ADSTurn=view_ads_motion::TurnState();
 	s_ADSObserved=false;
 	for (int axis=0;axis<3;++axis) s_ADSMotionPosition[axis]=s_ADSMotionAngles[axis]=0;
 	s_ADSMotionBobGain=s_ADSMotionInertiaGain=s_ADSMotionSpeed=0;
@@ -1041,6 +1043,7 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 			motionStamp>=s_ViewMotionClock.last_stamp-0.25 && motionStamp<=s_ViewMotionClock.last_stamp+1.0;
 		const view_bob::BobState savedBob=s_BobState;
 		const view_effects::EffectsState savedEffects=s_ViewEffects;
+		const view_ads_motion::TurnState savedTurn=s_ADSTurn;
 		const view_bob::RenderClock savedClock=s_ViewMotionClock;
 		V_ResetViewModelEffects();
 		// A local pause can correct the clock before its pause flag arrives.
@@ -1048,13 +1051,13 @@ void V_CalcNormalRefdef ( struct ref_params_s *pparams )
 		if (keepADS) { s_ADS=savedADS;s_ADS.lastTime=pparams->time; }
 		// Preserve only presentation motion across a small clock correction.
 		// The established camera/stairs reset and ADS calibration stay intact.
-		if (keepMotion) { s_BobState=savedBob;s_ViewEffects=savedEffects;s_ViewMotionClock=savedClock; }
+		if (keepMotion) { s_BobState=savedBob;s_ViewEffects=savedEffects;s_ADSTurn=savedTurn;s_ViewMotionClock=savedClock; }
 	}
 	s_flBobContextTime = pparams->time;
 	s_iBobContextEntity = pparams->viewentity;
 	s_ViewMotionStep=view_bob::StepRenderClock(s_ViewMotionClock,motionStamp,pparams->frametime,
 		bVmActive,pparams->paused!=0,pparams->viewentity);
-	if (s_ViewMotionStep.reset) { s_BobState=view_bob::BobState();view_effects::ResetEffects(s_ViewEffects); }
+	if (s_ViewMotionStep.reset) { s_BobState=view_bob::BobState();view_effects::ResetEffects(s_ViewEffects);s_ADSTurn=view_ads_motion::TurnState(); }
 	s_ADS.Update(iWeaponId,bVmActive,iInReload!=0,g_lastFOV,pparams->time,pparams->paused!=0);
 	V_UpdateViewModelSettings();
 	oc2_weapon_spread::SpreadInput spreadInput = { iWeaponId, flWeaponAccuracy, iWeaponState,
@@ -1670,9 +1673,16 @@ if( gHUD.cl_bobstyle && gHUD.cl_bobstyle->value == view_bob::kStyleModern )
 	const float adsSway[3]={effects.sway_offset.x,effects.sway_offset.y,effects.sway_offset.z};
 	const float adsSpeed=gHUD.cl_bobstyle && gHUD.cl_bobstyle->value==view_bob::kStyleModern?
 		s_BobState.speed_in:sqrtf(pparams->simvel[0]*pparams->simvel[0]+pparams->simvel[1]*pparams->simvel[1]);
+	const float adsSpeedRatio=flMaxSpeed>0?adsSpeed/flMaxSpeed:0;
+	const float turnAngles[3]={pparams->cl_viewangles[0],pparams->cl_viewangles[1],pparams->cl_viewangles[2]};
+	float adsTurn[3];
+	view_ads_motion::StepTurn(s_ADSTurn,turnAngles,s_ViewMotionStep.time,adsSpeedRatio,flMaxSpeed,
+		effectParams.sway_interp>0?effectParams.sway_scale:0,
+		effectInput.active && view_ads::Supported(iWeaponId),pparams->paused!=0,
+		iWeaponId,!rightHand,adsTurn);
 	const view_ads_motion::Motion adsMotion=view_ads_motion::Dampen(adsBob,adsSway,
-		effects.land_dip,effects.mouse_roll,flMaxSpeed>0?adsSpeed/flMaxSpeed:0,
-		s_ADS.weapon==8 || s_ADS.weapon==27);
+		effects.land_dip,effects.mouse_roll,adsSpeedRatio,
+		s_ADS.weapon==8 || s_ADS.weapon==27,adsTurn);
 	if( gHUD.viewmodel_bob_debug && gHUD.viewmodel_bob_debug->value && bVmActive && !pparams->paused )
 	{
 		if( effects.land_dip > s_flHudLandPeak ) s_flHudLandPeak = effects.land_dip;

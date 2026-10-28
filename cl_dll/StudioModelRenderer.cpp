@@ -1061,15 +1061,15 @@ void CStudioModelRenderer::StudioSetupBones(void)
 		g_viewFlow.layers=g_viewTransitions.Count();
 		ViewModelHandPosition(m_pStudioHeader,pos,q,g_viewFlow.rawHand);
 		static float oldPos[MAXSTUDIOBONES][3]; static vec4_t oldQ[MAXSTUDIOBONES];
-		for (int layer=1; layer>=0; --layer)
+		for (int layer=0; layer<2; ++layer)
+			g_viewFlow.oldSequence[layer]=-1, g_viewFlow.oldFrame[layer]=g_viewFlow.weight[layer]=0;
+		for (int layer=g_viewTransitions.Count()-1; layer>=0; --layer)
 		{
-			g_viewFlow.oldSequence[layer]=-1; g_viewFlow.oldFrame[layer]=g_viewFlow.weight[layer]=0;
-			if (layer >= g_viewTransitions.Count()) continue;
 			const oc2_viewmodel::Layer &old=g_viewTransitions.Previous(layer);
 			float oldFrame=ViewModelReloadFrame(m_pRenderModel,m_pStudioHeader,old.sequence,sampleTime-old.startTime);
 			if (oldFrame<0) oldFrame=g_viewTransitions.PreviousFrame(layer,sampleTime);
 			const float weight=g_viewTransitions.Weight(layer,sampleTime);
-			g_viewFlow.oldSequence[layer]=old.sequence; g_viewFlow.oldFrame[layer]=oldFrame; g_viewFlow.weight[layer]=weight;
+			if (layer < 2) { g_viewFlow.oldSequence[layer]=old.sequence; g_viewFlow.oldFrame[layer]=oldFrame; g_viewFlow.weight[layer]=weight; }
 			if (old.sequence < 0 || old.sequence >= m_pStudioHeader->numseq) continue;
 			StudioSampleSequence(old.sequence,oldFrame,old.blend0,old.blend1,oldPos,oldQ);
 			StudioSlerpBones(q,pos,oldQ,oldPos,weight);

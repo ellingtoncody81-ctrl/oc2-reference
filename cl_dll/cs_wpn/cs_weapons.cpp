@@ -1629,14 +1629,14 @@ void HUD_WeaponsPostThink( local_state_s *from, local_state_s *to, usercmd_t *cm
 
 	s_iBobPredictedWeapon = to->client.health > 0 ? to->client.m_iId : 0;
 
-	// Predict both entering and leaving the added sights. The inherited client
+	// Predict both entering and leaving all sights. The inherited client
 	// ResetMaxSpeed stub cannot update this cap; preserve freezes and VIP policy.
 	const bool aimSpeedVIP=pplayer && pplayer->index>0 && pplayer->index<=MAX_PLAYERS &&
 		g_PlayerExtraInfo[pplayer->index].vip;
 	if (!aimSpeedVIP && !g_iUser1 && player.m_pActiveItem && (flags & PLAYER_FREEZE_TIME_OVER) && to->client.health>0 &&
 		player.pev->maxspeed>1 && player.pev->fov!=from->client.fov &&
-		(oc2_weapon::SupportsManualAim(player.m_pActiveItem->m_iId) ||
-		 oc2_weapon::SupportsManualAim(from->client.m_iId)))
+		(oc2_weapon::SupportsAim(player.m_pActiveItem->m_iId) ||
+		 oc2_weapon::SupportsAim(from->client.m_iId)))
 		player.pev->maxspeed=player.m_pActiveItem->GetMaxSpeed();
 
 	// Copy in results of prediction code

@@ -42,6 +42,10 @@ struct Layer
 class Transitioner
 {
 public:
+	// A short burst of interruptions can leave more than two live layers.
+	// Retaining them until their fade expires avoids dropping visible pose
+	// contributions when an action is interrupted again during a blend.
+	static const int MaxPrevious = 32;
 	enum Change { None, First, Model, Sequence, Restart, Clock };
 	void Clear() { m_ready = false; m_count = 0; m_key = 0; }
 	Change Observe(uintptr_t key, const Layer &next, bool interpolate)
@@ -55,7 +59,13 @@ public:
 			m_count = 0;
 		else if (changed != None)
 		{
-			if (m_count == 2) { m_old[0] = m_old[1]; m_count = 1; }
+			// Retire expired layers before applying the fixed safety bound.
+			Prune(next.sampleTime);
+			if (m_count == MaxPrevious)
+			{
+				for (int i=1; i<m_count; ++i) m_old[i-1] = m_old[i];
+				--m_count;
+			}
 			Layer old = m_current;
 			// The departing layer was last sampled at this time. Starting the
 			// fade at the new draw instead would hold it at full weight for an
@@ -65,12 +75,7 @@ public:
 			m_old[m_count++] = old;
 		}
 		m_current = next; m_key = key; m_ready = true;
-		for (int i=0; i<m_count;)
-		{
-			if (Fade(next.sampleTime-m_old[i].fadeStart,m_old[i].duration) > 0) { ++i; continue; }
-			for (int j=i; j+1<m_count; ++j) m_old[j] = m_old[j+1];
-			--m_count;
-		}
+		Prune(next.sampleTime);
 		return changed;
 	}
 	int Count() const { return m_count; }
@@ -82,10 +87,19 @@ public:
 	}
 	float Weight(int index, double time) const { return Fade(time-m_old[index].fadeStart,m_old[index].duration); }
 private:
+	void Prune(double time)
+	{
+		for (int i=0; i<m_count;)
+		{
+			if (Fade(time-m_old[i].fadeStart,m_old[i].duration) > 0) { ++i; continue; }
+			for (int j=i; j+1<m_count; ++j) m_old[j] = m_old[j+1];
+			--m_count;
+		}
+	}
 	bool m_ready = false;
 	uintptr_t m_key = 0;
 	int m_count = 0;
-	Layer m_current, m_old[2];
+	Layer m_current, m_old[MaxPrevious];
 };
 }
 #endif
