@@ -39,12 +39,14 @@ struct PlayerLoadout
 };
 PlayerLoadout players[33];
 
-int CarryAmmo(CBasePlayer *player,CBasePlayerItem *item)
+int RawCarryAmmo(CBasePlayer *player,CBasePlayerItem *item)
 {
  if(!item)return 0;
  const int ammo=item->PrimaryAmmoIndex();
- return ammo>=0&&ammo<MAX_AMMO_SLOTS?clamp(player->m_rgAmmo[ammo],0,255):0;
+ return ammo>=0&&ammo<MAX_AMMO_SLOTS?player->m_rgAmmo[ammo]:0;
 }
+int CarryAmmo(CBasePlayer *player,CBasePlayerItem *item)
+{ return clamp(RawCarryAmmo(player,item),0,255); }
 oc2_carry::State CarryCurrent(CBasePlayer *player)
 {
  oc2_carry::State state;
@@ -270,7 +272,7 @@ void Snapshot(CBasePlayer *player)
 }
 void Dump()
 {
- Publish();
+ Publish();PublishCarry();
  ALERT(at_console,"oc2items: count=%u catalog=%u\n",unsigned(published.size()),unsigned(catalog.size()));
  for(const auto &entry:published)
  {
@@ -286,7 +288,21 @@ void Dump()
   const auto &state=PlayerState(peer);
   ALERT(at_console,"oc2gloveserver_player: player=%d userid=%d bot=%d resource=%d revision=%u assigned=%d\n",
    i,state.userid,int(peer->IsBot()),state.glove,state.gloveRevision,int(state.botGloveAssigned));
+  const auto carry=CarryCurrent(peer);
+  auto *active=peer->m_pActiveItem;
+  auto *fire=peer->GetItemById(WEAPON_MOLOTOV);
+  ALERT(at_console,"oc2carry_server: player=%d userid=%d alive=%d active=%d release=%.3f c4=%d he=%d flash=%d smoke=%d fire=%d firestate=%d protocol_active=%d protocol_he=%d protocol_flash=%d protocol_smoke=%d protocol_fire=%d protocol_flags=%d\n",
+   i,carry.userid,int(peer->IsAlive()),active?active->m_iId:0,active?active->m_flReleaseThrow:0.0f,
+   int(peer->m_bHasC4),RawCarryAmmo(peer,peer->GetItemById(WEAPON_HEGRENADE)),
+   RawCarryAmmo(peer,peer->GetItemById(WEAPON_FLASHBANG)),RawCarryAmmo(peer,peer->GetItemById(WEAPON_SMOKEGRENADE)),
+   RawCarryAmmo(peer,fire),fire?static_cast<CBasePlayerWeapon *>(fire)->m_iWeaponState:0,
+   carry.active,carry.he,carry.flash,carry.smoke,carry.fire,carry.flags);
  }
+}
+bool TestUtilityWeapon(int value)
+{
+ return value==WEAPON_HEGRENADE||value==WEAPON_C4||value==WEAPON_SMOKEGRENADE||
+  value==WEAPON_FLASHBANG||value==WEAPON_MOLOTOV;
 }
 bool ArgumentNumber(int index,int maximum,int &value)
 {
@@ -298,7 +314,7 @@ void TestCommand(CBasePlayer *caller)
 {
  // Explicit local cheat harness. Acquisition, dropping and touching still use
  // the game's normal GiveNamedItem/PackWeapon/physics Touch paths.
- if(CVAR_GET_FLOAT("sv_cheats")==0||IS_DEDICATED_SERVER()||caller->entindex()!=1||CMD_ARGC()!=4)return;
+ if(!caller||CVAR_GET_FLOAT("sv_cheats")==0||IS_DEDICATED_SERVER()||caller->entindex()!=1||CMD_ARGC()!=4)return;
  int playerIndex=0,value=0;
  if(!ArgumentNumber(2,32,playerIndex)||playerIndex<1||!ArgumentNumber(3,32767,value))return;
  auto *target=UTIL_PlayerByIndex(playerIndex);
@@ -310,6 +326,27 @@ void TestCommand(CBasePlayer *caller)
   return;
  }
  if(!target->IsAlive())return;
+ if(FStrEq(action,"utility"))
+ {
+  if(!TestUtilityWeapon(value))return;
+  const auto *info=GetWeaponInfo(value);
+  if(!info||!info->entityName)return;
+  const char *name=value==WEAPON_MOLOTOV&&target->m_iTeam==CT?"weapon_incendiary":info->entityName;
+  if(!target->GetItemById(static_cast<WeaponIdType>(value)))target->GiveNamedItem(name);
+  auto *item=target->GetItemById(static_cast<WeaponIdType>(value));
+  if(item&&value==WEAPON_C4)
+  {
+   target->m_bHasC4=true;target->pev->body=1;target->SetBombIcon();
+  }
+  else if(item)
+  {
+   const int index=item->PrimaryAmmoIndex();
+   const int maximum=value==WEAPON_FLASHBANG?2:1;
+   if(index>=0&&index<MAX_AMMO_SLOTS&&item->pszAmmo1()&&target->m_rgAmmo[index]<maximum)
+    target->GiveAmmo(maximum-target->m_rgAmmo[index],item->pszAmmo1(),maximum);
+  }
+  Dump();return;
+ }
  if(FStrEq(action,"aim"))
  {
   if(value>359)return;
@@ -361,7 +398,8 @@ void TestCommand(CBasePlayer *caller)
  }
  else
  {
-  if(value!=WEAPON_KNIFE&&oc2_accessories::Index(value)<0)return;
+  if(value!=WEAPON_KNIFE&&oc2_accessories::Index(value)<0&&
+     !(FStrEq(action,"select")&&TestUtilityWeapon(value)))return;
   const auto *info=GetWeaponInfo(value);
   if(!info||!info->entityName)return;
   if(FStrEq(action,"give"))
