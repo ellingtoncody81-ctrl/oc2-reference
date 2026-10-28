@@ -122,6 +122,7 @@ typedef struct
 // studio-related cvars
 CVAR_DEFINE_AUTO( r_studio_sort_textures, "0", FCVAR_GLCONFIG, "change draw order for additive meshes" );
 CVAR_DEFINE_AUTO( r_studio_drawelements, "1", FCVAR_GLCONFIG, "use glDrawElements for studiomodels" );
+CVAR_DEFINE_AUTO( r_studio_arraychunks, "1", 0, "split oversized studio meshes into array batches" );
 CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model renderer instead of the one provided by client library (debugging)" );
 static cvar_t			*cl_righthand = NULL;
 
@@ -146,6 +147,10 @@ R_StudioInit
 */
 void R_StudioInit( void )
 {
+	// CVAR_DEFINE_AUTO declares the convar but does not register it.
+	// Register here so its default is applied before studio models are drawn.
+	if( CVAR_CHECK_SENTINEL( &r_studio_arraychunks ))
+		gEngfuncs.Cvar_RegisterVariable( &r_studio_arraychunks );
 
 #if XASH_PSVITA
 	// don't do the same array-building work twice since that's what our FFP shim does anyway
@@ -1766,11 +1771,11 @@ R_StudioDrawNormalMesh
 generic path
 ===============
 */
-static void R_StudioBuildArrayNormalMesh( short *ptricmds, vec3_t *pstudionorms, float s, float t )
+static void R_StudioBuildArrayNormalMesh( short *ptricmds, const short *stop, vec3_t *pstudionorms, float s, float t )
 {
 	int	i;
 
-	while(( i = *( ptricmds++ )))
+	while( ptricmds < stop && ( i = *( ptricmds++ )))
 	{
 		int vertexState = 0;
 		qboolean tri_strip = true;
@@ -1805,11 +1810,11 @@ R_StudioDrawNormalMesh
 generic path
 ===============
 */
-static void R_StudioBuildArrayFloatMesh( short *ptricmds, vec3_t *pstudionorms )
+static void R_StudioBuildArrayFloatMesh( short *ptricmds, const short *stop, vec3_t *pstudionorms )
 {
 	int	i;
 
-	while(( i = *( ptricmds++ )))
+	while( ptricmds < stop && ( i = *( ptricmds++ )))
 	{
 		int vertexState = 0;
 		qboolean tri_strip = true;
@@ -1844,12 +1849,12 @@ R_StudioDrawNormalMesh
 generic path
 ===============
 */
-static void R_StudioBuildArrayChromeMesh( short *ptricmds, vec3_t *pstudionorms, float s, float t, float scale )
+static void R_StudioBuildArrayChromeMesh( short *ptricmds, const short *stop, vec3_t *pstudionorms, float s, float t, float scale )
 {
 	int	i;
 	qboolean	glowShell = (scale > 0.0f) ? true : false;
 
-	while(( i = *( ptricmds++ )))
+	while( ptricmds < stop && ( i = *( ptricmds++ )))
 	{
 		int vertexState = 0;
 		qboolean tri_strip = true;
@@ -1952,30 +1957,75 @@ static int R_StudioMeshArrayBudget( const short *commands )
 	}
 }
 
+// Plan one batch ending at a primitive boundary. The returned pointer is
+// either the next primitive or the terminator, never inside a strip/fan.
+// -1 means truncated, 0 means an individual primitive needs the old path,
+// and 1 means the chunk fits. Validate all chunks before drawing any of them.
+static int R_StudioPlanArrayChunk( const short *commands, const short *end, const short **next )
+{
+	uint vertices = 0, elements = 0;
+	for( ;; )
+	{
+		if( commands >= end ) return -1;
+		int count = *commands;
+		if( !count ) { *next = commands; return 1; }
+		if( count < 0 ) count = -count;
+		if( count > ( end - commands - 1 ) / 4 ) return -1;
+		// Incomplete primitives cannot be combined as GL_TRIANGLES: the
+		// immediate path discards them, while an array could join them.
+		if( count < 3 || count > MAXSTUDIOVERTS ) return 0;
+		uint needed = ( count - 2 ) * 3;
+		if( needed > MAXSTUDIOVERTS * 6 ) return 0;
+		if( vertices + count > MAXSTUDIOVERTS || elements + needed > MAXSTUDIOVERTS * 6 )
+		{
+			*next = commands;
+			return 1;
+		}
+		vertices += count;
+		elements += needed;
+		commands += 1 + count * 4;
+	}
+}
+
 static void R_StudioSubmitMesh( short *ptricmds, vec3_t *pstudionorms, float s, float t, float shellscale, int tesslevel )
 {
-	const int arrayBudget = tesslevel <= 0 && r_studio_drawelements.value ? R_StudioMeshArrayBudget( ptricmds ) : 0;
+	int arrayBudget = tesslevel <= 0 && r_studio_drawelements.value ? R_StudioMeshArrayBudget( ptricmds ) : 0;
 	if( arrayBudget < 0 ) return;
+	if( tesslevel <= 0 && r_studio_drawelements.value && ( arrayBudget > 0 || r_studio_arraychunks.value ))
+	{
+		const short *end = (const short *)((const byte *)m_pStudioHeader + m_pStudioHeader->length);
+		const short *scan = ptricmds, *next = NULL;
+		for( ;; )
+		{
+			int status = R_StudioPlanArrayChunk( scan, end, &next );
+			if( status < 0 ) return;
+			if( !status ) { arrayBudget = 0; break; }
+			if( !*next ) { arrayBudget = 1; break; }
+			scan = next;
+		}
+	}
 	if( tesslevel > 0 )
 	{
 		// R_StudioDrawTruformMesh( ptricmds, pstudionorms, s, t, shellscale, tesslevel );
 	}
 	else if( arrayBudget > 0 )
 	{
-		// Each mesh is submitted immediately below. Reuse those same buffers
-		// instead of accumulating every mesh of a submodel (AUG: 18967 >16384).
-		g_studio.numverts = g_studio.numelems = 0;
-		uint startArrayVerts = g_studio.numverts;
-		uint startArrayElems = g_studio.numelems;
-
-		if( FBitSet( g_nFaceFlags, STUDIO_NF_CHROME ))
-			R_StudioBuildArrayChromeMesh( ptricmds, pstudionorms, s, t, shellscale );
-		else if( FBitSet( g_nFaceFlags, STUDIO_NF_UV_COORDS ))
-			R_StudioBuildArrayFloatMesh( ptricmds, pstudionorms );
-		else
-			R_StudioBuildArrayNormalMesh( ptricmds, pstudionorms, s, t );
-
-		R_StudioDrawArrays( startArrayVerts, startArrayElems );
+		const short *end = (const short *)((const byte *)m_pStudioHeader + m_pStudioHeader->length);
+		short *chunk = ptricmds;
+		while( *chunk )
+		{
+			const short *next = NULL;
+			if( R_StudioPlanArrayChunk( chunk, end, &next ) != 1 || next <= chunk ) return;
+			g_studio.numverts = g_studio.numelems = 0;
+			if( FBitSet( g_nFaceFlags, STUDIO_NF_CHROME ))
+				R_StudioBuildArrayChromeMesh( chunk, next, pstudionorms, s, t, shellscale );
+			else if( FBitSet( g_nFaceFlags, STUDIO_NF_UV_COORDS ))
+				R_StudioBuildArrayFloatMesh( chunk, next, pstudionorms );
+			else
+				R_StudioBuildArrayNormalMesh( chunk, next, pstudionorms, s, t );
+			R_StudioDrawArrays( 0, 0 );
+			chunk = (short *)next;
+		}
 	}
 	else
 	{
