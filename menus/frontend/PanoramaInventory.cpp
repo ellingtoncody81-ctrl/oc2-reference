@@ -4,6 +4,7 @@
 #include "PanoramaInventory.h"
 #include "PanoramaInventoryLabels.h"
 #include "keydefs.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -47,7 +48,10 @@ void CMenuPanoramaWheel::SlotBounds(int slot,Point &position,Size &size) const
     const int fullWidth=Q_max(1,previewWidth),fullHeight=Q_max(1,previewHeight+int(28*uiStatic.scaleY));
     size=Size(fullWidth,fullHeight);
     position=center-Point(size.w/2,size.h/2);
-    if(!fitToSector)return;
+    // These long weapons extend past the outer wheel in their card-sized
+    // previews. Fit only their slots; other categories keep their old sizes.
+    const int key=entries[slot].key;
+    if(!fitToSector&&key!=15&&key!=20&&key!=27)return;
     const double cx=p.x+z.w/2,cy=p.y+z.h/2,r=Q_min(z.w,z.h)/2;
     const double angle=-kPi*.5+2*kPi*slot/Q_max(1,int(entries.size()));
     const double halfAngle=kPi*.98/Q_max(1,int(entries.size()));
@@ -148,7 +152,23 @@ void CMenuPanoramaWheel::Draw()
         const bool fitted=box.w!=previewWidth||box.h!=previewHeight+int(28*uiStatic.scaleY);
         const int labelHeight=fitted?Q_max(1,g_FontMgr->GetFontTall(uiStatic.hTinyFont)):Q_max(1,box.h-previewHeight);
         const int modelHeight=fitted?Q_max(1,box.h-labelHeight):Q_max(1,previewHeight);
-        if(entries[i].model)entries[i].model->DrawAt(item.x,item.y,box.w,modelHeight);
+        int modelWidth=box.w,drawHeight=modelHeight;
+        if(pistolLayout&&entries[i].key==1&&entries.size()==6)
+        {
+            // The top slot is wider than the four diagonal pistol slots. P250
+            // has a similar mesh length to Five-SeveN/Glock, so use their
+            // available viewport as the size reference without moving its label.
+            for(int reference:{1,2,4,5})
+            {
+                Point other;Size otherBox;SlotBounds(reference,other,otherBox);
+                const bool otherFitted=otherBox.w!=previewWidth||otherBox.h!=previewHeight+int(28*uiStatic.scaleY);
+                const int otherLabel=otherFitted?Q_max(1,g_FontMgr->GetFontTall(uiStatic.hTinyFont)):Q_max(1,otherBox.h-previewHeight);
+                const int otherHeight=otherFitted?Q_max(1,otherBox.h-otherLabel):Q_max(1,previewHeight);
+                const double scale=std::min(1.0,std::min(double(otherBox.w)/modelWidth,double(otherHeight)/drawHeight));
+                modelWidth=Q_max(1,int(modelWidth*scale));drawHeight=Q_max(1,int(drawHeight*scale));
+            }
+        }
+        if(entries[i].model)entries[i].model->DrawAt(item.x+(box.w-modelWidth)/2,item.y+(modelHeight-drawHeight)/2,modelWidth,drawHeight);
         if(box.h>labelHeight)
             DrawLabel(item+Point(0,modelHeight),Size(box.w,labelHeight),entries[i].name.c_str(),fitted?12:entries.size()>7?12:14,ink,true);
     }
@@ -381,6 +401,7 @@ void CMenuPanoramaInventory::BuildWheel()
         m_wheel.entries.push_back(item);
     }
     m_wheel.fitToSector=m_category==Pistol||m_category==Knife;
+    m_wheel.pistolLayout=m_category==Pistol;
     m_wheel.selected=0;
     const int key=m_category<Knife?m_weapon:m_category==Knife?m_definition:m_family;
     for(int i=0;i<int(m_wheel.entries.size());++i)if(m_wheel.entries[i].key==key)m_wheel.selected=i;
