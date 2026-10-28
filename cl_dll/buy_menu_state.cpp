@@ -311,6 +311,13 @@ int FireVariantMessage(const char *name, int size, void *buffer)
 
 bool FireIsIncendiary() { return fireVariant == 1; }
 
+bool HasDefuser()
+{
+	if (hasItemStatus) return (itemStatus & 2) != 0;
+	const int local = gEngfuncs.GetLocalPlayer() ? gEngfuncs.GetLocalPlayer()->index : 0;
+	return local > 0 && local <= MAX_PLAYERS && g_PlayerExtraInfo[local].has_defuse_kit;
+}
+
 int ItemStatusMessage(const char *name, int size, void *buffer)
 {
 	if (size != 1 || !buffer) return 0;

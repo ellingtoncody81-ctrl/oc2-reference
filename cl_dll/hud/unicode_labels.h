@@ -61,7 +61,7 @@ inline void FixedLabel(const char *input,float x,float y,float height,match_ui::
     int width=0;g_pMenu->GetTextSize(font,text.c_str(),&width);
     if(maxWidth>0&&width>maxWidth*scale)
     {
-        const int available=int(maxWidth*scale);const char *ellipsis=u8"…";int suffix=0;
+        const int available=int(maxWidth*scale);const char *ellipsis=u8"\u2026";int suffix=0;
         g_pMenu->GetTextSize(font,ellipsis,&suffix);
         while(!text.empty()&&width+suffix>available)
         {

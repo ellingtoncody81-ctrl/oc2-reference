@@ -68,7 +68,7 @@ struct PanelItemLayout
 	float flash=0;
 };
 struct PanelRowLayout { int slot=0; PanelBox key,name; };
-PanelItemLayout s_PanelItems[MAX_WEAPONS];
+PanelItemLayout s_PanelItems[MAX_WEAPONS+1];
 PanelRowLayout s_PanelRows[MAX_WEAPON_SLOTS];
 int s_PanelItemCount=0,s_PanelRowCount=0;
 float s_PanelDrawTime=0;
@@ -2203,12 +2203,14 @@ int DrawModernWeaponList(const WEAPON *active, const WEAPON *selection)
 		}
 		if (counts[slot]) ++rowCount;
 	}
-	if (!rowCount) return 0;
+	const bool hasDefuser = buy_menu_state::HasDefuser();
+	if (!rowCount && !hasDefuser) return 0;
 	using namespace weapon_hud_layout;
 	float scale = match_ui::Scale();
 	float totalHeight = 0;
 	for (int slot = 0; slot < MAX_WEAPON_SLOTS; ++slot)
 		if (counts[slot]) totalHeight += PanelGrenade(rows[slot][0]) ? grenadeRowHeight : gunRowHeight;
+	if (hasDefuser) totalHeight += iconHeight;
 	scale = min(scale, ScreenHeight*0.70f/(40+totalHeight));
 	float y = ScreenHeight-(40+totalHeight)*scale;
 	for (int slot = 0; slot < MAX_WEAPON_SLOTS; ++slot)
@@ -2277,6 +2279,16 @@ int DrawModernWeaponList(const WEAPON *active, const WEAPON *selection)
 			PanelNameText(name,right,y+(grenades ? grenadeNameOffset : gunNameOffset)*scale,nameHeight*scale,{255,255,255},min(384*scale,ScreenWidth*0.30f));
 		}
 		y += (grenades ? grenadeRowHeight : gunRowHeight)*scale;
+	}
+	if (hasDefuser)
+	{
+		// Defuser is equipment, not a selectable weapon slot.
+		const float x = ScreenWidth-(30+gunWidth)*scale;
+		const char *path = "gfx/weaponlist/defuser.tga";
+		match_ui::Silhouette(path,x,y,gunWidth*scale,iconHeight*scale,{207,169,67});
+		PanelItemLayout &layout=s_PanelItems[s_PanelItemCount++]; layout=PanelItemLayout();
+		layout.icon={x,y,gunWidth*scale,iconHeight*scale};
+		strlcpy(layout.path,path,sizeof(layout.path));
 	}
 	return 1;
 }

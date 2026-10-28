@@ -94,12 +94,17 @@ int CHudTextMessage::Draw(float time)
 		FillRGBABlend(panelX+panelWidth-edge,panelY,edge,panelHeight,255,255,255,int(255*.5f*expansion));
 	}
 	m_centerDrawTime=time;m_centerDrawY=y;m_centerDrawExpansion=expansion;
-	for (const auto &line:lines)
-	{
-		const float width=hud_unicode::FixedLabelWidth(line.c_str(),height);
-		hud_unicode::FixedLabel(line.c_str(),(ScreenWidth-width)*.5f,y,height,{255,255,255});
-		y+=lineHeight;
-	}
+	// The backdrop retracts during its final 0.3 seconds. Remove the text
+	// first so it never hangs outside the shrinking panel. For unusually
+	// short center times, retain text for at least the first half.
+	const float textEnd = m_centerEnd - min(.3f, (m_centerEnd-m_centerStart)*.5f);
+	if (time < textEnd)
+		for (const auto &line:lines)
+		{
+			const float width=hud_unicode::FixedLabelWidth(line.c_str(),height);
+			hud_unicode::FixedLabel(line.c_str(),(ScreenWidth-width)*.5f,y,height,{255,255,255});
+			y+=lineHeight;
+		}
 	++m_drawn;
 	return 1;
 }

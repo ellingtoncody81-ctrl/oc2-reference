@@ -28,6 +28,9 @@
 #include <stdio.h>
 #include "draw_util.h"
 #include "strl.h"
+#include "hud/unicode_labels.h"
+#include <string>
+#include <vector>
 
 //#include "vgui_TeamFortressViewport.h"
 
@@ -35,6 +38,100 @@
 
 char g_szMenuString[MAX_MENU_STRING];
 char g_szPrelocalisedMenuString[MAX_MENU_STRING];
+
+namespace
+{
+bool s_radioMenu = false;
+
+// Translate only the known English titles.txt strings. Custom translations and
+// server/plugin text pass through unchanged, and slot numbers remain untouched.
+const char *RadioChinese(const char *text)
+{
+	struct Translation { const char *source; const char *translated; };
+	static const Translation translations[] = {
+		{"Radio Commands", u8"\u65e0\u7ebf\u7535\u6307\u4ee4"},
+		{"Group Radio Commands", u8"\u56e2\u961f\u65e0\u7ebf\u7535\u6307\u4ee4"},
+		{"Radio Responses/Reports", u8"\u65e0\u7ebf\u7535\u56de\u5e94\u4e0e\u62a5\u544a"},
+		{"\"Cover Me\"", u8"\u63a9\u62a4\u6211"},
+		{"\"You Take the Point\"", u8"\u4f60\u62c5\u4efb\u5c16\u5175"},
+		{"\"Hold This Position\"", u8"\u575a\u5b88\u6b64\u5904"},
+		{"\"Regroup Team\"", u8"\u961f\u5458\u96c6\u5408"},
+		{"\"Follow Me\"", u8"\u8ddf\u7740\u6211"},
+		{"\"Taking Fire, Need Assistance\"", u8"\u906d\u9047\u653b\u51fb\uff0c\u9700\u8981\u652f\u63f4"},
+		{"\"Go\"", u8"\u524d\u8fdb"},
+		{"\"Fall Back\"", u8"\u64a4\u9000"},
+		{"\"Stick Together Team\"", u8"\u961f\u5458\u4fdd\u6301\u5728\u4e00\u8d77"},
+		{"\"Get in Position\"", u8"\u5c31\u4f4d"},
+		{"\"Storm the Front\"", u8"\u653b\u51fb\u524d\u7ebf"},
+		{"\"Report In\"", u8"\u62a5\u544a\u60c5\u51b5"},
+		{"\"Affirmative/Roger\"", u8"\u6536\u5230"},
+		{"\"Enemy Spotted\"", u8"\u53d1\u73b0\u654c\u4eba"},
+		{"\"Need Backup\"", u8"\u9700\u8981\u652f\u63f4"},
+		{"\"Sector Clear\"", u8"\u533a\u57df\u5b89\u5168"},
+		{"\"I'm in Position\"", u8"\u6211\u5df2\u5c31\u4f4d"},
+		{"\"Reporting In\"", u8"\u6b63\u5728\u62a5\u544a"},
+		{"\"She's gonna Blow!\"", u8"\u5feb\u7206\u70b8\u4e86\uff01"},
+		{"\"Negative\"", u8"\u4e0d\u884c"},
+		{"\"Enemy Down\"", u8"\u654c\u4eba\u5df2\u88ab\u51fb\u5012"},
+		{"Exit", u8"\u9000\u51fa"}
+	};
+	for (const auto &entry : translations)
+		if (!strcmp(text,entry.source)) return entry.translated;
+	return text;
+}
+
+// Keep the server slot numbers and remove legacy color escapes for the panel.
+bool DrawRadioMenu(const char *text, int validSlots)
+{
+	if (!g_pMenu || !text || !*text || !hud_unicode::LabelFont(16*match_ui::Scale())) return false;
+	std::vector<std::string> lines;
+	std::string line;
+	for (const char *p=text;; ++p)
+	{
+		if (*p=='\\' && p[1] && p[1]!='\n' && strchr("ywrRd",p[1])) { ++p; continue; }
+		if (*p=='\n' || !*p)
+		{
+			const size_t first=line.find_first_not_of(" \t\r");
+			if (first!=std::string::npos)
+			{
+				const size_t last=line.find_last_not_of(" \t\r");
+				lines.push_back(line.substr(first,last-first+1));
+			}
+			line.clear();
+			if (!*p) break;
+		}
+		else line+=*p;
+	}
+	if (lines.size()<2) return false;
+	const float scale=match_ui::Scale();
+	const float row=26.0f*scale, header=34.0f*scale;
+	const float width=(std::min)(390.0f*scale,ScreenWidth*0.44f);
+	const float height=header+row*float(lines.size()-1)+6.0f*scale;
+	const float x=18.0f*scale;
+	const float y=(std::max)(8.0f*scale,(ScreenHeight-height)*0.5f);
+	FillRGBABlend(int(x),int(y),int(width),int(height),12,16,22,215);
+	FillRGBABlend(int(x),int(y),int(3*scale),int(height),112,158,184,235);
+	hud_unicode::FixedLabel(RadioChinese(lines[0].c_str()),x+14*scale,y+5*scale,17*scale,{225,232,238},false,width-24*scale);
+	for (size_t i=1; i<lines.size(); ++i)
+	{
+		const std::string &entry=lines[i];
+		const float top=y+header+float(i-1)*row;
+		if ((i&1)==0) FillRGBABlend(int(x+3*scale),int(top),int(width-3*scale),int(row),255,255,255,12);
+		if (entry.size()>=2 && entry[0]>='0' && entry[0]<='9' && (entry[1]=='.' || entry[1]==')'))
+		{
+			const int slot=entry[0]=='0'?10:entry[0]-'0';
+			const bool enabled=(validSlots & (1<<(slot-1)))!=0;
+			const char number[2]={entry[0],0};
+			const size_t first=entry.find_first_not_of(" \t",2);
+			hud_unicode::FixedLabel(number,x+14*scale,top+3*scale,16*scale,enabled?match_ui::Color(133,187,214):match_ui::Color(115,120,126));
+			if (first!=std::string::npos)
+				hud_unicode::FixedLabel(RadioChinese(entry.c_str()+first),x+38*scale,top+3*scale,16*scale,enabled?match_ui::Color(231,235,239):match_ui::Color(115,120,126),false,width-48*scale);
+		}
+		else hud_unicode::FixedLabel(entry.c_str(),x+14*scale,top+3*scale,16*scale,{231,235,239},false,width-24*scale);
+	}
+	return true;
+}
+}
 
 int KB_ConvertString( char *in, char **ppout );
 
@@ -90,6 +187,7 @@ void CHudMenu :: InitHUDData( void )
 
 void CHudMenu :: Reset( void )
 {
+	s_radioMenu = false;
 	g_szPrelocalisedMenuString[0] = 0;
 	m_fWaitingForMore = FALSE;
 }
@@ -110,6 +208,7 @@ int CHudMenu :: Draw( float flTime )
 			return 1;
 		}
 	}
+	if (s_radioMenu && DrawRadioMenu(g_szMenuString,m_bitsValidSlots)) return 1;
 
 	// don't draw the menu if the scoreboard is being shown
 	//if ( gViewPort && gViewPort->IsScoreBoardVisible() )
@@ -189,6 +288,7 @@ int CHudMenu :: MsgFunc_ShowMenu( const char *pszName, int iSize, void *pbuf )
 	}
 
 	menustring = reader.ReadString();
+	if (!m_fWaitingForMore) s_radioMenu = false;
 	// Route known server roots on either protocol; arbitrary plugin menus retain
 	// their original text/slot handling. Class roots acknowledge jointeam.
 	if(!m_fWaitingForMore&&!NeedMore&&g_pMenu&&!UseOldTouchMenusEnabled())
@@ -222,7 +322,11 @@ int CHudMenu :: MsgFunc_ShowMenu( const char *pszName, int iSize, void *pbuf )
 
 	// menu will be replaced by scripted touch config
 	// so execute it and exit
-	if( _extended_menus->value != 0.0f )
+	bool useScriptedTouchMenus = UseOldTouchMenusEnabled();
+#ifdef __ANDROID__
+	useScriptedTouchMenus = true;
+#endif
+	if( _extended_menus->value != 0.0f && useScriptedTouchMenus )
 	{
 		if( !strncmp(menustring, "#Radio", 6 ) )
 		{
@@ -255,6 +359,8 @@ int CHudMenu :: MsgFunc_ShowMenu( const char *pszName, int iSize, void *pbuf )
 
 	if ( !NeedMore )
 	{  // we have the whole string, so we can localise it now
+		s_radioMenu = !strcmp(g_szPrelocalisedMenuString,"#RadioA") ||
+			!strcmp(g_szPrelocalisedMenuString,"#RadioB") || !strcmp(g_szPrelocalisedMenuString,"#RadioC");
 		strlcpy( g_szMenuString, gHUD.m_TextMessage.BufferedLocaliseTextString( g_szPrelocalisedMenuString ), sizeof( g_szMenuString ) );
 		// Swap in characters
 		if ( KB_ConvertString( g_szMenuString, &temp ) )
@@ -312,6 +418,8 @@ void CHudMenu::UserCmd_OldStyleMenuOpen()
 void CHudMenu::UserCmd_OldStyleMenuClose()
 {
 	buy_menu_state::Close();
+	s_radioMenu = false;
+	m_fWaitingForMore = FALSE;
 	m_fMenuDisplayed = 0; // no valid slots means that the menu should be turned off
 	m_iFlags &= ~HUD_DRAW;
 

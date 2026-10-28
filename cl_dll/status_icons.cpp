@@ -63,12 +63,13 @@ int CHudStatusIcons::Draw( float flTime )
 	{
 		if ( m_IconList[i].spr )
 		{
+			// Their modern inventory icons replace only the old left-side art;
+			// retain the icon state for all other consumers.
+			if (!stricmp(m_IconList[i].szSpriteName, "c4") ||
+				!stricmp(m_IconList[i].szSpriteName, "defuser")) continue;
 			if (match_ui::Enabled() && !strcmp(m_IconList[i].szSpriteName, "buyzone")) continue;
 			y -= ( m_IconList[i].rc.Height() ) + 5;
-			
-			if( g_bInBombZone && !strcmp(m_IconList[i].szSpriteName, "c4") && ((int)(flTime * 10) % 2))
-				SPR_Set( m_IconList[i].spr, 255, 16, 16 );
-			else SPR_Set( m_IconList[i].spr, m_IconList[i].r, m_IconList[i].g, m_IconList[i].b );
+			SPR_Set( m_IconList[i].spr, m_IconList[i].r, m_IconList[i].g, m_IconList[i].b );
 			SPR_DrawAdditive( 0, x, y, &m_IconList[i].rc );
 		}
 	}
