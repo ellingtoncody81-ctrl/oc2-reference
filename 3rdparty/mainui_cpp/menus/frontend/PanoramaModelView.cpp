@@ -237,6 +237,7 @@ struct Geometry
     geo::MountCache mounts;
     mutable std::map<std::pair<int,bool>,CachedBounds> bounds;
     mutable std::map<std::pair<int,int>,CachedBounds> regionBounds;
+    bool xm1014=false;
     bool valid=false;
 };
 std::map<std::string,std::unique_ptr<Geometry>> geometries;
@@ -252,6 +253,7 @@ Geometry *Mesh(const std::string &path,cl_entity_t &entity,bool knife=false)
     if(!entry||entry->header!=header)
     {
         entry.reset(new Geometry);entry->header=header;
+        entry->xm1014=path=="models/v_xm1014.mdl"&&!knife;
         entry->valid=geo::DecodeStudioTriangles(header,entry->mesh)&&
             (!knife||KnifeIdlePose(header,entry->knifePose,entry->knifeSequence))&&
             Bind(header,entry->bind,knife?&entry->knifePose:nullptr);
@@ -286,6 +288,26 @@ int Material(studiohdr_t *header,int index)
     const auto *refs=reinterpret_cast<const short *>(reinterpret_cast<const byte *>(header)+header->skinindex);
     const int material=refs[index];return material>=0&&material<header->numtextures?material:-1;
 }
+// The XM reference pose contains four reload shells, including their separate
+// chrome overlay. Keep this limited to the identified preview model and meshes.
+bool PreviewShellMesh(const Geometry &geometry,int partIndex,int modelIndex,int skinref)
+{
+    auto *header=geometry.header;
+    if(!geometry.xm1014||partIndex<0||partIndex>=header->numbodyparts)return false;
+    const auto *parts=reinterpret_cast<const mstudiobodyparts_t *>(reinterpret_cast<const byte *>(header)+header->bodypartindex);
+    const auto &part=parts[partIndex];
+    if(modelIndex<0||modelIndex>=part.nummodels)return false;
+    const auto *models=reinterpret_cast<const mstudiomodel_t *>(reinterpret_cast<const byte *>(header)+part.modelindex);
+    const auto &model=models[modelIndex];
+    const int material=Material(header,skinref);if(material<0)return false;
+    const char *name=Materials(header)[material].name;
+    return (!std::strncmp(part.name,"studio",sizeof(part.name))&&
+            !std::strncmp(model.name,"v_xm1014",sizeof(model.name))&&
+            !std::strncmp(name,"shell_shotgun.bmp",sizeof(Materials(header)[material].name)))||
+           (!std::strncmp(part.name,"oc2_chrome_04",sizeof(part.name))&&
+            !std::strncmp(model.name,"oc2_chrome_xm1014_03",sizeof(model.name))&&
+            !std::strncmp(name,"chrom.bmp",sizeof(Materials(header)[material].name)));
+}
 bool Bounds(const Geometry &geometry,int body,bool gloves,float mins[3],float maxs[3])
 {
     auto &cached=geometry.bounds[std::make_pair(body,gloves)];
@@ -299,7 +321,8 @@ bool Bounds(const Geometry &geometry,int body,bool gloves,float mins[3],float ma
     const auto *materials=Materials(geometry.header);bool found=false;
     for(const auto &triangle:geometry.mesh.triangles)
     {
-        if(!Active(geometry.mesh,triangle,body)||triangle.placeholder)continue;
+        if(!Active(geometry.mesh,triangle,body)||triangle.placeholder||
+           PreviewShellMesh(geometry,triangle.part,triangle.model,triangle.material))continue;
         const int material=Material(geometry.header,triangle.material);
         if(material<0||HiddenMaterial(materials[material].name,gloves))continue;
         for(const auto &corner:triangle.corner)
@@ -549,7 +572,8 @@ public:
                 for(int mesh=0;mesh<models[model].nummesh;++mesh)
                 {
                     const int material=Material(header,meshes[mesh].skinref);
-                    if(material>=0&&HiddenMaterial(materials[material].name,gloves))
+                    if(material>=0&&(HiddenMaterial(materials[material].name,gloves)||
+                        PreviewShellMesh(geometry,part,model,meshes[mesh].skinref)))
                     {
                         Set(meshes[mesh].numtris,0);
                         auto *command=reinterpret_cast<short *>(reinterpret_cast<byte *>(header)+meshes[mesh].triindex);

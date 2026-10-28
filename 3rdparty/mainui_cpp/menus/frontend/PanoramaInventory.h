@@ -21,6 +21,7 @@ public:
     int previewWidth=200,previewHeight=114;
     bool pagedLayout=false;
     bool fitToSector=false;
+    bool pistolLayout=false;
     void Draw() override;
     bool KeyDown(int key) override;
     bool KeyUp(int key) override;
