@@ -46,6 +46,7 @@
 #include "com_weapons.h"
 #include "viewmodel_transition.h"
 #include "skin_inventory_client.h"
+#include "oc2_world_stickers.h"
 #include "oc2_glove_inventory.h"
 #include "viewmodel_motion.h"
 #include "viewmodel_handedness.h"
@@ -1511,6 +1512,8 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 			StudioRenderModel(dir);
 			playerGloves.Draw(lighting,dir);
 		}
+		if (!bIsViewModel)
+			OC2_DrawWorldStickers(*this,m_pRenderModel,'w',0,0,dir);
 		if (bIsViewModel)
 		{
 			bool shield;
@@ -1810,6 +1813,7 @@ int CStudioModelRenderer::StudioDrawPlayer(int flags, entity_state_t *pplayer)
 				OC2_InventoryMaterialScope inventoryMaterials(*this,pweaponmodel,pplayer->number);
 				StudioRenderModel(dir);
 			}
+			OC2_DrawWorldStickers(*this,pweaponmodel,'p',pplayer->number,0,dir);
 
 			StudioCalcAttachments();
 

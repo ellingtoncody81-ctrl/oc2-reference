@@ -11,6 +11,8 @@
 #include "oc2_item_appearance.h"
 #include "oc2_glove_inventory.h"
 #include "skin_inventory_client.h"
+#include "oc2_carried.h"
+#include "oc2_world_stickers.h"
 #include "parsemsg.h"
 #include "demo_api.h"
 #include "pm_shared.h"
@@ -63,7 +65,7 @@ bool catalogAttempted=false,configExists=false;
 std::string readError;
 cvar_t *enabled=nullptr,*knifeInfo=nullptr;
 std::map<int,oc2_item::Appearance> items;
-bool networkReady=false,resyncSent=false;
+bool networkReady=false,resyncSent=false,itemSnapshotStarted=false;
 std::string sessionLevel,lastSent,queuedConfig;
 std::vector<std::string> upload;
 std::size_t uploadIndex=0;
@@ -92,11 +94,11 @@ const oc2_item::Appearance *PlayerItem(int player,int weapon=0,bool active=true)
  }
  return nullptr;
 }
-const oc2_item::Appearance *WorldItem(int entity)
+const oc2_item::Appearance *WorldItem(int entity,int weapon=0)
 {
  if(entity<=0)return nullptr;
  for(const auto &row:items)
-  if(!row.second.owner&&(row.second.box==entity||row.second.entity==entity))return &row.second;
+  if(!row.second.owner&&(!weapon||row.second.weapon==weapon)&&(row.second.box==entity||row.second.entity==entity))return &row.second;
  return nullptr;
 }
 void CheckSession()
@@ -112,7 +114,7 @@ int ItemMessage(const char *,int size,void *buffer)
  const int operation=reader.ReadByte();
  if(operation==oc2_item::Reset&&size==oc2_item::kResetBytes)
  {
-  CheckSession();items.clear();draws.clear();networkReady=true;return 1;
+  CheckSession();items.clear();draws.clear();networkReady=true;itemSnapshotStarted=true;return 1;
  }
  if(operation==oc2_item::Remove&&size==oc2_item::kRemoveBytes)
  {
@@ -247,8 +249,10 @@ int WeaponId(const char *name)
  static const char *const names[24]={"v_p228.mdl","v_scout.mdl","v_xm1014.mdl","v_mac10.mdl","v_aug.mdl","v_elite.mdl",
   "v_fiveseven.mdl","v_ump45.mdl","v_sg550.mdl","v_galil.mdl","v_famas.mdl","v_usp.mdl","v_glock18.mdl","v_awp.mdl",
   "v_mp7.mdl","v_m249.mdl","v_m3.mdl","v_m4a1.mdl","v_tmp.mdl","v_g3sg1.mdl","v_deagle.mdl","v_sg552.mdl","v_ak47.mdl","v_p90.mdl"};
- if(!name||strnicmp(name,"models/",7)||strlen(name)<10||name[8]!='_'||!strchr("vpw",name[7]))return 0;
- for(int i=0;i<24;++i)if(!stricmp(name+9,names[i]+2))return oc2_accessories::kWeaponIds[i];
+ if(!name||strnicmp(name,"models/",7))return 0;
+ const char *base=strrchr(name,'/');base=base?base+1:name;
+ if(strlen(base)<3||base[1]!='_'||!strchr("vpw",base[0]))return 0;
+ for(int i=0;i<24;++i)if(!stricmp(base+2,names[i]+2))return oc2_accessories::kWeaponIds[i];
  return 0;
 }
 bool KnifeModel(const char *name)
@@ -355,7 +359,7 @@ bool FamilyMaterialMatches(const studiohdr_t *header,const mstudiotexture_t *mat
  }
  return false;
 }
-void Reload() { ReleaseTextures();catalogAttempted=false;ReadState(true); }
+void Reload() { ReleaseTextures();OC2_ResetWorldStickers();catalogAttempted=false;ReadState(true); }
 void GloveDump()
 {
  ReadState(true);
@@ -432,13 +436,15 @@ void OC2_InventoryInit()
 }
 void OC2_InventoryVidInit()
 {
+ OC2_ResetWorldStickers();
  ReleaseTextures();textureFrame=-1;catalog.clear();resourceIndices.clear();knifeIndices.clear();knifeModels.clear();catalogAttempted=false;nextRead=lastRead=-1;
  gloveCatalog.clear();gloveCatalogAttempted=false;gloveDraw=GloveDraw();
  diagnostics=Diagnostics();ReadState(true);
 }
 void OC2_InventoryResetSession()
 {
- items.clear();draws.clear();networkReady=false;resyncSent=false;lastSent.clear();queuedConfig.clear();upload.clear();uploadIndex=0;
+ OC2_ResetWorldStickers();
+ items.clear();draws.clear();networkReady=false;resyncSent=false;itemSnapshotStarted=false;lastSent.clear();queuedConfig.clear();upload.clear();uploadIndex=0;
  playerGloves.fill(0);gloveNetworkReady=false;lastGloveSent.clear();gloveDraw=GloveDraw();gloveShaders.clear();
  corpseGloves.clear();worldGloveDraws.clear();
 }
@@ -483,6 +489,26 @@ int OC2_InventoryPlayerKnifeDefinition(int player)
 int OC2_InventoryKnifeDefinition()
 { return OC2_InventoryPlayerKnifeDefinition(ViewPlayer()); }
 int OC2_InventoryViewPlayer() { return ViewPlayer(); }
+model_s *OC2_InventoryWorldKnifeModel(int definition,int &displayDefinition)
+{
+ ReadState();
+ displayDefinition=Active()?definition:0;
+ if(displayDefinition)return SelectedKnife(displayDefinition,'w');
+ model_t *model=IEngineStudio.Mod_ForName("models/w_knife.mdl",false);
+ return model&&model->type==mod_studio?model:nullptr;
+}
+int OC2_InventoryOwnedItems(int player,oc2_item::Appearance *out,int capacity)
+{
+ if(!networkReady||!itemSnapshotStarted||player<1||player>32||!out||capacity<=0)return 0;
+ int count=0;
+ for(const auto &row:items)
+ {
+  if(row.second.owner!=player)continue;
+  out[count++]=row.second;
+  if(count==capacity)break;
+ }
+ return count;
+}
 const oc2_gloves::Entry *OC2_InventoryPlayerGlove(int player)
 {
  ReadState();
@@ -536,7 +562,7 @@ OC2_InventoryModelScope::OC2_InventoryModelScope(cl_entity_s *view)
  if(!view||!view->model)return;
  ReadState();if(!Active()||!KnifeModel(view->model->name))return;
  const bool firstPerson=view==gEngfuncs.GetViewModel();
- const auto *item=firstPerson?PlayerItem(ViewPlayer(),29):WorldItem(view->index);
+ const auto *item=firstPerson?PlayerItem(ViewPlayer(),29):WorldItem(view->index,29);
  const int definition=networkReady&&item&&item->weapon==29?item->definition:0;
  model_t *selected=SelectedKnife(definition,firstPerson?'v':'w');
  const studiohdr_t *header=selected?reinterpret_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(selected)):nullptr;
@@ -552,14 +578,18 @@ model_s *OC2_InventoryPlayerModel(model_s *model,int player)
  if(!networkReady||!item)return model;
  model_t *selected=SelectedKnife(item->definition,'p');return selected?selected:model;
 }
-OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &renderer,model_s *weaponModel,int player)
+OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &renderer,model_s *weaponModel,int player,int instance,char requestedContext,bool stickersOnly)
 {
  model_t *model=weaponModel?weaponModel:renderer.m_pRenderModel;
  if(!renderer.m_pCurrentEntity||!model)return;
- const bool firstPerson=!weaponModel&&renderer.m_pCurrentEntity==gEngfuncs.GetViewModel();
- const char context=firstPerson?'v':weaponModel?'p':'w';
+ const bool firstPerson=!requestedContext&&!weaponModel&&renderer.m_pCurrentEntity==gEngfuncs.GetViewModel();
+ const char context=requestedContext?requestedContext:firstPerson?'v':instance?'c':weaponModel?'p':'w';
+ if(context!='v'&&context!='p'&&context!='w'&&context!='c')return;
+ if((context=='c')!=(instance>0))return;
  if(firstPerson)diagnostics=Diagnostics();
- if(!networkReady||(!firstPerson&&(strlen(model->name)<9||model->name[7]!=context)))return;
+ const char modelContext=context=='c'?'w':context;
+ const char *base=strrchr(model->name,'/');base=base?base+1:model->name;
+ if(!networkReady||(!firstPerson&&base[0]!=modelContext))return;
  textureFrame=textureFrame==0x7fffffff?0:textureFrame+1;
  ReadState();Diagnostics current;current.model=model->name;
  if(!Active()||!IEngineStudio.IsHardware())return;
@@ -569,7 +599,8 @@ OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &ren
  const int weapon=WeaponId(model->name);
  const bool knifeModel=KnifeModel(model->name);
  if(!weapon&&!knifeModel)return;
- const auto *item=firstPerson?PlayerItem(ViewPlayer()):weaponModel?PlayerItem(player):WorldItem(renderer.m_pCurrentEntity->index);
+ const auto found=items.find(instance);
+ const auto *item=instance?(player>=1&&player<=32&&found!=items.end()&&found->second.owner==player?&found->second:nullptr):context=='v'?PlayerItem(ViewPlayer()):context=='p'?PlayerItem(player):WorldItem(renderer.m_pCurrentEntity->index,knifeModel?29:weapon);
  WeaponState effective;
  const WeaponState *state=nullptr;
  const Entry *skin=nullptr;
@@ -585,31 +616,78 @@ OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &ren
   }
  }
  if(state)current.stickers=state->stickers;
+ if(stickersOnly)
+ {
+  if(!state)return;
+  for(int slot=0;slot<4;++slot)
+   if(state->stickers[slot]>0&&!StickerTexture(state->stickers[slot]))return;
+  if(header->numskinref<=0||header->numskinfamilies<=0||
+     !HeaderRange(header,header->skinindex,header->numskinref,sizeof(short))||
+     !HeaderRange(header,header->bodypartindex,header->numbodyparts,sizeof(mstudiobodyparts_t)))return;
+  auto *bytes=reinterpret_cast<byte *>(header);
+  const auto *refs=reinterpret_cast<const short *>(bytes+header->skinindex);
+  const auto *parts=reinterpret_cast<const mstudiobodyparts_t *>(bytes+header->bodypartindex);
+  std::map<int,int> commands;
+  for(int p=0;p<header->numbodyparts;++p)
+  {
+   if(!HeaderRange(header,parts[p].modelindex,parts[p].nummodels,sizeof(mstudiomodel_t)))return;
+   const auto *models=reinterpret_cast<const mstudiomodel_t *>(bytes+parts[p].modelindex);
+   for(int m=0;m<parts[p].nummodels;++m)
+   {
+    if(!HeaderRange(header,models[m].meshindex,models[m].nummesh,sizeof(mstudiomesh_t)))return;
+    const auto *meshes=reinterpret_cast<const mstudiomesh_t *>(bytes+models[m].meshindex);
+    for(int j=0;j<models[m].nummesh;++j)
+    {
+     const auto &mesh=meshes[j];
+     if(mesh.skinref<0||mesh.skinref>=header->numskinref||refs[mesh.skinref]<0||
+        refs[mesh.skinref]>=header->numtextures||mesh.triindex%int(sizeof(short))||
+        !HeaderRange(header,mesh.triindex,1,sizeof(short)))return;
+     const char *name=materials[refs[mesh.skinref]].name;
+     if(!memchr(name,0,sizeof(materials[0].name)))return;
+     int slot=-1;
+     for(int s=0;s<4;++s){char expected[]="decal_A.bmp";expected[6]=char('A'+s);if(!stricmp(name,expected)){slot=s;break;}}
+     if(slot<0)return;
+     const auto previous=commands.find(mesh.triindex);
+     if(previous!=commands.end()&&previous->second!=slot)return;
+     commands[mesh.triindex]=slot;
+    }
+   }
+  }
+  for(const auto &command:commands)if(state->stickers[command.second]<0)
+  {
+   auto *first=reinterpret_cast<short *>(bytes+command.first);
+   hidden.push_back(SavedShort(first,*first));*first=0;
+  }
+ }
  if(skin&&(weapon?(skin->kind!=Kind::GunSkin||skin->weapon!=weapon):(skin->kind!=Kind::KnifeSkin||skin->definition!=current.knife)))skin=nullptr;
- const int bodyTexture=skin?Texture(skin->file,false):0;
+ const int bodyTexture=skin&&!stickersOnly?Texture(skin->file,false):0;
  for(int i=0;i<header->numtextures;++i)
  {
   auto &material=materials[i];int replacement=0;
   if(!memchr(material.name,0,sizeof(material.name)))continue;
   if(bodyTexture&&FamilyMaterialMatches(header,materials,i,skin->material))replacement=bodyTexture;
-  if(firstPerson&&state)for(int slot=0;slot<4;++slot)
+  if(state)for(int slot=0;slot<4;++slot)
   {
    char name[]="decal_A.bmp";name[6]=char('A'+slot);
-   if(state->stickers[slot]&&!stricmp(material.name,name))
+   if(state->stickers[slot]&&(!stickersOnly||state->stickers[slot]>0)&&!stricmp(material.name,name))
     {replacement=StickerTexture(state->stickers[slot]);current.slotTextures[slot]=replacement;break;}
   }
   if(!replacement)continue;
   saved.push_back(Saved(&material.index,material.index));material.index=replacement;++current.swaps;
  }
  if(firstPerson)diagnostics=current;
- if(networkReady&&item)
+ ready=true;
+ if(networkReady&&item&&!stickersOnly)
  {
   DrawRecord record;record.serial=item->serial;record.entity=renderer.m_pCurrentEntity->index;record.context=context;record.swaps=current.swaps;record.time=gEngfuncs.GetClientTime();record.model=current.model;
   draws[std::make_pair(item->serial,int(context))]=record;
  }
 }
 OC2_InventoryMaterialScope::~OC2_InventoryMaterialScope()
-{ for(auto it=saved.rbegin();it!=saved.rend();++it)*it->address=it->value; }
+{
+ for(auto it=saved.rbegin();it!=saved.rend();++it)*it->address=it->value;
+ for(auto it=hidden.rbegin();it!=hidden.rend();++it)*it->address=it->value;
+}
 
 OC2_InventoryGloveMaterialScope::OC2_InventoryGloveMaterialScope(CStudioModelRenderer &renderer,int resource,bool diagnostics):record(diagnostics)
 {

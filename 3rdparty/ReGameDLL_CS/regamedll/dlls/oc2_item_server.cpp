@@ -2,6 +2,8 @@
 #include "oc2_item_server.h"
 #include "../../../../common/oc2_skin_inventory.h"
 #include "../../../../common/oc2_glove_inventory.h"
+#include "../../../../common/oc2_carry_state.h"
+#include "wpn_shared/wpn_molotov.h"
 #include <map>
 
 namespace
@@ -16,6 +18,13 @@ std::map<int,EHANDLE> issued;
 std::map<int,Appearance> published;
 int messageId=0, nextSerial=1;
 int gloveMessageId=0;
+int carryMessageId=0;
+struct CarryPublished
+{
+ bool valid=false;
+ oc2_carry::State state;
+};
+CarryPublished carryPublished[33];
 oc2_gloves::Catalog gloveCatalog;
 struct PlayerLoadout
 {
@@ -29,6 +38,88 @@ struct PlayerLoadout
  bool botGloveAssigned=false;
 };
 PlayerLoadout players[33];
+
+int CarryAmmo(CBasePlayer *player,CBasePlayerItem *item)
+{
+ if(!item)return 0;
+ const int ammo=item->PrimaryAmmoIndex();
+ return ammo>=0&&ammo<MAX_AMMO_SLOTS?clamp(player->m_rgAmmo[ammo],0,255):0;
+}
+oc2_carry::State CarryCurrent(CBasePlayer *player)
+{
+ oc2_carry::State state;
+ state.player=player->entindex();
+ state.userid=GETPLAYERUSERID(player->edict());
+ if(!player->IsAlive())return state;
+ if(player->m_pActiveItem&&player->m_pActiveItem->m_iId>0&&player->m_pActiveItem->m_iId<=31)
+  state.active=player->m_pActiveItem->m_iId;
+ if(player->m_pActiveItem&&player->m_pActiveItem->m_flReleaseThrow==-2 &&
+    (state.active==WEAPON_HEGRENADE||state.active==WEAPON_FLASHBANG||
+     state.active==WEAPON_SMOKEGRENADE||state.active==WEAPON_MOLOTOV))
+  state.flags|=oc2_carry::ThrowReleased;
+ if(player->m_bHasC4)state.flags|=oc2_carry::HasC4;
+ state.he=CarryAmmo(player,player->GetItemById(WEAPON_HEGRENADE));
+ state.flash=CarryAmmo(player,player->GetItemById(WEAPON_FLASHBANG));
+ state.smoke=CarryAmmo(player,player->GetItemById(WEAPON_SMOKEGRENADE));
+ auto *fire=player->GetItemById(WEAPON_MOLOTOV);
+ if(fire)
+ {
+  state.fire=CarryAmmo(player,fire);
+  if(state.fire && (static_cast<CBasePlayerWeapon *>(fire)->m_iWeaponState & CMolotovGrenade::INCENDIARY_STATE))
+   state.flags|=oc2_carry::Incendiary;
+ }
+ return state;
+}
+bool CarryEqual(const oc2_carry::State &a,const oc2_carry::State &b)
+{
+ return a.player==b.player&&a.userid==b.userid&&a.active==b.active&&
+  a.flash==b.flash&&a.he==b.he&&a.smoke==b.smoke&&a.fire==b.fire&&a.flags==b.flags;
+}
+void SendCarry(int operation,const oc2_carry::State *state=nullptr,CBasePlayer *target=nullptr)
+{
+ if(!carryMessageId)return;
+ if(target)MESSAGE_BEGIN(MSG_ONE,carryMessageId,nullptr,target->pev);
+ else MESSAGE_BEGIN(MSG_ALL,carryMessageId);
+ WRITE_BYTE(oc2_carry::kVersion);WRITE_BYTE(operation);
+ if(operation!=oc2_carry::Reset){WRITE_BYTE(state->player);WRITE_LONG(state->userid);}
+ if(operation==oc2_carry::Upsert)
+ {
+  WRITE_BYTE(state->active);WRITE_BYTE(state->flash);WRITE_BYTE(state->he);
+  WRITE_BYTE(state->smoke);WRITE_BYTE(state->fire);WRITE_BYTE(state->flags);
+ }
+ MESSAGE_END();
+}
+void PublishCarry()
+{
+ for(int i=1;i<=gpGlobals->maxClients&&i<=32;++i)
+ {
+  auto *player=UTIL_PlayerByIndex(i);
+  auto &previous=carryPublished[i];
+  if(!player||player->IsDormant())
+  {
+   if(previous.valid){SendCarry(oc2_carry::Remove,&previous.state);previous=CarryPublished();}
+   continue;
+  }
+  const auto state=CarryCurrent(player);
+  if(state.userid<=0)
+  {
+   if(previous.valid){SendCarry(oc2_carry::Remove,&previous.state);previous=CarryPublished();}
+   continue;
+  }
+  if(!previous.valid||!CarryEqual(previous.state,state))
+  {
+   SendCarry(oc2_carry::Upsert,&state);
+   previous.valid=true;previous.state=state;
+  }
+ }
+}
+void CarrySnapshot(CBasePlayer *target)
+{
+ PublishCarry();
+ SendCarry(oc2_carry::Reset,nullptr,target);
+ for(int i=1;i<=gpGlobals->maxClients&&i<=32;++i)
+  if(carryPublished[i].valid)SendCarry(oc2_carry::Upsert,&carryPublished[i].state,target);
+}
 
 PlayerLoadout &PlayerState(CBasePlayer *player)
 {
@@ -174,6 +265,7 @@ void Snapshot(CBasePlayer *player)
  Publish();Send(oc2_item::Reset,nullptr,player);
  for(const auto &entry:published)Send(oc2_item::Upsert,&entry.second,player);
  GloveSnapshot(player);
+ CarrySnapshot(player);
  PlayerState(player).snapshot=false;
 }
 void Dump()
@@ -300,13 +392,14 @@ void TestCommand(CBasePlayer *caller)
 }
 
 void OC2_ItemsRegisterMessage()
-{ messageId=REG_USER_MSG(oc2_item::kMessage,-1);gloveMessageId=REG_USER_MSG(oc2_gloves::kMessage,-1); }
+{ messageId=REG_USER_MSG(oc2_item::kMessage,-1);gloveMessageId=REG_USER_MSG(oc2_gloves::kMessage,-1);carryMessageId=REG_USER_MSG(oc2_carry::kMessage,-1); }
 
 void OC2_ItemsPrecache()
 {
  issued.clear();published.clear();nextSerial=1;catalog.clear();knives.clear();stickers.clear();knifeSkins.clear();
  for(auto &v:gunSkins)v.clear();
  for(auto &v:players)v=PlayerLoadout();
+ for(auto &v:carryPublished)v=CarryPublished();
  gloveCatalog.clear();
  int gloveSize=0;char *gloveData=reinterpret_cast<char *>(LOAD_FILE_FOR_ME(oc2_gloves::kCatalogPath,&gloveSize));
  if(gloveData)
@@ -346,6 +439,8 @@ void OC2_ItemsClientConnected(CBasePlayer *player)
 void OC2_ItemsClientDisconnected(CBasePlayer *player)
 {
  if(!player||player->entindex()<1||player->entindex()>32)return;
+ auto &carry=carryPublished[player->entindex()];
+ if(carry.valid){SendCarry(oc2_carry::Remove,&carry.state);carry=CarryPublished();}
  players[player->entindex()]=PlayerLoadout();
  SendGlove(oc2_gloves::Upsert,player->entindex(),0);
 }
@@ -367,6 +462,7 @@ void OC2_ItemsAcquire(CBasePlayerItem *item,CBasePlayer *player)
 void OC2_ItemsFrame()
 {
  Publish();
+ PublishCarry();
  for(int i=1;i<=gpGlobals->maxClients&&i<=32;++i)
  {
   auto *player=UTIL_PlayerByIndex(i);

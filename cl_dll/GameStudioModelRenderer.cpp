@@ -37,6 +37,8 @@
 #include "StudioModelRenderer.h"
 #include "GameStudioModelRenderer.h"
 #include "skin_inventory_client.h"
+#include "oc2_world_stickers.h"
+#include "oc2_carried.h"
 #include "pm_defs.h"
 #include "camera.h"
 #include "eventscripts.h"
@@ -971,6 +973,7 @@ int CGameStudioModelRenderer::_StudioDrawPlayer(int flags, entity_state_t *pplay
 			StudioRenderModel(dir);
 			gloves.Draw(lighting,dir);
 		}
+		OC2_InventoryDrawCarried(*this,pplayer,lighting,dir);
 		m_pPlayerInfo = NULL;
 
 		if (pplayer->weaponmodel)
@@ -995,6 +998,7 @@ int CGameStudioModelRenderer::_StudioDrawPlayer(int flags, entity_state_t *pplay
 				OC2_InventoryMaterialScope inventoryMaterials(*this,pweaponmodel,pplayer->number);
 				StudioRenderModel(dir);
 			}
+			OC2_DrawWorldStickers(*this,pweaponmodel,'p',pplayer->number,0,dir);
 
 			StudioCalcAttachments();
 

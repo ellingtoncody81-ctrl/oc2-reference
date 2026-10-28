@@ -25,6 +25,7 @@
 #include "oc2_ragdoll.h"
 #include "accessory_client.h"
 #include "skin_inventory_client.h"
+#include "oc2_carried.h"
 #include "match_ui.h"
 #include "match_status.h"
 #include "buy_menu_state.h"
@@ -291,6 +292,7 @@ void CHud :: Init( void )
 	SetGameType(); // call it first, so we will know gamedir at very early stage
 	OC2_AccessoriesInit();
 	OC2_InventoryInit();
+	OC2_CarryInit();
 	OC2_LegsInit();
 	OC2_RagdollInit();
 

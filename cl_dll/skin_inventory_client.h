@@ -85,11 +85,17 @@ private:
 class OC2_InventoryMaterialScope
 {
 public:
- explicit OC2_InventoryMaterialScope(CStudioModelRenderer &renderer,model_s *weaponModel=nullptr,int player=0);
+ // A carried W model supplies its actual item serial and owner; zero selects
+ // the existing active-player or world-entity lookup for ordinary P/W draws.
+ explicit OC2_InventoryMaterialScope(CStudioModelRenderer &renderer,model_s *weaponModel=nullptr,int player=0,int instance=0,char context=0,bool stickersOnly=false);
  ~OC2_InventoryMaterialScope();
+ bool Ready() const { return ready; }
  OC2_InventoryMaterialScope(const OC2_InventoryMaterialScope &)=delete;
  OC2_InventoryMaterialScope &operator=(const OC2_InventoryMaterialScope &)=delete;
 private:
+ bool ready=false;
  struct Saved {int *address;int value;Saved(int *p,int v):address(p),value(v){}};
+ struct SavedShort {short *address;short value;SavedShort(short *p,short v):address(p),value(v){}};
  std::vector<Saved> saved;
+ std::vector<SavedShort> hidden;
 };
