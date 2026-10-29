@@ -1791,9 +1791,10 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	if( c4Carrier )
 	{
 		// Drawn, not sprited: the carrier sheet is red, and modulating it to
-		// gold still reads as enemy red at blip size.
-		FillRGBA( x - 7, y - 7, 14, 14, 255, 200, 40, 235 );
-		FillRGBA( x - 3, y - 3, 6, 6, 255, 255, 255, 245 );
+		// gold still reads as enemy red at blip size. Kept at the same 10x10
+		// as a normal blip so it does not look like a site marker.
+		FillRGBA( x - 5, y - 5, 10, 10, 255, 200, 40, 235 );
+		FillRGBA( x - 2, y - 2, 4, 4, 255, 255, 255, 245 );
 		return;
 	}
 
@@ -1899,21 +1900,21 @@ void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 	int x, y;
 	if( !ObjectivePoint( bomb.origin, halfSize, x, y ) ) return;
 	const bool bright = ( (int)( flTime * 2.0f ) & 1 ) == 0;
-	const int backing = max( 7, halfSize + 1 );
-	FillRGBABlend( x - backing, y - backing, backing * 2, backing * 2,
-		8, 10, 12, 210 );
 
 	if( !planted )
 	{
-		// A dropped bomb is amber and drawn by hand: the backpack sheet is red
-		// and modulating it still reads as an enemy blip.
+		// A dropped bomb is amber, blip-sized and has no backing plate: the old
+		// 14x14 marker on an 18x18 black square read as a misplaced UI widget.
 		const int gg = bright ? 175 : 115;
-		FillRGBABlend( x - 7, y - 7, 14, 14, 255, gg, 20, 235 );
-		FillRGBABlend( x - 3, y - 3, 6, 6, 255, 255, 255, 240 );
+		FillRGBABlend( x - 5, y - 5, 10, 10, 255, gg, 20, 235 );
+		FillRGBABlend( x - 2, y - 2, 4, 4, 255, 255, 255, 240 );
 		return;
 	}
 
 	// Planted: keep the hot red-orange pulse, it is an emergency state.
+	const int backing = max( 7, halfSize + 1 );
+	FillRGBABlend( x - backing, y - backing, backing * 2, backing * 2,
+		8, 10, 12, 210 );
 	const int g = bright ? 50 : 110;
 	if( sprite && sprite->spr )
 	{
