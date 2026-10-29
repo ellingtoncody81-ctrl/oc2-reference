@@ -11,7 +11,11 @@ constexpr float kMaxSpin = 480.0f;
 constexpr float kSkin = 0.25f;
 // Rate at which a grounded weapon eases toward the support-aligned (flat) pose.
 // A fully overturned box (180 degrees) settles in about 0.6 s at this speed.
-constexpr float kRestAlignSpeed = 300.0f;
+constexpr float kRestAlignSpeed = 400.0f;
+// The rest phase starts once the grounded box is slower than this (units/s)
+// and has stayed quiet this long (seconds). Both are rest-phase gates only.
+constexpr float kRestSpeedGate = 32.0f;
+constexpr float kRestQuietTime = 0.12f;
 cvar_t physicsDebug = { "oc2_weapon_physics_debug", "0", FCVAR_SERVER, 0, nullptr };
 bool registered = false;
 unsigned long long nextShot = 0;
@@ -328,7 +332,7 @@ float ShortAngle(float angle)
 
 bool NeedsRotationHull(bool ground, float quiet, float sinceHit)
 {
-	return !ground || (quiet <= 0.18f && sinceHit <= 5.0f);
+	return !ground || (quiet <= kRestQuietTime && sinceHit <= 5.0f);
 }
 
 // Preserve yaw and align the W model's local up axis with the support normal.
@@ -747,9 +751,9 @@ void OC2_WeaponPhysicsFrame()
 			RememberClear(box, entry);
 			entry.lastClearCheck = now;
 		}
-		if (ground && box->pev->velocity.Length() < 22.0f) entry.quiet += dt;
+		if (ground && box->pev->velocity.Length() < kRestSpeedGate) entry.quiet += dt;
 		else entry.quiet = 0;
-		if (ground && (entry.quiet > 0.18f || now - entry.lastHit > 5.0f))
+		if (ground && (entry.quiet > kRestQuietTime || now - entry.lastHit > 5.0f))
 		{
 			if (entry.lastResolve >= 0 && now - entry.lastResolve < 0.2f)
 			{
