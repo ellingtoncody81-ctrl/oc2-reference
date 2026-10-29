@@ -1,5 +1,6 @@
 #include "precompiled.h"
 #include "oc2_item_server.h"
+#include "oc2_weapon_physics.h"
 #include "../../../../common/oc2_skin_inventory.h"
 #include "../../../../common/oc2_glove_inventory.h"
 #include "../../../../common/oc2_carry_state.h"
@@ -270,6 +271,29 @@ void Snapshot(CBasePlayer *player)
  CarrySnapshot(player);
  PlayerState(player).snapshot=false;
 }
+void DropStateDump()
+{
+ OC2_WeaponPhysicsDump();
+ CBaseEntity *entity=nullptr;
+ while((entity=UTIL_FindEntityByClassname(entity,"weaponbox")))
+ {
+  if(entity->pev->flags&FL_KILLME)continue;
+  auto *box=static_cast<CWeaponBox *>(entity);
+  OC2_WeaponPhysicsDump(box);
+  for(int slot=0;slot<MAX_ITEM_TYPES;++slot)
+   for(auto *item=box->m_rgpPlayerItems[slot];item;item=item->m_pNext)
+   {
+    auto *weapon=static_cast<CBasePlayerWeapon *>(item);
+    const int ammoIndex=item->pszAmmo1()?box->GetAmmoIndex(item->pszAmmo1()):-1;
+    const int ammo=ammoIndex>=0&&ammoIndex<MAX_AMMO_SLOTS?box->m_rgAmmo[ammoIndex]:0;
+    ALERT(at_console,"oc2drop_box: t=%.3f entity=%d weapon=%d ammo=%d defaultammo=%d firestate=%d serial=%d model=%s origin=%.3f,%.3f,%.3f velocity=%.3f,%.3f,%.3f angular=%.3f,%.3f,%.3f angles=%.3f,%.3f,%.3f onground=%d solid=%d movetype=%d\n",
+     gpGlobals->time,box->entindex(),item->m_iId,ammo,weapon->m_iDefaultAmmo,weapon->m_iWeaponState,item->m_oc2Appearance.serial,STRING(box->pev->model),
+     box->pev->origin.x,box->pev->origin.y,box->pev->origin.z,box->pev->velocity.x,box->pev->velocity.y,box->pev->velocity.z,
+     box->pev->avelocity.x,box->pev->avelocity.y,box->pev->avelocity.z,box->pev->angles.x,box->pev->angles.y,box->pev->angles.z,
+     int(bool(box->pev->flags&FL_ONGROUND)),box->pev->solid,box->pev->movetype);
+   }
+ }
+}
 void Dump()
 {
  Publish();PublishCarry();
@@ -290,6 +314,13 @@ void Dump()
    i,state.userid,int(peer->IsBot()),state.glove,state.gloveRevision,int(state.botGloveAssigned));
   const auto carry=CarryCurrent(peer);
   auto *active=peer->m_pActiveItem;
+  auto *activeWeapon=active?static_cast<CBasePlayerWeapon *>(active):nullptr;
+  ALERT(at_console,"oc2drop_player: t=%.3f player=%d alive=%d active=%d clip=%d reserve=%d start=%.3f release=%.3f nextattack=%.3f nextprimary=%.3f origin=%.3f,%.3f,%.3f view=%.3f,%.3f,%.3f velocity=%.3f,%.3f,%.3f\n",
+   gpGlobals->time,i,int(peer->IsAlive()),active?active->m_iId:0,activeWeapon?activeWeapon->m_iClip:-1,RawCarryAmmo(peer,active),
+   active?active->m_flStartThrow:0.0f,active?active->m_flReleaseThrow:0.0f,float(peer->m_flNextAttack),
+   activeWeapon?float(activeWeapon->m_flNextPrimaryAttack):0.0f,
+   peer->pev->origin.x,peer->pev->origin.y,peer->pev->origin.z,peer->pev->v_angle.x,peer->pev->v_angle.y,peer->pev->v_angle.z,
+   peer->pev->velocity.x,peer->pev->velocity.y,peer->pev->velocity.z);
   auto *fire=peer->GetItemById(WEAPON_MOLOTOV);
   ALERT(at_console,"oc2carry_server: player=%d userid=%d alive=%d active=%d release=%.3f c4=%d he=%d flash=%d smoke=%d fire=%d firestate=%d protocol_active=%d protocol_he=%d protocol_flash=%d protocol_smoke=%d protocol_fire=%d protocol_flags=%d\n",
    i,carry.userid,int(peer->IsAlive()),active?active->m_iId:0,active?active->m_flReleaseThrow:0.0f,
@@ -298,6 +329,7 @@ void Dump()
    RawCarryAmmo(peer,fire),fire?static_cast<CBasePlayerWeapon *>(fire)->m_iWeaponState:0,
    carry.active,carry.he,carry.flash,carry.smoke,carry.fire,carry.flags);
  }
+ DropStateDump();
 }
 bool TestUtilityWeapon(int value)
 {
@@ -351,6 +383,20 @@ void TestCommand(CBasePlayer *caller)
  {
   if(value>359)return;
   target->pev->v_angle=target->pev->angles=Vector(12,float(value),0);
+  target->pev->fixangle=1;
+  return;
+ }
+ if(FStrEq(action,"aimbox"))
+ {
+  if(value<=gpGlobals->maxClients||value>=gpGlobals->maxEntities)return;
+  edict_t *edict=INDEXENT(value);
+  if(FNullEnt(edict)||!FClassnameIs(&edict->v,"weaponbox"))return;
+  auto *entity=CBaseEntity::Instance(edict);
+  Vector point;
+  if(!entity||!OC2_WeaponPhysicsAimPoint(static_cast<CWeaponBox *>(entity),point))return;
+  Vector angles=UTIL_VecToAngles(point-target->GetGunPosition());
+  angles.x=-angles.x;angles.z=0;
+  target->pev->v_angle=target->pev->angles=angles;
   target->pev->fixangle=1;
   return;
  }
@@ -499,6 +545,7 @@ void OC2_ItemsAcquire(CBasePlayerItem *item,CBasePlayer *player)
 }
 void OC2_ItemsFrame()
 {
+ OC2_WeaponPhysicsFrame();
  Publish();
  PublishCarry();
  for(int i=1;i<=gpGlobals->maxClients&&i<=32;++i)

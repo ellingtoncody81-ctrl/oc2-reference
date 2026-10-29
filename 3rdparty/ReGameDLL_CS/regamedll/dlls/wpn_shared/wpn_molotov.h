@@ -16,7 +16,7 @@ public:
 	int GetItemInfo(ItemInfo *info) override;
 	BOOL Deploy() override;
 	BOOL CanDeploy() override;
-	BOOL CanDrop() override { return m_flStartThrow <= 0 && m_flReleaseThrow < 0 && CanDeploy(); }
+	BOOL CanDrop() override { return m_flStartThrow == 0.0f && m_flReleaseThrow == -1.0f && CanDeploy(); }
 	int AddDuplicate(CBasePlayerItem *original) override;
 	BOOL CanHolster() override { return TRUE; }
 	void Holster(int skiplocal = 0) override;

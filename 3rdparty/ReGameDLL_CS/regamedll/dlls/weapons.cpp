@@ -2063,94 +2063,94 @@ void CWeaponBox::Kill()
 
 bool CWeaponBox::GiveAmmoToPlayer(CBasePlayer *pPlayer, CBasePlayerWeapon *pWeapon, int iCurrentAmmo, const char *pszAmmo, int iMaxAmmo, CBasePlayerItem **pGivenItem)
 {
-	if (iCurrentAmmo >= iMaxAmmo)
-		return false; // can't pickup more, these ammo are full in backpack
-
-	// If already have a weapon in backpack, just refill ammo for it
-	int iAmmoIndex = GetAmmoIndex(pszAmmo);
-	if (iAmmoIndex > 0)
-	{
-		// How many weapon ammo can pick up?
-		int iAmmoPickup = min(m_rgAmmo[iAmmoIndex], iMaxAmmo - iCurrentAmmo);
-		if (iAmmoPickup > 0)
-		{
-			if (iCurrentAmmo == 0 && !(pPlayer->pev->weapons & (1U<<pWeapon->m_iId)) && (pWeapon->iFlags() & ITEM_FLAG_EXHAUSTIBLE))
-			{
-				if (m_rgAmmo[iAmmoIndex] > iMaxAmmo)
-				{
-					// If ammo capacity of the dropped weapon exceeds the player's backpack capacity,
-					// make a copy of dropped weapon and give it to the player
-					CBasePlayerItem *copyItem = (CBasePlayerItem *)pPlayer->GiveCopyItem(pWeapon);
-					if (copyItem)
-					{
-						// The cloned weapon must inherit properties from a dropped weapon, such as Item Info
-#ifdef REGAMEDLL_API
-						ItemInfo info;
-						if (pWeapon->CSPlayerItem()->GetItemInfo(&info))
-							copyItem->CSPlayerItem()->SetItemInfo(&info);
-#endif
-						m_rgAmmo[iAmmoIndex]--;
-						iAmmoPickup--;
-					}
-				}
-				else
-				{
-					// If no weapon in backpack, then issue weapon
-					if (pPlayer->AddPlayerItem(pWeapon))
-					{
-						pWeapon->AttachToPlayer(pPlayer);
-						if (pGivenItem) *pGivenItem = pWeapon;
-					}
-
-					// unlink this weapon from the box
-					return true;
-				}
-			}
-
-			Assert(iAmmoPickup != 0);
-			Assert(m_rgAmmo[iAmmoIndex] != 0);
-
-			if (!FStringNull(m_rgiszAmmo[iAmmoIndex]) &&
-				pPlayer->GiveAmmo(iAmmoPickup, STRING(m_rgiszAmmo[iAmmoIndex]), iMaxAmmo) != -1)
-			{
-				// The old spent fire grenade can still exist during throw recovery.
-				// Replenishing its empty ammo must adopt the picked-up item's type.
-				if (pWeapon->m_iId == WEAPON_MOLOTOV && iCurrentAmmo == 0)
-				{
-					CBasePlayerItem *existing = pPlayer->GetItemById(WEAPON_MOLOTOV);
-					if (existing && existing != pWeapon)
-						OC2_AdoptFireVariant(static_cast<CBasePlayerWeapon *>(existing), pWeapon);
-				}
-				m_rgAmmo[iAmmoIndex] -= iAmmoPickup;
-
-				if (m_rgAmmo[iAmmoIndex] < 0)
-					m_rgAmmo[iAmmoIndex] = 0;
-
-				EMIT_SOUND(pPlayer->edict(), CHAN_ITEM, "items/9mmclip1.wav", VOL_NORM, ATTN_NORM);
-			}
-		}
-
-		// ammo exhausted, remove this weapon
-		if (m_rgAmmo[iAmmoIndex] <= 0)
-		{
-			pWeapon->Kill();
-
-			// unlink this weapon from the box
-			return true;
-		}
-
-		// ammo has not been exhausted yet, keep this weapon in weaponbox
+	const int playerAmmo = pPlayer->GetAmmoIndex(pszAmmo);
+	if (playerAmmo < 0 || playerAmmo >= MAX_AMMO_SLOTS || iMaxAmmo <= 0)
 		return false;
-	}
+	iCurrentAmmo = pPlayer->m_rgAmmo[playerAmmo];
+	if (iCurrentAmmo >= iMaxAmmo)
+		return false;
 
-	// If no weapon in backpack, then issue weapon
-	if (pPlayer->AddPlayerItem(pWeapon))
+	const int boxAmmo = GetAmmoIndex(pszAmmo);
+	const bool hasPackedAmmo = boxAmmo > 0 && boxAmmo < MAX_AMMO_SLOTS;
+	const int available = hasPackedAmmo ? m_rgAmmo[boxAmmo] : pWeapon->m_iDefaultAmmo;
+	const int requested = Q_min(available, iMaxAmmo - iCurrentAmmo);
+	if (requested <= 0)
+		return false;
+
+	// An empty throw-recovery entity is still a real inventory item. The
+	// inventory chain, rather than a stale HUD bit, decides whether to attach.
+	CBasePlayerItem *existing = pPlayer->GetItemById((WeaponIdType)pWeapon->m_iId);
+	pPlayer->GiveAmmo(requested, pszAmmo, iMaxAmmo);
+	const int accepted = pPlayer->m_rgAmmo[playerAmmo] - iCurrentAmmo;
+	if (accepted <= 0)
+		return false;
+
+	CBasePlayerWeapon *acquired = nullptr;
+	if (!existing)
 	{
-		pWeapon->AttachToPlayer(pPlayer);
-		if (pGivenItem) *pGivenItem = pWeapon;
+		acquired = pWeapon;
+		if (accepted < available)
+		{
+			// A legacy/custom multi-round box needs its own remaining instance.
+			acquired = static_cast<CBasePlayerWeapon *>(CBaseEntity::Create(STRING(pWeapon->pev->classname), pev->origin, pev->angles));
+			if (acquired)
+			{
+#ifdef REGAMEDLL_API
+				ItemInfo info;
+				if (pWeapon->CSPlayerItem()->GetItemInfo(&info))
+					acquired->CSPlayerItem()->SetItemInfo(&info);
+#endif
+				acquired->m_iWeaponState = pWeapon->m_iWeaponState;
+				acquired->m_bOc2Transferred = true;
+			}
+		}
+		if (!acquired)
+		{
+			pPlayer->m_rgAmmo[playerAmmo] = iCurrentAmmo;
+			pPlayer->TabulateAmmo();
+			return false;
+		}
+
+		const int defaultAmmo = acquired->m_iDefaultAmmo;
+		CBasePlayerItem *next = acquired->m_pNext;
+		CBasePlayer *owner = acquired->m_pPlayer;
+		edict_t *entityOwner = acquired->pev->owner;
+		const int weaponBits = pPlayer->pev->weapons;
+		acquired->m_iDefaultAmmo = 0;
+		acquired->m_iPrimaryAmmoType = playerAmmo;
+		acquired->pev->spawnflags |= SF_NORESPAWN;
+		if (!pPlayer->AddPlayerItem(acquired))
+		{
+			// Rejection never consumes the box's round or its linked weapon.
+			pPlayer->m_rgAmmo[playerAmmo] = iCurrentAmmo;
+			pPlayer->pev->weapons = weaponBits;
+			pPlayer->TabulateAmmo();
+			acquired->m_iDefaultAmmo = defaultAmmo;
+			acquired->m_pNext = next;
+			acquired->m_pPlayer = owner;
+			acquired->pev->owner = entityOwner;
+			if (acquired != pWeapon) UTIL_Remove(acquired);
+			return false;
+		}
+		acquired->AttachToPlayer(pPlayer);
+		if (pGivenItem) *pGivenItem = acquired;
+	}
+	else if (pWeapon->m_iId == WEAPON_MOLOTOV && iCurrentAmmo == 0)
+	{
+		OC2_AdoptFireVariant(static_cast<CBasePlayerWeapon *>(existing), pWeapon);
 	}
 
-	// unlink this weapon from the box
+	const int remaining = Q_max(0, available - accepted);
+	if (hasPackedAmmo)
+		m_rgAmmo[boxAmmo] = remaining;
+	else if (acquired != pWeapon)
+		pWeapon->m_iDefaultAmmo = remaining;
+	if (existing)
+		EMIT_SOUND(pPlayer->edict(), CHAN_ITEM, "items/9mmclip1.wav", VOL_NORM, ATTN_NORM);
+	if (remaining > 0)
+		return false;
+	if (acquired != pWeapon)
+		pWeapon->Kill();
 	return true;
 }
 
