@@ -158,6 +158,7 @@ public:
 	bool  m_bRadarGating;                       // false = draw everything
 	bool  m_aRadarEnemyVisible[32];            // engine caps maxclients at 32
 	float m_flRadarVisNext;                      // throttled to 20 Hz
+	float m_flRadarVisLast;                      // previous sweep, for the step
 
 	// Last-seen tracker. The ghost blip and the death X both need a position
 	// captured while the entity still existed: a dead player's entity is gone

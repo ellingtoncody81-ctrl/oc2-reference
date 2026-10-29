@@ -134,6 +134,7 @@ int CHudRadarModern::Init( void )
 	m_bSpritesLoaded    = false;
 	m_flLastCapture     = 0;
 	m_flLastBombPlanted = 0;
+	m_flRadarVisLast    = 0;
 	m_iPlayerNum        = 0;
 	m_iObjectiveCount   = 0;
 	m_szObjectiveMap[0] = 0;
@@ -285,6 +286,7 @@ void CHudRadarModern::Reset( void )
 	m_flLastBombPlanted = 0;
 
 	// A new map or round invalidates every per-player radar state.
+	m_flRadarVisLast = 0;
 	memset( m_aRadarEnemyVisible, 0, sizeof( m_aRadarEnemyVisible ) );
 	memset( m_aRadarEnemySeen, 0, sizeof( m_aRadarEnemySeen ) );
 	memset( m_aRadarEnemyConfirmed, 0, sizeof( m_aRadarEnemyConfirmed ) );
@@ -1481,21 +1483,31 @@ Two points are traced per enemy - the feet and just above eye level - because
 testing only the feet hides a player whose upper body is already exposed.
 ========================
 */
-// The scoreboard's dead flag is not always delivered on this engine (the same
-// reason teamnumber stays 0), so also trust the entity's own health.
+// Only the scoreboard flag is trusted here. cl_entity_t::curstate carries no
+// usable health on this engine (it reads 0 for living players as well), and
+// treating that as death marked every teammate and enemy dead, which removed
+// every blip from the radar.
 static bool RadarPlayerDead( int i )
 {
-	if( g_PlayerExtraInfo[i].dead )
-		return true;
-	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
-	return pEnt && pEnt->player && pEnt->curstate.health <= 0;
+	return g_PlayerExtraInfo[i].dead;
 }
 
 void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 {
+	// Any path that turns gating off must also release the per-player state.
+	// Leaving stale visible=false values behind made every enemy fall back to
+	// a frozen last-seen position (or vanish) when the user disabled LOS.
 	if( !s_cl_radar_enemy_los || s_cl_radar_enemy_los->value == 0.0f )
 	{
 		m_bRadarGating = false;
+		m_flRadarVisLast = flTime;
+		for( int i = 0; i < 32; ++i )
+		{
+			m_aRadarEnemyVisible[i] = true;
+			m_aRadarEnemyConfirm[i] = 0.0f;
+			m_aRadarEnemyHold[i] = 0.0f;
+			m_aRadarEnemyConfirmed[i] = false;
+		}
 		return;
 	}
 
@@ -1508,6 +1520,14 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 	if( !pLocal || iLocalTeam < 0 || gEngfuncs.IsSpectateOnly() )
 	{
 		m_bRadarGating = false;
+		m_flRadarVisLast = flTime;
+		for( int i = 0; i < 32; ++i )
+		{
+			m_aRadarEnemyVisible[i] = true;
+			m_aRadarEnemyConfirm[i] = 0.0f;
+			m_aRadarEnemyHold[i] = 0.0f;
+			m_aRadarEnemyConfirmed[i] = false;
+		}
 		return;
 	}
 
@@ -1517,10 +1537,12 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 		return;
 	m_flRadarVisNext = flTime + 0.05f;
 
-	// A steady 20 Hz step. This state machine must not be reset every sweep:
-	// the confirm/hold timers are what turn a one-frame flicker into a stable
-	// blip (CSSO uses 0.5 s to appear and 0.5 s to disappear).
-	const float flStep = 0.05f;
+	// Use the real elapsed time: a fixed step stretched the 0.5 s windows on
+	// low frame rates.
+	float flStep = ( m_flRadarVisLast > 0.0f ) ? ( flTime - m_flRadarVisLast ) : 0.05f;
+	m_flRadarVisLast = flTime;
+	if( flStep < 0.01f ) flStep = 0.01f;
+	if( flStep > 0.25f ) flStep = 0.25f;
 
 	// pm_shared hull table: 0 standing, 1 ducking. Eye heights are the values
 	// the player code uses; v_origin is not exported here and the view bob is
@@ -1552,10 +1574,13 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 		if( i == m_iPlayerNum || i >= 32 )
 			continue;
 
-		if( RadarPlayerDead( i ) )
+		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
+		const bool live = ( pEnt && pEnt->player );
+
+		// A corpse without an entity: keep the last known position for the X.
+		// If a living entity still exists, a stale dead flag is ignored.
+		if( RadarPlayerDead( i ) && !live )
 		{
-			// Keep the last live position for the death X, and clear the
-			// timers so a corpse can never light up as a live blip.
 			if( m_aRadarPlayerDeadAt[i] == 0.0f && m_aRadarEnemySeen[i] )
 			{
 				m_aRadarPlayerDeadAt[i] = flTime;
@@ -1564,6 +1589,7 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 			m_aRadarEnemyVisible[i] = false;
 			m_aRadarEnemyConfirm[i] = 0.0f;
 			m_aRadarEnemyHold[i] = 0.0f;
+			m_aRadarEnemyConfirmed[i] = false;
 			continue;
 		}
 		m_aRadarPlayerDeadAt[i] = 0.0f;
@@ -1572,20 +1598,23 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 		// still recorded so a dead teammate can keep a fading X.
 		if( g_PlayerInfoList[i].team == iLocalTeam )
 		{
-			cl_entity_t *pAlly = gEngfuncs.GetEntityByIndex( i );
-			if( pAlly && pAlly->player )
+			if( live )
 			{
-				m_aRadarEnemyLastOrigin[i] = pAlly->origin;
+				m_aRadarEnemyLastOrigin[i] = pEnt->origin;
 				m_aRadarEnemyLastSeen[i] = flTime;
 				m_aRadarEnemySeen[i] = true;
 			}
 			continue;
 		}
 
-		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
-		if( !pEnt || !pEnt->player )
+		if( !live )
 		{
+			// Out of the PVS: the ghost still needs "was confirmed once", so
+			// confirmed is deliberately kept here; only the death branch above
+			// clears it.
 			m_aRadarEnemyVisible[i] = false;
+			m_aRadarEnemyConfirm[i] = 0.0f;
+			m_aRadarEnemyHold[i] += flStep;
 			continue;
 		}
 
@@ -1626,8 +1655,12 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 		}
 		else
 		{
-			m_aRadarEnemyConfirm[i] = 0.0f;
+			// A short break must not erase progress towards the 0.5 s confirm:
+			// at the edge of the cone or behind a railing the trace flickers.
+			// Only half a second of continuous loss resets the counter.
 			m_aRadarEnemyHold[i] += flStep;
+			if( m_aRadarEnemyConfirm[i] < 0.5f && m_aRadarEnemyHold[i] > 0.5f )
+				m_aRadarEnemyConfirm[i] = 0.0f;
 		}
 
 		m_aRadarEnemyVisible[i] = m_aRadarEnemyConfirmed[i] &&
@@ -1646,9 +1679,13 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	int iTheirTeam = g_PlayerInfoList[ i ].team;
 	bool bFriend = ( iLocalTeam >= 0 && iTheirTeam >= 0 && iTheirTeam == iLocalTeam );
 
+	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
+	const bool live = ( pEnt && pEnt->player );
+
 	// Dead players have no entity left to read, so the X is drawn at the last
 	// position captured while they were still alive (see UpdateEnemyVisibility).
-	if( RadarPlayerDead( i ) )
+	// A stale dead flag on a player whose entity still exists is ignored.
+	if( RadarPlayerDead( i ) && !live )
 	{
 		const float deadFor = flTime - m_aRadarPlayerDeadAt[i];
 		if( m_aRadarPlayerDeadAt[i] <= 0.0f || deadFor < 0.0f || deadFor >= 4.0f || !m_aRadarEnemySeen[i] )
@@ -1674,11 +1711,8 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	const bool ghost = !bFriend && m_bRadarGating && m_aRadarEnemyConfirmed[i] &&
 		!m_aRadarEnemyVisible[i] && m_aRadarEnemySeen[i] && ghostAge >= 0.0f && ghostAge < 6.0f;
 
-	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
-	const bool live = ( pEnt && pEnt->player );
 	if( !live && !ghost )
 		return;
-
 	if( !bFriend && m_bRadarGating && !m_aRadarEnemyVisible[i] && !ghost )
 		return;
 
