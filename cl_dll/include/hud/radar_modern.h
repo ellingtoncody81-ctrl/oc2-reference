@@ -50,6 +50,7 @@ private:
 	void LoadObjectives( const char *pszMapName );
 	void DrawObjectives( int localTeam );
 	void DrawObjectiveLabels();
+	void DrawSiteLetter( int cx, int cy, char letter, int scale );
 	void DrawBomb( int localTeam, float flTime );
 	void DrawHostages( int localTeam, float flTime );
 	bool ObjectivePoint( const Vector &world, int halfSize, int &x, int &y );
@@ -157,6 +158,18 @@ public:
 	bool  m_bRadarGating;                       // false = draw everything
 	bool  m_aRadarEnemyVisible[32];            // engine caps maxclients at 32
 	float m_flRadarVisNext;                      // throttled to 20 Hz
+
+	// Last-seen tracker. The ghost blip and the death X both need a position
+	// captured while the entity still existed: a dead player's entity is gone
+	// and g_PlayerExtraInfo[i].origin is never filled in by this client.
+	bool  m_aRadarEnemySeen[32];               // a live position was recorded
+	bool  m_aRadarEnemyConfirmed[32];          // sight held long enough to show
+	Vector m_aRadarEnemyLastOrigin[32];
+	float m_aRadarEnemyLastSeen[32];            // last clear sight, seconds
+	float m_aRadarEnemyConfirm[32];             // continuous sight, seconds
+	float m_aRadarEnemyHold[32];                // seconds since sight was lost
+	float m_aRadarPlayerDeadAt[32];             // 0 = alive
+	Vector m_aRadarPlayerDeadOrigin[32];
 
 	// ---- world -> overview mapping, rebuilt every frame from the BSP world
 	//      model bounds. The overview .txt zoom/origin are the CS spectator

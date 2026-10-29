@@ -283,6 +283,20 @@ void CHudRadarModern::Reset( void )
 {
 	m_flLastCapture     = 0;
 	m_flLastBombPlanted = 0;
+
+	// A new map or round invalidates every per-player radar state.
+	memset( m_aRadarEnemyVisible, 0, sizeof( m_aRadarEnemyVisible ) );
+	memset( m_aRadarEnemySeen, 0, sizeof( m_aRadarEnemySeen ) );
+	memset( m_aRadarEnemyConfirmed, 0, sizeof( m_aRadarEnemyConfirmed ) );
+	memset( m_aRadarEnemyLastSeen, 0, sizeof( m_aRadarEnemyLastSeen ) );
+	memset( m_aRadarEnemyConfirm, 0, sizeof( m_aRadarEnemyConfirm ) );
+	memset( m_aRadarEnemyHold, 0, sizeof( m_aRadarEnemyHold ) );
+	memset( m_aRadarPlayerDeadAt, 0, sizeof( m_aRadarPlayerDeadAt ) );
+	for( int i = 0; i < 32; ++i )
+	{
+		m_aRadarEnemyLastOrigin[i] = Vector( 0, 0, 0 );
+		m_aRadarPlayerDeadOrigin[i] = Vector( 0, 0, 0 );
+	}
 }
 
 void CHudRadarModern::Think( void )
@@ -1467,6 +1481,16 @@ Two points are traced per enemy - the feet and just above eye level - because
 testing only the feet hides a player whose upper body is already exposed.
 ========================
 */
+// The scoreboard's dead flag is not always delivered on this engine (the same
+// reason teamnumber stays 0), so also trust the entity's own health.
+static bool RadarPlayerDead( int i )
+{
+	if( g_PlayerExtraInfo[i].dead )
+		return true;
+	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
+	return pEnt && pEnt->player && pEnt->curstate.health <= 0;
+}
+
 void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 {
 	if( !s_cl_radar_enemy_los || s_cl_radar_enemy_los->value == 0.0f )
@@ -1493,7 +1517,10 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 		return;
 	m_flRadarVisNext = flTime + 0.05f;
 
-	memset( m_aRadarEnemyVisible, 0, sizeof( m_aRadarEnemyVisible ) );
+	// A steady 20 Hz step. This state machine must not be reset every sweep:
+	// the confirm/hold timers are what turn a one-frame flicker into a stable
+	// blip (CSSO uses 0.5 s to appear and 0.5 s to disappear).
+	const float flStep = 0.05f;
 
 	// pm_shared hull table: 0 standing, 1 ducking. Eye heights are the values
 	// the player code uses; v_origin is not exported here and the view bob is
@@ -1522,48 +1549,89 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 
 	for( int i = 1; i <= iMax; i++ )
 	{
-		if( i == m_iPlayerNum || i >= 32 || g_PlayerExtraInfo[i].dead )
+		if( i == m_iPlayerNum || i >= 32 )
 			continue;
 
-		// Teammates keep the ungated behaviour; this pass is enemies only.
-		if( g_PlayerInfoList[i].team == iLocalTeam )
+		if( RadarPlayerDead( i ) )
+		{
+			// Keep the last live position for the death X, and clear the
+			// timers so a corpse can never light up as a live blip.
+			if( m_aRadarPlayerDeadAt[i] == 0.0f && m_aRadarEnemySeen[i] )
+			{
+				m_aRadarPlayerDeadAt[i] = flTime;
+				m_aRadarPlayerDeadOrigin[i] = m_aRadarEnemyLastOrigin[i];
+			}
+			m_aRadarEnemyVisible[i] = false;
+			m_aRadarEnemyConfirm[i] = 0.0f;
+			m_aRadarEnemyHold[i] = 0.0f;
 			continue;
+		}
+		m_aRadarPlayerDeadAt[i] = 0.0f;
+
+		// Teammates keep the ungated behaviour, but their last position is
+		// still recorded so a dead teammate can keep a fading X.
+		if( g_PlayerInfoList[i].team == iLocalTeam )
+		{
+			cl_entity_t *pAlly = gEngfuncs.GetEntityByIndex( i );
+			if( pAlly && pAlly->player )
+			{
+				m_aRadarEnemyLastOrigin[i] = pAlly->origin;
+				m_aRadarEnemyLastSeen[i] = flTime;
+				m_aRadarEnemySeen[i] = true;
+			}
+			continue;
+		}
 
 		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
 		if( !pEnt || !pEnt->player )
+		{
+			m_aRadarEnemyVisible[i] = false;
 			continue;
+		}
 
 		vec3_t vecTo;
 		VectorSubtract( pEnt->origin, vecEye, vecTo );
 		float flDist = VectorLength( vecTo );
-		if( flDist >= 1.0f )
-		{
-			float flDot = DotProduct( vecTo, vecFwd ) / flDist;
-			if( flDot < flCosHalf )
-				continue;
-		}
-
-		vec3_t vecTarget[2];
-		vecTarget[0] = pEnt->origin;
-		vecTarget[1] = vecTarget[0];
-		vecTarget[1][2] += 13.0f;   // just above the standing eye height
-
 		bool bClear = false;
-		for( int k = 0; k < 2 && !bClear; k++ )
+		if( flDist < 1.0f || ( DotProduct( vecTo, vecFwd ) / flDist ) >= flCosHalf )
 		{
-			pmtrace_t tr;
-			memset( &tr, 0, sizeof( tr ) );
-			// PM_STUDIO_BOX makes props clip by their bounding box instead of
-			// their studio hulls; PM_GLASS_IGNORE lets you see through windows,
-			// which is what the server's own visibility does.
-			gEngfuncs.pEventAPI->EV_PlayerTrace( vecEye, vecTarget[k],
-				PM_STUDIO_BOX | PM_GLASS_IGNORE, -1, &tr );
-			if( tr.fraction >= 0.99f && !tr.startsolid && !tr.allsolid )
-				bClear = true;
+			vec3_t vecTarget[2];
+			vecTarget[0] = pEnt->origin;
+			vecTarget[1] = vecTarget[0];
+			vecTarget[1][2] += 13.0f;   // just above the standing eye height
+
+			for( int k = 0; k < 2 && !bClear; k++ )
+			{
+				pmtrace_t tr;
+				memset( &tr, 0, sizeof( tr ) );
+				// PM_STUDIO_BOX makes props clip by their bounding box instead of
+				// their studio hulls; PM_GLASS_IGNORE lets you see through windows,
+				// which is what the server's own visibility does.
+				gEngfuncs.pEventAPI->EV_PlayerTrace( vecEye, vecTarget[k],
+					PM_STUDIO_BOX | PM_GLASS_IGNORE, -1, &tr );
+				if( tr.fraction >= 0.99f && !tr.startsolid && !tr.allsolid )
+					bClear = true;
+			}
 		}
 
 		if( bClear )
-			m_aRadarEnemyVisible[i] = true;
+		{
+			m_aRadarEnemyConfirm[i] += flStep;
+			m_aRadarEnemyHold[i] = 0.0f;
+			m_aRadarEnemyLastOrigin[i] = pEnt->origin;
+			m_aRadarEnemyLastSeen[i] = flTime;
+			m_aRadarEnemySeen[i] = true;
+			if( m_aRadarEnemyConfirm[i] >= 0.5f )
+				m_aRadarEnemyConfirmed[i] = true;
+		}
+		else
+		{
+			m_aRadarEnemyConfirm[i] = 0.0f;
+			m_aRadarEnemyHold[i] += flStep;
+		}
+
+		m_aRadarEnemyVisible[i] = m_aRadarEnemyConfirmed[i] &&
+			( bClear || m_aRadarEnemyHold[i] <= 0.5f );
 	}
 
 	gEngfuncs.pEventAPI->EV_PopPMStates();
@@ -1571,41 +1639,47 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 
 void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float flTime )
 {
-	if( i == m_iPlayerNum || g_PlayerExtraInfo[i].dead )
+	if( i == m_iPlayerNum )
 		return;
 
-	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
-	if( !pEnt || !pEnt->player )
-		return;
-
-	// The team is read out of the player info string, not from any client side
-	// structure.
-	//
-	// g_PlayerExtraInfo[i].teamnumber is written only by
-	// CHudScoreboard::MsgFunc_TeamInfo (scoreboard.cpp:620), and that handler is
-	// never registered here. This engine has no svc_gamemessage at all, so the
-	// gmsgTeamInfo the server sends simply never arrives - which is why the
-	// team was always 0 and every blip came out as a teammate.
-	// entity_state.team is no better: nothing on the server side ever writes
-	// it either.
-	//
-	// What does get through is svc_updateuserinfo: the server mirrors the team
-	// into the info string as a "team" key (regamedll player.cpp,
-	// TeamChangeUpdate), the engine picks it out in CL_GetPlayerInfo and
-	// hands it over as hud_player_info_t.team.
-	//
-	// Anything unidentified is drawn as an enemy rather than as a teammate:
-	// showing an enemy as friendly is the dangerous direction.
 	int iLocalTeam = g_PlayerInfoList[ m_iPlayerNum ].team;
 	int iTheirTeam = g_PlayerInfoList[ i ].team;
-
 	bool bFriend = ( iLocalTeam >= 0 && iTheirTeam >= 0 && iTheirTeam == iLocalTeam );
 
-	// Line of sight. Without this the radar leaks the whole enemy roster
-	// through walls: the client keeps a live entity for anything that ever
-	// entered the PVS, so "is the entity there" says nothing about whether the
-	// player can see it. See UpdateEnemyVisibility.
-	if( !bFriend && m_bRadarGating && !m_aRadarEnemyVisible[i] )
+	// Dead players have no entity left to read, so the X is drawn at the last
+	// position captured while they were still alive (see UpdateEnemyVisibility).
+	if( RadarPlayerDead( i ) )
+	{
+		const float deadFor = flTime - m_aRadarPlayerDeadAt[i];
+		if( m_aRadarPlayerDeadAt[i] <= 0.0f || deadFor < 0.0f || deadFor >= 4.0f || !m_aRadarEnemySeen[i] )
+			return;
+		int x, y, deadRadius;
+		if( CalcPoint( m_aRadarPlayerDeadOrigin[i], x, y, deadRadius ) )
+			return;
+		const int alpha = (int)( 255.0f * ( 1.0f - deadFor / 4.0f ) );
+		static const unsigned char kX[5] = { 0x11, 0x0A, 0x04, 0x0A, 0x11 };
+		const int cr = bFriend ? 190 : 255;
+		const int cg = bFriend ? 210 : 45;
+		const int cb = bFriend ? 235 : 45;
+		for( int row = 0; row < 5; ++row )
+			for( int col = 0; col < 5; ++col )
+				if( kX[row] & ( 0x10 >> col ) )
+					FillRGBA( x - 5 + col * 2, y - 5 + row * 2, 2, 2, cr, cg, cb, alpha );
+		return;
+	}
+
+	// Ghost first: the entity may already be out of the PVS, and the whole
+	// point of a ghost is that it survives the entity going away.
+	const float ghostAge = flTime - m_aRadarEnemyLastSeen[i];
+	const bool ghost = !bFriend && m_bRadarGating && m_aRadarEnemyConfirmed[i] &&
+		!m_aRadarEnemyVisible[i] && m_aRadarEnemySeen[i] && ghostAge >= 0.0f && ghostAge < 6.0f;
+
+	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
+	const bool live = ( pEnt && pEnt->player );
+	if( !live && !ghost )
+		return;
+
+	if( !bFriend && m_bRadarGating && !m_aRadarEnemyVisible[i] && !ghost )
 		return;
 
 	// Teammates blue, enemies red. The sprite sheets are named iplayerblue /
@@ -1622,6 +1696,15 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	int g = c4Carrier ? 200 : ( bFriend ? 120 : 0 );
 	int b = c4Carrier ? 40 : ( bFriend ? 255 : 0 );
 
+	// No alpha on SPR_Set, so a ghost fades by dimming its colour instead.
+	if( !bFriend && !m_aRadarEnemyVisible[i] )
+	{
+		const float flDim = 1.0f - ghostAge / 6.0f;
+		r = (int)( r * flDim );
+		g = (int)( g * flDim );
+		b = (int)( b * flDim );
+	}
+
 	CClientSprite *pSprite = c4Carrier ? s_spr[SPR_PLAYER_C4] :
 		( bFriend ? s_spr[SPR_PLAYER_BLUE] : s_spr[SPR_PLAYER_RED] );
 
@@ -1629,16 +1712,11 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	// NOT g_PlayerExtraInfo[i].origin: nothing in this client ever writes
 	// that field, so it stays (0,0,0) and every blip piled up on the same
 	// map pixel a third of the way up from the centre. The live entity is
-	// the only populated source, same as CHudSpectator uses.
-	//
-	// The return value is the out-of-circle flag. It used to be dropped,
-	// so players standing beyond the radar window still got a blip drawn
-	// on the game world at large - visibly, as green squares floating off
-	// the HUD (screenshot: one near the crate at the bottom left). The
-	// mobile build stops at the circle, so anything outside is simply not
-	// drawn; the map tiles themselves are already clipped the same way in
-	// DrawOverviewLayer.
-	if( CalcPoint( pEnt->origin, x, y, radius ) )
+	// the only populated source, same as CHudSpectator uses; a ghost uses the
+	// position captured on the last clear sight.
+	const Vector &vecBlip = ( !live || ( !bFriend && !m_aRadarEnemyVisible[i] ) )
+		? m_aRadarEnemyLastOrigin[i] : pEnt->origin;
+	if( CalcPoint( vecBlip, x, y, radius ) )
 		return;
 
 	if( pSprite && pSprite->spr )
@@ -1674,21 +1752,17 @@ void CHudRadarModern::DrawObjectives( int localTeam )
 	{
 		const Objective &site = m_Objectives[i];
 		if( !site.bomb && localTeam != TEAM_CT ) continue;
+
+		// Bomb sites are marked by the letter alone (DrawObjectiveLabels).
+		// The old black box + gold square read as a misplaced UI widget, so
+		// nothing is drawn here for a plant site.
+		if( site.bomb )
+			continue;
+
 		int x, y;
 		if( !ObjectivePoint( site.origin, 8, x, y ) ) continue;
-		FillRGBA( x - 9, y - 9, 18, 18, 0, 0, 0, 210 );
-		if( site.bomb )
-		{
-			FillRGBA( x - 7, y - 7, 14, 14, 230, 165, 40, 230 );
-			// The stock radar_a/radar_b sprites are not shipped with this
-			// install, so the letter is drawn by DrawObjectiveLabels() with
-			// the HUD font, after the bomb blips so nothing covers it.
-		}
-		else
-		{
-			FillRGBA( x - 7, y - 7, 14, 14, 35, 205, 195, 230 );
-			FillRGBA( x - 3, y - 3, 6, 6, 255, 255, 255, 240 );
-		}
+		FillRGBA( x - 7, y - 7, 14, 14, 35, 205, 195, 230 );
+		FillRGBA( x - 3, y - 3, 6, 6, 255, 255, 240, 240 );
 	}
 }
 
@@ -1701,19 +1775,40 @@ the site letter. White halo first, dark glyph on top, so the letter stays
 legible over the gold marker and over a player blip.
 ========================
 */
+void CHudRadarModern::DrawSiteLetter( int cx, int cy, char letter, int scale )
+{
+	static const unsigned char kA[7] = { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
+	static const unsigned char kB[7] = { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E };
+	const unsigned char *rows = ( letter == 'A' ) ? kA : kB;
+
+	// Outline pass first, one pixel larger all round, so the glyph reads over
+	// a light floor tile, a dark wall and a player blip alike.
+	for( int pass = 0; pass < 2; ++pass )
+	{
+		const int s = ( pass == 0 ) ? scale + 2 : scale;
+		const int off = ( pass == 0 ) ? -1 : 0;
+		const int cr = ( pass == 0 ) ? 0 : 240;
+		const int cg = ( pass == 0 ) ? 0 : 170;
+		const int cb = ( pass == 0 ) ? 0 : 40;
+		const int alpha = ( pass == 0 ) ? 210 : 245;
+		const int ox = cx - ( 5 * s ) / 2 + off;
+		const int oy = cy - ( 7 * s ) / 2 + off;
+		for( int row = 0; row < 7; ++row )
+			for( int col = 0; col < 5; ++col )
+				if( rows[row] & ( 0x10 >> col ) )
+					FillRGBA( ox + col * s, oy + row * s, s, s, cr, cg, cb, alpha );
+	}
+}
+
 void CHudRadarModern::DrawObjectiveLabels()
 {
-	static const int offX[4] = { -1, 1, 0, 0 };
-	static const int offY[4] = { 0, 0, -1, 1 };
 	for( int i = 0; i < m_iObjectiveCount; ++i )
 	{
 		const Objective &site = m_Objectives[i];
 		if( !site.bomb || ( site.label != 'A' && site.label != 'B' ) ) continue;
 		int x, y;
-		if( !ObjectivePoint( site.origin, 8, x, y ) ) continue;
-		for( int k = 0; k < 4; ++k )
-			gEngfuncs.pfnDrawCharacter( x - 4 + offX[k], y - 4 + offY[k], site.label, 255, 255, 255 );
-		gEngfuncs.pfnDrawCharacter( x - 4, y - 4, site.label, 20, 20, 20 );
+		if( !ObjectivePoint( site.origin, 12, x, y ) ) continue;
+		DrawSiteLetter( x, y, site.label, 3 );
 	}
 }
 
