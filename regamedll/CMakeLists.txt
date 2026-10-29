@@ -261,6 +261,7 @@ set(GAMEDLL_SRCS
 	"dlls/wpn_shared/wpn_zeus.cpp"
 	"dlls/weapons.cpp"
 	"dlls/oc2_item_server.cpp"
+	"dlls/oc2_weapon_physics.cpp"
 	"dlls/weapontype.cpp"
 	"dlls/world.cpp"
 	"dlls/API/CAPI_Impl.cpp"

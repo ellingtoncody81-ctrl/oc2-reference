@@ -1,5 +1,6 @@
 #include "precompiled.h"
 #include "wpn_shared/oc2_gunshot.h"
+#include "oc2_weapon_physics.h"
 
 DLL_FUNCTIONS gFunctionTable =
 {
@@ -1064,6 +1065,8 @@ void CBaseEntity::__API_HOOK(FireBullets)(ULONG cShots, VectorRef vecSrc, Vector
 		gpGlobals->trace_flags = FTRACE_BULLET;
 #endif
 		UTIL_TraceLine(vecSrc, vecEnd, dont_ignore_monsters, ENT(pev), &tr);
+		OC2_WeaponPhysicsBullet physicsBullet;
+		physicsBullet.Trace(vecSrc, tr.vecEndPos, iDamage > 0 ? float(iDamage) : 20.0f, iBulletType, pevAttacker);
 		tracer = 0;
 
 		if (iTracerFreq != 0 && !(tracerCount++ % iTracerFreq))
@@ -1210,6 +1213,8 @@ void CBaseEntity::__API_HOOK(FireBuckshots)(ULONG cShots, VectorRef vecSrc, Vect
 		gpGlobals->trace_flags = FTRACE_BULLET;
 #endif
 		UTIL_TraceLine(vecSrc, vecEnd, dont_ignore_monsters, ENT(pev), &tr);
+		OC2_WeaponPhysicsBullet physicsBullet;
+		physicsBullet.Trace(vecSrc, tr.vecEndPos, float(iDamage), BULLET_PLAYER_BUCKSHOT, pevAttacker);
 		tracer = 0;
 
 		if (iTracerFreq != 0 && !(tracerCount++ % iTracerFreq))
@@ -1367,6 +1372,7 @@ VectorRef CBaseEntity::__API_HOOK(FireBullets3)(VectorRef vecSrc, VectorRef vecD
 	float flDamageModifier = 0.5;
 
 	int iStartPenetration = iPenetration;
+	OC2_WeaponPhysicsBullet physicsBullet;
 	while (iPenetration != 0)
 	{
 		ClearMultiDamage();
@@ -1375,6 +1381,7 @@ VectorRef CBaseEntity::__API_HOOK(FireBullets3)(VectorRef vecSrc, VectorRef vecD
 		gpGlobals->trace_flags = FTRACE_BULLET;
 #endif
 		UTIL_TraceLine(vecSrc, vecEnd, dont_ignore_monsters, ENT(pev), &tr);
+		physicsBullet.Trace(vecSrc, tr.vecEndPos, float(iCurrentDamage), iBulletType, pevAttacker);
 
 		if (TheBots && tr.flFraction != 1.0f)
 		{

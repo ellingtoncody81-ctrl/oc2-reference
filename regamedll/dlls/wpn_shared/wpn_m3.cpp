@@ -1,6 +1,9 @@
 #include "precompiled.h"
 #include "oc2_weapon_params.h"
 #include "oc2_gunshot.h"
+#ifndef CLIENT_DLL
+#include "oc2_weapon_physics.h"
+#endif
 
 namespace
 {
@@ -29,6 +32,10 @@ void FireNovaPellets(CBasePlayer *player, const Vector &source, const Vector &ai
 		gpGlobals->trace_flags = FTRACE_BULLET;
 #endif
 		UTIL_TraceLine(source, end, dont_ignore_monsters, player->edict(), &trace);
+#ifndef CLIENT_DLL
+		OC2_WeaponPhysicsBullet physicsBullet;
+		physicsBullet.Trace(source, trace.vecEndPos, damage, BULLET_PLAYER_BUCKSHOT, player->pev);
+#endif
 		if (trace.flFraction < 1.0f && trace.pHit)
 		{
 			CBaseEntity *hit = CBaseEntity::Instance(trace.pHit);

@@ -224,6 +224,12 @@ static const char *OC2DroppedModel(CBasePlayerItem *item)
 	return GetCSModelName(item->m_iId);
 }
 
+static bool OC2IsDroppableGrenade(const CBasePlayerItem *item)
+{
+	return item && (item->m_iId == WEAPON_HEGRENADE || item->m_iId == WEAPON_FLASHBANG ||
+		item->m_iId == WEAPON_SMOKEGRENADE || item->m_iId == WEAPON_MOLOTOV);
+}
+
 LINK_HOOK_CLASS_CHAIN(bool, CBasePlayer, SetClientUserInfoName, (char *infobuffer, char *szNewName), infobuffer, szNewName)
 
 bool EXT_FUNC CBasePlayer::__API_HOOK(SetClientUserInfoName)(char *infobuffer, char *szNewName)
@@ -1311,6 +1317,15 @@ LINK_HOOK_CHAIN(CWeaponBox *, CreateWeaponBox, (CBasePlayerItem *pItem, CBasePla
 
 CWeaponBox *EXT_FUNC __API_HOOK(CreateWeaponBox)(CBasePlayerItem *pItem, CBasePlayer *pPlayerOwner, const char *modelName, Vector &origin, Vector &angles, Vector &velocity, float lifeTime, bool packAmmo)
 {
+	if (!pItem || !modelName)
+		return nullptr;
+
+	const bool singleGrenade = pPlayerOwner && OC2IsDroppableGrenade(pItem);
+	const int grenadeAmmo = singleGrenade ? pItem->PrimaryAmmoIndex() : -1;
+	if (singleGrenade && (grenadeAmmo < 0 || grenadeAmmo >= MAX_AMMO_SLOTS ||
+		pPlayerOwner->m_rgAmmo[grenadeAmmo] <= 0))
+		return nullptr;
+
 	// create a box to pack the stuff into.
 	CWeaponBox *pWeaponBox = (CWeaponBox *)CBaseEntity::Create("weaponbox", origin, angles, pPlayerOwner ? ENT(pPlayerOwner->pev) : nullptr);
 
@@ -1322,7 +1337,50 @@ CWeaponBox *EXT_FUNC __API_HOOK(CreateWeaponBox)(CBasePlayerItem *pItem, CBasePl
 		pWeaponBox->pev->velocity = velocity;
 		pWeaponBox->SetThink(&CWeaponBox::Kill);
 		pWeaponBox->pev->nextthink = gpGlobals->time + lifeTime;
-		pWeaponBox->PackWeapon(pItem); // now pack all of the items in the lists
+		if (singleGrenade)
+		{
+			CBasePlayerWeapon *source = static_cast<CBasePlayerWeapon *>(pItem);
+			CBasePlayerWeapon *packed = source;
+			if (pPlayerOwner->m_rgAmmo[grenadeAmmo] > 1)
+			{
+				// Keep the held instance and its throw/deploy clocks when splitting a stack.
+				packed = static_cast<CBasePlayerWeapon *>(CBaseEntity::Create(STRING(source->pev->classname), origin, angles));
+				if (!packed)
+				{
+					UTIL_Remove(pWeaponBox);
+					return nullptr;
+				}
+#ifdef REGAMEDLL_API
+				ItemInfo info;
+				if (source->CSPlayerItem()->GetItemInfo(&info))
+					packed->CSPlayerItem()->SetItemInfo(&info);
+#endif
+				packed->m_iPrimaryAmmoType = grenadeAmmo;
+				packed->m_iWeaponState = source->m_iWeaponState;
+				packed->m_iDefaultAmmo = 0;
+			}
+
+			// The box owns exactly one round. Spawn's default round must not be
+			// granted a second time when the weapon is attached during pickup.
+			const int boxAmmo = pWeaponBox->GiveAmmo(1, (char *)source->pszAmmo1(), source->iMaxAmmo1());
+			if (boxAmmo <= 0 || boxAmmo >= MAX_AMMO_SLOTS || pWeaponBox->m_rgAmmo[boxAmmo] != 1 ||
+				!pWeaponBox->PackWeapon(packed))
+			{
+				if (packed != source) UTIL_Remove(packed);
+				UTIL_Remove(pWeaponBox);
+				return nullptr;
+			}
+			packed->m_iDefaultAmmo = 0;
+			--pPlayerOwner->m_rgAmmo[grenadeAmmo];
+			pWeaponBox->SetModel(modelName);
+			return pWeaponBox;
+		}
+
+		if (!pWeaponBox->PackWeapon(pItem))
+		{
+			UTIL_Remove(pWeaponBox);
+			return nullptr;
+		}
 
 		// player is the ammo source
 		if (pPlayerOwner)
@@ -1404,13 +1462,14 @@ CWeaponBox *PackPlayerItem(CBasePlayer *pPlayer, CBasePlayerItem *pItem, bool pa
 }
 
 #ifdef REGAMEDLL_ADD
-void PackPlayerNade(CBasePlayer *pPlayer, CBasePlayerItem *pItem, bool packAmmo)
+static CWeaponBox *PackPlayerNade(CBasePlayer *pPlayer, CBasePlayerItem *pItem, bool packAmmo)
 {
-	if (!pItem)
-		return;
+	if (!OC2IsDroppableGrenade(pItem))
+		return nullptr;
 
-	if (pItem->m_flStartThrow != 0.0f || pPlayer->m_rgAmmo[pItem->PrimaryAmmoIndex()] <= 0) {
-		return;
+	const int ammo = pItem->PrimaryAmmoIndex();
+	if (pItem->m_flStartThrow != 0.0f || ammo < 0 || ammo >= MAX_AMMO_SLOTS || pPlayer->m_rgAmmo[ammo] <= 0) {
+		return nullptr;
 	}
 
 	const char *modelName = OC2DroppedModel(pItem);
@@ -1428,10 +1487,14 @@ void PackPlayerNade(CBasePlayer *pPlayer, CBasePlayerItem *pItem, bool packAmmo)
 		case WEAPON_SMOKEGRENADE:
 			flOffset = -14.0f;
 			break;
+		case WEAPON_MOLOTOV:
+			flOffset = 28.0f;
+			break;
 		}
 
 		Vector vecAngles = pPlayer->pev->angles;
-		Vector dir(Q_cos(vecAngles.y) * flOffset, Q_sin(vecAngles.y) * flOffset, 0.0f);
+		const float yaw = vecAngles.y * float(M_PI / 180.0);
+		Vector dir(Q_cos(yaw) * flOffset, Q_sin(yaw) * flOffset, 0.0f);
 
 		vecAngles.x = 0.0f;
 		vecAngles.y += 45.0f;
@@ -1440,13 +1503,55 @@ void PackPlayerNade(CBasePlayer *pPlayer, CBasePlayerItem *pItem, bool packAmmo)
 		Vector vecVelocity = pPlayer->pev->velocity * 0.75f;
 
 		// create a box to pack the stuff into.
-		CreateWeaponBox(pItem, pPlayer,
+		return CreateWeaponBox(pItem, pPlayer,
 			modelName,
 			vecOrigin,
 			vecAngles,
 			vecVelocity,
 			CGameRules::GetItemKillDelay(),
 			packAmmo);
+	}
+	return nullptr;
+}
+
+static void OC2PackDeadPlayerGrenades(CBasePlayer *player)
+{
+	const bool dropAll = AreRunningCZero() || (int)nadedrops.value == 2;
+	if (!dropAll && (int)nadedrops.value != 1)
+		return;
+
+	if (dropAll)
+	{
+		for (CBasePlayerItem *item = player->m_rgpPlayerItems[GRENADE_SLOT]; item; )
+		{
+			// Packing the final round removes the original item from this chain.
+			CBasePlayerItem *next = item->m_pNext;
+			const int ammo = item->PrimaryAmmoIndex();
+			if (OC2IsDroppableGrenade(item) && ammo >= 0 && ammo < MAX_AMMO_SLOTS)
+			{
+				const int count = player->m_rgAmmo[ammo];
+				for (int n = 0; n < count; ++n)
+				{
+					CWeaponBox *box = PackPlayerNade(player, item, true);
+					if (!box) break;
+					box->pev->velocity.x += (n & 1) ? 20.0f : -20.0f;
+					box->pev->velocity.y += n * 20.0f;
+				}
+			}
+			item = next;
+		}
+		return;
+	}
+
+	// CS:GO-style current-or-best: one physical grenade, with the remaining
+	// priority fire, smoke, HE, flash. Killed has already consumed any live one.
+	if (OC2IsDroppableGrenade(player->m_pActiveItem) && PackPlayerNade(player, player->m_pActiveItem, true))
+		return;
+	const WeaponIdType priority[] = { WEAPON_MOLOTOV, WEAPON_SMOKEGRENADE, WEAPON_HEGRENADE, WEAPON_FLASHBANG };
+	for (auto id : priority)
+	{
+		if (PackPlayerNade(player, player->GetItemById(id), true))
+			return;
 	}
 }
 #endif
@@ -1462,6 +1567,9 @@ void CBasePlayer::PackDeadPlayerItems()
 
 	if (iPackGun != GR_PLR_DROP_GUN_NO)
 	{
+#ifdef REGAMEDLL_ADD
+		OC2PackDeadPlayerGrenades(this);
+#endif
 		bool bSkipPrimSec = false;
 		if (HasShield())
 		{
@@ -1488,14 +1596,6 @@ void CBasePlayer::PackDeadPlayerItems()
 				pBestItem = m_pActiveItem;
 
 				// if active item is undroppable, then nothing is dropped
-			}
-
-			// are we allowing nade drop?
-			if ((int)nadedrops.value >= 1)
-			{
-				// goto item loop but skip guns
-				iPackGun = GR_PLR_DROP_GUN_ALL;
-				bSkipPrimSec = true;
 			}
 		}
 
@@ -1546,7 +1646,8 @@ void CBasePlayer::PackDeadPlayerItems()
 							}
 						}
 					}
-					// drop a grenade after death
+					// Legacy builds retain the Condition Zero grenade path.
+#ifndef REGAMEDLL_ADD
 					else if (pPlayerItem->iItemSlot() == GRENADE_SLOT)
 					{
 						if (AreRunningCZero())
@@ -1559,25 +1660,8 @@ void CBasePlayer::PackDeadPlayerItems()
 								PackPlayerItem(this, pPlayerItem, true);
 							}
 						}
-#ifdef REGAMEDLL_ADD
-						else
-						{
-							switch ((int)nadedrops.value)
-							{
-							case 1:
-								PackPlayerNade(this, pPlayerItem, true);
-								break;
-							case 2:
-							{
-								CBasePlayerItem *pNext = pPlayerItem->m_pNext;
-								PackPlayerNade(this, pPlayerItem, true);
-								pPlayerItem = pNext;
-								continue;
-							}
-							}
-						}
-#endif
 					}
+#endif
 
 					pPlayerItem = pPlayerItem->m_pNext;
 				}
@@ -8500,13 +8584,17 @@ LINK_HOOK_CLASS_CHAIN(CBaseEntity *, CBasePlayer, DropPlayerItem, (const char *p
 // DropPlayerItem - drop the named item, or if no name, the active item.
 CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszItemName)
 {
-	if (!Q_strlen(pszItemName))
+	if (!pszItemName || !Q_strlen(pszItemName))
 	{
 		// if this string has no length, the client didn't type a name!
 		// assume player wants to drop the active item.
 		// make the string null to make future operations in this function easier
 		pszItemName = nullptr;
 	}
+	const bool incendiaryAlias = pszItemName &&
+		(!Q_stricmp(pszItemName, "weapon_incendiary") || !Q_stricmp(pszItemName, "weapon_incgrenade"));
+	if (incendiaryAlias)
+		pszItemName = "weapon_molotov";
 
 	if (m_bIsVIP)
 	{
@@ -8548,10 +8636,38 @@ CBaseEntity *EXT_FUNC CBasePlayer::__API_HOOK(DropPlayerItem)(const char *pszIte
 #endif
 	if (pWeapon)
 	{
+		if (incendiaryAlias && (pWeapon->m_iId != WEAPON_MOLOTOV ||
+			!(static_cast<CBasePlayerWeapon *>(pWeapon)->m_iWeaponState & CMolotovGrenade::INCENDIARY_STATE)))
+			return nullptr;
+
 		if (!pWeapon->CanDrop())
 		{
 			ClientPrint(pev, HUD_PRINTCENTER, "#Weapon_Cannot_Be_Dropped");
 			return nullptr;
+		}
+
+		if (OC2IsDroppableGrenade(pWeapon))
+		{
+			const bool wasActive = m_pActiveItem == pWeapon;
+			const int ammo = pWeapon->PrimaryAmmoIndex();
+			UTIL_MakeVectors(pev->angles);
+			Vector origin = pev->origin + gpGlobals->v_forward * 10;
+			Vector angles = pev->angles;
+			Vector velocity = pev->velocity + gpGlobals->v_forward * 300;
+			CWeaponBox *box = CreateWeaponBox(pWeapon, this, OC2DroppedModel(pWeapon),
+				origin, angles, velocity, CGameRules::GetItemKillDelay(), true);
+			if (!box)
+				return nullptr;
+
+			if (m_rgAmmo[ammo] == 0)
+			{
+				pev->weapons &= ~(1U << pWeapon->m_iId);
+				if ((pev->weapons & ~(1U << WEAPON_SUIT)) == 0)
+					m_iHideHUD |= HIDEHUD_WEAPONS;
+				if (wasActive)
+					g_pGameRules->GetNextBestWeapon(this, pWeapon);
+			}
+			return box;
 		}
 
 		// take item off hud

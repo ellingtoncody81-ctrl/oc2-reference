@@ -989,7 +989,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL CanDeploy();
-	virtual BOOL CanDrop() { return FALSE; }
+	virtual BOOL CanDrop() { return m_flStartThrow == 0.0f && m_flReleaseThrow == -1.0f && CanDeploy(); }
 	virtual BOOL Deploy();
 	virtual void Holster(int skiplocal);
 	virtual float GetMaxSpeed() { return m_fMaxSpeed; }
@@ -1153,7 +1153,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL CanDeploy();
-	virtual BOOL CanDrop() { return FALSE; }
+	virtual BOOL CanDrop() { return m_flStartThrow == 0.0f && m_flReleaseThrow == -1.0f && CanDeploy(); }
 	virtual BOOL Deploy();
 	virtual void Holster(int skiplocal);
 	virtual float GetMaxSpeed() { return m_fMaxSpeed; }
@@ -1689,7 +1689,7 @@ public:
 	virtual void Precache();
 	virtual int GetItemInfo(ItemInfo *p);
 	virtual BOOL CanDeploy();
-	virtual BOOL CanDrop() { return FALSE; }
+	virtual BOOL CanDrop() { return m_flStartThrow == 0.0f && m_flReleaseThrow == -1.0f && CanDeploy(); }
 	virtual BOOL Deploy();
 	virtual void Holster(int skiplocal);
 	virtual float GetMaxSpeed() { return m_fMaxSpeed; }
