@@ -177,6 +177,15 @@ public:
 	float m_aRadarEnemyHold[32];                // seconds since sight was lost
 	float m_aRadarPlayerDeadAt[32];             // 0 = alive
 	Vector m_aRadarPlayerDeadOrigin[32];
+	// Last corpse position seen by the 20 Hz sweep. A respawn is a
+	// discontinuous jump, a corpse sliding is not, and only the jump may
+	// clear the death stamp - drifting 64 units used to be enough, which put
+	// a living blip back on the radar a few seconds after a kill.
+	Vector m_aRadarPlayerDeadPrevOrigin[32];
+	// Seconds of sustained movement while dead. A corpse settles within a few
+	// samples; a player who came back keeps walking. This is the fallback for
+	// respawns that land too close to the corpse for the jump test above.
+	float m_aRadarPlayerDeadMoveStreak[32];
 
 	// ---- world -> overview mapping, rebuilt every frame from the BSP world
 	//      model bounds. The overview .txt zoom/origin are the CS spectator

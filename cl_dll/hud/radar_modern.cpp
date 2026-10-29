@@ -302,6 +302,8 @@ void CHudRadarModern::Reset( void )
 	{
 		m_aRadarEnemyLastOrigin[i] = Vector( 0, 0, 0 );
 		m_aRadarPlayerDeadOrigin[i] = Vector( 0, 0, 0 );
+		m_aRadarPlayerDeadPrevOrigin[i] = Vector( 0, 0, 0 );
+		m_aRadarPlayerDeadMoveStreak[i] = 0.0f;
 	}
 }
 
@@ -1255,8 +1257,9 @@ void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 	float flCX = cx + ( flAX * cosf( -kSpread ) - flAY * sinf( -kSpread ) ) * (float)iSize;
 	float flCY = cy + ( flAX * sinf( -kSpread ) + flAY * cosf( -kSpread ) ) * (float)iSize;
 
-	// solid backing so the arrow reads over any map content
-	FillRGBA( cx - 3, cy - 3, 6, 6, 0, 0, 0, 200 );
+	// solid backing so the arrow reads over any map content (blend, not the
+	// additive FillRGBA, which would draw nothing for pure black)
+	FillRGBABlend( cx - 4, cy - 4, 8, 8, 0, 0, 0, 190 );
 
 	// Same trap as DrawRadarDisc: whatever texture the previous HUD element
 	// left bound is still active in kRenderTransAlpha, and these vertices
@@ -1502,14 +1505,22 @@ void CHudRadarModern::NotePlayerDeath( int victim, float time )
 		return;
 	if( m_aRadarPlayerDeadAt[victim] != 0.0f )
 		return;
-	m_aRadarPlayerDeadAt[victim] = time;
-	if( m_aRadarEnemySeen[victim] )
+	Vector origin = m_aRadarEnemySeen[victim] ? m_aRadarEnemyLastOrigin[victim] : Vector( 0, 0, 0 );
+	if( origin == Vector( 0, 0, 0 ) )
 	{
-		m_aRadarPlayerDeadOrigin[victim] = m_aRadarEnemyLastOrigin[victim];
-		return;
+		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( victim );
+		if( pEnt && pEnt->player )
+			origin = pEnt->origin;
 	}
-	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( victim );
-	m_aRadarPlayerDeadOrigin[victim] = ( pEnt && pEnt->player ) ? pEnt->origin : Vector( 0, 0, 0 );
+	// Stamp the death even when there is no usable position. m_aRadarPlayerDeadAt
+	// is the only gate that stops the radar drawing a living blip for a corpse,
+	// and a stamp without a position simply draws no X (guarded at draw time).
+	// Returning early here marked never-seen enemies as alive forever, which is
+	// exactly the "killed him but he is still on the radar" report.
+	m_aRadarPlayerDeadAt[victim] = time;
+	m_aRadarPlayerDeadOrigin[victim] = origin;
+	m_aRadarPlayerDeadPrevOrigin[victim] = Vector( 0, 0, 0 );
+	m_aRadarPlayerDeadMoveStreak[victim] = 0.0f;
 }
 
 void CHudRadarModern::UpdateEnemyVisibility( float flTime )
@@ -1597,19 +1608,50 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
 		const bool live = ( pEnt && pEnt->player );
 
-		// A living entity that has moved away from the death spot counts as a
-		// respawn and clears the stamp; otherwise a dead player keeps the X for
-		// four seconds and then drops off the radar.
-		if( m_aRadarPlayerDeadAt[i] > 0.0f && flTime - m_aRadarPlayerDeadAt[i] > 4.0f && live &&
-			( pEnt->origin - m_aRadarPlayerDeadOrigin[i] ).Length() > 64.0f )
-			m_aRadarPlayerDeadAt[i] = 0.0f;
-
 		if( IsPlayerDead( i ) )
 		{
-			if( m_aRadarPlayerDeadAt[i] == 0.0f && m_aRadarEnemySeen[i] )
+			// Only a discontinuous jump counts as a respawn. The sweep runs at
+			// 20 Hz, so a corpse that slides, falls or gets blasted moves at most
+			// tens of units per sample, while a respawn relocates it outright.
+			// The old rule cleared the stamp as soon as the body had drifted 64
+			// units from where it died, which is how a killed enemy came back as
+			// a living blip a few seconds later.
+			if( live )
 			{
-				m_aRadarPlayerDeadAt[i] = flTime;
-				m_aRadarPlayerDeadOrigin[i] = m_aRadarEnemyLastOrigin[i];
+				const Vector &prevOrigin = m_aRadarPlayerDeadPrevOrigin[i];
+				const float deadFor = flTime - m_aRadarPlayerDeadAt[i];
+				const float flMoved = ( prevOrigin == Vector( 0, 0, 0 ) )
+					? 0.0f : ( pEnt->origin - prevOrigin ).Length();
+				bool bRespawn = false;
+
+				if( prevOrigin != Vector( 0, 0, 0 ) && deadFor > 0.5f && flMoved > 256.0f )
+				{
+					bRespawn = true;
+				}
+				else
+				{
+					// A respawn can also land close to the corpse, where the jump
+					// test sees nothing. A corpse stops moving after a few samples,
+					// a player who is back in the round does not.
+					if( flMoved > 8.0f )
+						m_aRadarPlayerDeadMoveStreak[i] += flStep;
+					else
+						m_aRadarPlayerDeadMoveStreak[i] = 0.0f;
+
+					if( deadFor > 6.0f && m_aRadarPlayerDeadMoveStreak[i] > 0.6f &&
+						( pEnt->origin - m_aRadarPlayerDeadOrigin[i] ).Length() > 128.0f )
+						bRespawn = true;
+					else
+						m_aRadarPlayerDeadPrevOrigin[i] = pEnt->origin;
+				}
+
+				if( bRespawn )
+				{
+					m_aRadarPlayerDeadAt[i] = 0.0f;
+					m_aRadarPlayerDeadPrevOrigin[i] = Vector( 0, 0, 0 );
+					m_aRadarPlayerDeadMoveStreak[i] = 0.0f;
+					continue;   // let the next sweep treat him as alive again
+				}
 			}
 			m_aRadarEnemyVisible[i] = false;
 			m_aRadarEnemyConfirm[i] = 0.0f;
@@ -1694,6 +1736,33 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 	gEngfuncs.pEventAPI->EV_PopPMStates();
 }
 
+// Every player marker is a disc of this radius, so the C4 dot can never come
+// out a different size from the dot the player is used to. 8 px on a 155 px
+// radar is 5.5% of the diameter; CS:GO's player icon lands at roughly 5-6%
+// once its panorama icon scale is applied, and 5 px read as too small in game.
+static const int kBlipRadius = 8;
+
+/*
+========================
+FillDisc
+
+Row-by-row filled disc through the blend path. Use this instead of
+SPR_Set + SPR_DrawAdditive for anything that has to hold one colour: the
+additive pass adds its RGB to whatever ground is underneath, which made the
+same enemy read red on a wall and pink on the tan floor, and flipped a
+teammate between cyan and lavender on the same radar.
+========================
+*/
+static void FillDisc( int cx, int cy, int radius, int r, int g, int b, int a )
+{
+	for( int dy = -radius; dy <= radius; ++dy )
+	{
+		const int w = (int)( sqrtf( (float)( radius * radius - dy * dy ) ) + 0.5f );
+		if( w > 0 )
+			FillRGBABlend( cx - w, cy + dy, w * 2, 1, r, g, b, a );
+	}
+}
+
 void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float flTime )
 {
 	if( i == m_iPlayerNum )
@@ -1712,31 +1781,38 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 		const float deadFor = flTime - m_aRadarPlayerDeadAt[i];
 		if( deadFor < 0.0f || deadFor >= 4.0f )
 			return;
+		// Stamped without a position (the victim died before this client ever
+		// had it on the radar): draw no X, but still draw no living blip.
+		if( m_aRadarPlayerDeadOrigin[i] == Vector( 0, 0, 0 ) )
+			return;
 		int x, y, deadRadius;
 		if( CalcPoint( m_aRadarPlayerDeadOrigin[i], x, y, deadRadius ) )
 			return;
 		const int alpha = (int)( 255.0f * ( 1.0f - deadFor / 4.0f ) );
 		static const unsigned char kX[5] = { 0x11, 0x0A, 0x04, 0x0A, 0x11 };
-		const int cr = bFriend ? 190 : 255;
-		const int cg = bFriend ? 210 : 45;
-		const int cb = bFriend ? 235 : 45;
-		// 4 px per dot (20x20) with a one-pixel black outline: at the old 2 px
-		// the cross was too small to read at a glance.
-		for( int pass = 0; pass < 2; ++pass )
-		{
-			const int s = ( pass == 0 ) ? 6 : 4;
-			const int off = ( pass == 0 ) ? -1 : 0;
-			const int pr = ( pass == 0 ) ? 0 : cr;
-			const int pg = ( pass == 0 ) ? 0 : cg;
-			const int pb = ( pass == 0 ) ? 0 : cb;
-			const int pa = ( pass == 0 ) ? ( alpha * 3 ) / 4 : alpha;
-			const int ox = x - ( 5 * s ) / 2 + off;
-			const int oy = y - ( 5 * s ) / 2 + off;
-			for( int row = 0; row < 5; ++row )
-				for( int col = 0; col < 5; ++col )
-					if( kX[row] & ( 0x10 >> col ) )
-						FillRGBA( ox + col * s, oy + row * s, s, s, pr, pg, pb, pa );
-		}
+		// Exactly this side's blip colour, only dimmer. The old 190,210,235 /
+		// 255,45,45 were whitened variants, so the X read as a different
+		// colour from the dot the player had been tracking a second earlier.
+		const int cr = bFriend ? 0 : 255;
+		const int cg = bFriend ? 120 : 0;
+		const int cb = bFriend ? 255 : 0;
+		// 4 px per dot (20x20). Both passes share one grid: the outline dot is
+		// only two pixels larger and shifted by -1, which is what yields a 1 px
+		// rim. Scaling the pitch as well made the rim 2-6 px wide and off
+		// centre. Rims first, then the colour, so no rim covers a dot.
+		const int s = 4;
+		const int ox = x - ( 5 * s ) / 2;
+		const int oy = y - ( 5 * s ) / 2;
+		const int rimAlpha = ( alpha * 3 ) / 4;
+		for( int row = 0; row < 5; ++row )
+			for( int col = 0; col < 5; ++col )
+				if( kX[row] & ( 0x10 >> col ) )
+					FillRGBABlend( ox + col * s - 1, oy + row * s - 1, s + 2, s + 2,
+						0, 0, 0, rimAlpha );
+		for( int row = 0; row < 5; ++row )
+			for( int col = 0; col < 5; ++col )
+				if( kX[row] & ( 0x10 >> col ) )
+					FillRGBABlend( ox + col * s, oy + row * s, s, s, cr, cg, cb, alpha );
 		return;
 	}
 
@@ -1751,31 +1827,20 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	if( !bFriend && m_bRadarGating && !m_aRadarEnemyVisible[i] && !ghost )
 		return;
 
-	// Teammates blue, enemies red. The sprite sheets are named iplayerblue /
-	// iplayerred and this matches that convention; SPR_Set modulates whatever
-	// is bound, so the RGB passed here is what actually shows, the slot only
-	// picks a shape.
+	// One colour per side, one size per marker: teammates cyan, enemies red,
+	// the bomb carrier gold, all hand drawn through the blend path.
 	const bool c4Carrier = bFriend &&
 		g_PlayerExtraInfo[m_iPlayerNum].teamnumber == TEAM_TERRORIST &&
 		g_PlayerExtraInfo[i].has_c4;
-	// Bomb carrier is gold rather than the orange-red used before: at blip
-	// size (255,70,30) sat only ~11 degrees of hue away from enemy red
-	// (255,0,0), which is why the two were indistinguishable on screen.
-	int r = c4Carrier ? 255 : ( bFriend ? 0 : 255 );
-	int g = c4Carrier ? 200 : ( bFriend ? 120 : 0 );
-	int b = c4Carrier ? 40 : ( bFriend ? 255 : 0 );
+	const int r = c4Carrier ? 255 : ( bFriend ? 0 : 255 );
+	const int g = c4Carrier ? 200 : ( bFriend ? 120 : 0 );
+	const int b = c4Carrier ? 40 : ( bFriend ? 255 : 0 );
 
-	// No alpha on SPR_Set, so a ghost fades by dimming its colour instead.
+	// A ghost fades by alpha now that the dot is blended: dimming the RGB on
+	// top of an additive pass shifted the hue as it aged.
+	int alpha = 255;
 	if( !bFriend && !m_aRadarEnemyVisible[i] )
-	{
-		const float flDim = 1.0f - ghostAge / 6.0f;
-		r = (int)( r * flDim );
-		g = (int)( g * flDim );
-		b = (int)( b * flDim );
-	}
-
-	CClientSprite *pSprite = c4Carrier ? s_spr[SPR_PLAYER_C4] :
-		( bFriend ? s_spr[SPR_PLAYER_BLUE] : s_spr[SPR_PLAYER_RED] );
+		alpha = (int)( 255.0f * ( 1.0f - ghostAge / 6.0f ) );
 
 	int x, y;
 	// NOT g_PlayerExtraInfo[i].origin: nothing in this client ever writes
@@ -1788,28 +1853,11 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	if( CalcPoint( vecBlip, x, y, radius ) )
 		return;
 
+	// Dark rim first: it is what keeps a light dot readable on a light floor.
+	FillDisc( x, y, kBlipRadius + 1, 0, 0, 0, ( alpha * 3 ) / 5 );
+	FillDisc( x, y, kBlipRadius, r, g, b, alpha );
 	if( c4Carrier )
-	{
-		// Drawn, not sprited: the carrier sheet is red, and modulating it to
-		// gold still reads as enemy red at blip size. Kept at the same 10x10
-		// as a normal blip so it does not look like a site marker.
-		FillRGBA( x - 5, y - 5, 10, 10, 255, 200, 40, 235 );
-		FillRGBA( x - 2, y - 2, 4, 4, 255, 255, 255, 245 );
-		return;
-	}
-
-	if( pSprite && pSprite->spr )
-	{
-		SPR_Set( pSprite->spr, r, g, b );
-		SPR_DrawAdditive( x - pSprite->rect.Width() / 2,
-			y - pSprite->rect.Height() / 2, 0, &pSprite->rect );
-		return;
-	}
-
-	// no sprite -> the mobile build draws a 20x20 solid square
-	FillRGBA( x - BLIP_SIZE / 2, y - BLIP_SIZE / 2, BLIP_SIZE, BLIP_SIZE,
-		r, g, b, 255 );
-	if( c4Carrier ) FillRGBA( x - 2, y - 2, 4, 4, 255, 255, 255, 235 );
+		FillRGBABlend( x - 2, y - 2, 5, 5, 255, 255, 255, ( alpha * 4 ) / 5 );
 }
 
 bool CHudRadarModern::ObjectivePoint( const Vector &world, int halfSize, int &x, int &y )
@@ -1856,24 +1904,26 @@ void CHudRadarModern::DrawSiteLetter( int cx, int cy, char letter, int scale )
 	static const unsigned char kA[7] = { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
 	static const unsigned char kB[7] = { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E };
 	const unsigned char *rows = ( letter == 'A' ) ? kA : kB;
+	const int w = 5 * scale;
+	const int h = 7 * scale;
+	const int ox = cx - w / 2;
+	const int oy = cy - h / 2;
 
-	// Outline pass first, one pixel larger all round, so the glyph reads over
-	// a light floor tile, a dark wall and a player blip alike.
-	for( int pass = 0; pass < 2; ++pass )
-	{
-		const int s = ( pass == 0 ) ? scale + 2 : scale;
-		const int off = ( pass == 0 ) ? -1 : 0;
-		const int cr = ( pass == 0 ) ? 0 : 240;
-		const int cg = ( pass == 0 ) ? 0 : 170;
-		const int cb = ( pass == 0 ) ? 0 : 40;
-		const int alpha = ( pass == 0 ) ? 210 : 245;
-		const int ox = cx - ( 5 * s ) / 2 + off;
-		const int oy = cy - ( 7 * s ) / 2 + off;
-		for( int row = 0; row < 7; ++row )
-			for( int col = 0; col < 5; ++col )
-				if( rows[row] & ( 0x10 >> col ) )
-					FillRGBA( ox + col * s, oy + row * s, s, s, cr, cg, cb, alpha );
-	}
+	// Outline: each glyph dot painted one pixel larger, offset by -1, so the
+	// black forms a 1 px rim. FillRGBA is additive in this engine, so pure
+	// black contributed nothing and the rim never showed; the blend path is
+	// the only one that can actually darken the overview underneath.
+	for( int row = 0; row < 7; ++row )
+		for( int col = 0; col < 5; ++col )
+			if( rows[row] & ( 0x10 >> col ) )
+				FillRGBABlend( ox + col * scale - 1, oy + row * scale - 1,
+					scale + 2, scale + 2, 0, 0, 0, 190 );
+
+	for( int row = 0; row < 7; ++row )
+		for( int col = 0; col < 5; ++col )
+			if( rows[row] & ( 0x10 >> col ) )
+				FillRGBA( ox + col * scale, oy + row * scale,
+					scale, scale, 240, 170, 40, 245 );
 }
 
 void CHudRadarModern::DrawObjectiveLabels()
@@ -1895,38 +1945,110 @@ void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 		( bomb.playerclass == 0 && localTeam != TEAM_TERRORIST ) ||
 		( bomb.origin[0] == 0 && bomb.origin[1] == 0 && bomb.origin[2] == 0 ) ) return;
 	const bool planted = bomb.playerclass == 1;
-	CClientSprite *sprite = s_spr[planted ? SPR_C4 : SPR_BACKPACK];
-	const int halfSize = sprite && sprite->spr ? max( sprite->rect.Width(), sprite->rect.Height() ) / 2 : 8;
+	// A voluntary drop reaches the client as two BombDrop messages: the first
+	// one still carries the thrower's own origin, and only the weapon box
+	// re-send about a second later carries the landing spot. Drawing the
+	// hand-off position made the dot pop out of the player and jump, so skip a
+	// dropped position that is still sitting inside a living player.
+	if( !planted )
+	{
+		const Vector vecReported( bomb.origin[0], bomb.origin[1], bomb.origin[2] );
+		const int iMaxClients = gEngfuncs.GetMaxClients();
+		for( int i = 1; i <= iMaxClients; i++ )
+		{
+			cl_entity_t *pOther = gEngfuncs.GetEntityByIndex( i );
+			if( !pOther || !pOther->player ) continue;
+			if( ( pOther->origin - vecReported ).Length() < 32.0f )
+				return;
+		}
+	}
+	CClientSprite *sprite = s_spr[SPR_C4];
+	// The planted icon keeps its native 32x32 size, so its half size is the
+	// culling margin; everything else is blip sized.
+	const int halfSize = planted
+		? ( ( sprite && sprite->spr ) ? max( sprite->rect.Width(), sprite->rect.Height() ) / 2 : 11 )
+		: kBlipRadius + 1;
 	int x, y;
 	if( !ObjectivePoint( bomb.origin, halfSize, x, y ) ) return;
 	const bool bright = ( (int)( flTime * 2.0f ) & 1 ) == 0;
 
 	if( !planted )
 	{
-		// A dropped bomb is amber, blip-sized and has no backing plate: the old
-		// 14x14 marker on an 18x18 black square read as a misplaced UI widget.
+		// Dropped: amber, the same size as a player dot, no backing plate.
 		const int gg = bright ? 175 : 115;
-		FillRGBABlend( x - 5, y - 5, 10, 10, 255, gg, 20, 235 );
-		FillRGBABlend( x - 2, y - 2, 4, 4, 255, 255, 255, 240 );
+		FillDisc( x, y, kBlipRadius + 1, 0, 0, 0, 140 );
+		FillDisc( x, y, kBlipRadius, 255, gg, 20, 240 );
+		FillRGBABlend( x - 2, y - 2, 5, 5, 255, 255, 255, 235 );
 		return;
 	}
 
-	// Planted: keep the hot red-orange pulse, it is an emergency state.
-	const int backing = max( 7, halfSize + 1 );
-	FillRGBABlend( x - backing, y - backing, backing * 2, backing * 2,
-		8, 10, 12, 210 );
-	const int g = bright ? 50 : 110;
+	// Planted: the original C4 icon, centred on the bomb and with no plate.
+	// The 34x34 backing was the "black block"; the icon itself was fine, it
+	// only flew to the screen edge while the pixel x was being passed into
+	// the frame argument of SPR_DrawAdditive.
+	const int gg = bright ? 50 : 110;
 	if( sprite && sprite->spr )
 	{
-		SPR_Set( sprite->spr, 255, g, 30 );
-		SPR_DrawAdditive( x - sprite->rect.Width() / 2,
-			y - sprite->rect.Height() / 2, 0, &sprite->rect );
+		// The ic4 image is stored mirrored left-to-right, so the engine blit
+		// draws it backwards. Draw the quad by hand with the u axis reversed;
+		// v stays top-to-bottom because the vertical order is correct.
+		const model_t *model = gEngfuncs.GetSpritePointer( sprite->spr );
+		const int atlasW = SPR_Width( sprite->spr, 0 );
+		const int atlasH = SPR_Height( sprite->spr, 0 );
+		const wrect_t &rc = sprite->rect;
+		const float flW = (float)( rc.right - rc.left );
+		const float flH = (float)( rc.bottom - rc.top );
+		if( model && atlasW > 0 && atlasH > 0 && flW > 0.0f && flH > 0.0f )
+		{
+			if( gRenderAPI.GL_SelectTexture ) gRenderAPI.GL_SelectTexture( 0 );
+			if( gEngfuncs.pTriAPI->SpriteTexture( const_cast<model_s *>( model ), 0 ) )
+			{
+				const float flLeft = (float)x - flW * 0.5f;
+				const float flTop = (float)y - flH * 0.5f;
+				const float u0 = (float)rc.left / (float)atlasW;
+				const float u1 = (float)rc.right / (float)atlasW;
+				const float v0 = (float)rc.top / (float)atlasH;
+				const float v1 = (float)rc.bottom / (float)atlasH;
+				gEngfuncs.pTriAPI->RenderMode( kRenderTransAdd );
+				gEngfuncs.pTriAPI->CullFace( TRI_NONE );
+				gEngfuncs.pTriAPI->Color4ub( 255, gg, 30, 255 );
+				gEngfuncs.pTriAPI->Begin( TRI_QUADS );
+				gEngfuncs.pTriAPI->TexCoord2f( u1, v0 );
+				gEngfuncs.pTriAPI->Vertex3f( flLeft, flTop, 0 );
+				gEngfuncs.pTriAPI->TexCoord2f( u1, v1 );
+				gEngfuncs.pTriAPI->Vertex3f( flLeft, flTop + flH, 0 );
+				gEngfuncs.pTriAPI->TexCoord2f( u0, v1 );
+				gEngfuncs.pTriAPI->Vertex3f( flLeft + flW, flTop + flH, 0 );
+				gEngfuncs.pTriAPI->TexCoord2f( u0, v0 );
+				gEngfuncs.pTriAPI->Vertex3f( flLeft + flW, flTop, 0 );
+				gEngfuncs.pTriAPI->End();
+				gEngfuncs.pTriAPI->Color4ub( 255, 255, 255, 255 );
+				gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
+				gEngfuncs.pTriAPI->CullFace( TRI_FRONT );
+				return;
+			}
+		}
+		// No sprite handle: the engine blit still shows the state, mirrored.
+		SPR_Set( sprite->spr, 255, gg, 30 );
+		SPR_DrawAdditive( 0, x - sprite->rect.Width() / 2,
+			y - sprite->rect.Height() / 2, &sprite->rect );
+		return;
 	}
-	else
+
+	// Icon missing on disk: a pulsing ring still carries the state.
+	for( int dy = -10; dy <= 10; ++dy )
 	{
-		FillRGBABlend( x - 5, y - 5, 10, 10, 255, g, 30, 255 );
-		FillRGBABlend( x - 3, y - 3, 2, 2, 255, 255, 255, 255 );
-		FillRGBABlend( x + 1, y + 1, 2, 2, 255, 255, 255, 255 );
+		const int outer = (int)( sqrtf( 100.0f - (float)( dy * dy ) ) + 0.5f );
+		const int inner = ( dy > -7 && dy < 7 )
+			? (int)( sqrtf( 49.0f - (float)( dy * dy ) ) + 0.5f ) : 0;
+		if( outer <= inner ) continue;
+		if( inner > 0 )
+		{
+			FillRGBABlend( x - outer, y + dy, outer - inner, 1, 255, gg, 30, 245 );
+			FillRGBABlend( x + inner, y + dy, outer - inner, 1, 255, gg, 30, 245 );
+		}
+		else
+			FillRGBABlend( x - outer, y + dy, outer * 2, 1, 255, gg, 30, 245 );
 	}
 }
 
@@ -1950,8 +2072,8 @@ void CHudRadarModern::DrawHostages( int localTeam, float flTime )
 		if( sprite && sprite->spr )
 		{
 			SPR_Set( sprite->spr, r, g, b );
-			SPR_DrawAdditive( x - sprite->rect.Width() / 2,
-				y - sprite->rect.Height() / 2, 0, &sprite->rect );
+			SPR_DrawAdditive( 0, x - sprite->rect.Width() / 2,
+				y - sprite->rect.Height() / 2, &sprite->rect );
 		}
 		else
 		{
@@ -2096,14 +2218,21 @@ int CHudRadarModern::Draw( float flTime )
 		// body to the computed radius, but SPR_DrawAdditive cannot scale, so
 		// keep the plain call and let the frame carry the size.
 		SPR_Set( s_spr[SPR_RADAR]->spr, r, g, b );
-		SPR_DrawAdditive( m_iCenterX - m_iRadius, m_iCenterY - m_iRadius, 0,
+		SPR_DrawAdditive( 0, m_iCenterX - m_iRadius, m_iCenterY - m_iRadius,
 			&s_spr[SPR_RADAR]->rect );
 	}
-	else
+
+	// Border in the configured colour, always. It used to sit in the else
+	// branch above, so it vanished the moment iradio.spr started loading.
+	// Skipped while the bomb warning is up: that ring is drawn at alpha 100 in
+	// its dim phase and a white border underneath turns it pink.
 	{
-		// no sprite: outline in the configured colour so the position and
-		// size are still verifiable on screen
-		DrawRadarFrame( m_iCenterX, m_iCenterY, m_iRadius, r, g, b, a, true );
+		const extra_player_info_t &bombInfo = g_PlayerExtraInfo[33];
+		const bool bWarning = !bombInfo.dead && bombInfo.radarflashes &&
+			bombInfo.playerclass == 1 &&
+			!( bombInfo.origin[0] == 0 && bombInfo.origin[1] == 0 && bombInfo.origin[2] == 0 );
+		if( !bWarning )
+			DrawRadarFrame( m_iCenterX, m_iCenterY, m_iRadius, r, g, b, a, true );
 	}
 
 	// ---- circular mask
@@ -2125,11 +2254,13 @@ int CHudRadarModern::Draw( float flTime )
 	for( int i = 1; i < 32; i++ )
 		DrawPlayerBlip( m_iCenterX, m_iCenterY, m_iRadius, i, flTime );
 	DrawHostages( localTeam, flTime );
-	DrawBomb( localTeam, flTime );
 	// Site markers and letters go last: a player standing on the site used to
 	// hide the whole marker under the self arrow at the centre.
 	DrawObjectives( localTeam );
 	DrawObjectiveLabels();
+	// The planted C4 icon goes after the letters: drawn before, the site
+	// letter sat on top of it and only the letter's counters showed any red.
+	DrawBomb( localTeam, flTime );
 
 	// ---- warning frame while alive with a bomb in hand
 	DrawWarningFrame( m_iCenterX, m_iCenterY, m_iRadius, flTime );
