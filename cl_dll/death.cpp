@@ -472,6 +472,8 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	// ClCorpse arrives after the server's death animation. Start physical
 	// simulation from the last live pose at the actual kill event instead.
 	OC2_RagdollSpawnDeath(victim, killer, headshot != 0);
+	// The radar keeps its own death stamp: ScoreAttrib is not always broadcast.
+	gHUD.m_RadarModern.NotePlayerDeath(victim, gHUD.m_flTime);
 
 	//if (gViewPort)
 	//	gViewPort->DeathMsg( killer, victim );

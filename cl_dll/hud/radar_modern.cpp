@@ -238,7 +238,11 @@ void CHudRadarModern::LoadSprites( void )
 		int index = HUD_GetSpriteIndexByName( s_radarSpriteNames[i] );
 		delete s_spr[i];
 		s_spr[i] = new CClientSprite();
-		if( index )
+		// HUD_GetSpriteIndexByName returns -1 on failure, not 0. Testing the
+		// value directly treated -1 as success, skipped the direct load below
+		// and left every radar sprite empty - players, the bomb and hostages
+		// all fell back to plain squares.
+		if( index >= 0 )
 		{
 			s_spr[i]->SetSpriteByName( s_radarSpriteNames[i] );
 			continue;
@@ -1202,11 +1206,11 @@ void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 	int g = 220;
 	int b = 0;
 	if( m_iPlayerNum > 0 && m_iPlayerNum <= MAX_PLAYERS &&
-		g_PlayerExtraInfo[m_iPlayerNum].teamnumber == TEAM_TERRORIST &&
 		g_PlayerExtraInfo[m_iPlayerNum].has_c4 )
 	{
-		g = 70;
-		b = 30;
+		// Gold, not the old orange-red (255,70,30): that sat next to enemy red.
+		g = 200;
+		b = 40;
 	}
 
 	// Always draw the geometry, never rely on a sprite being present: the
@@ -1483,13 +1487,29 @@ Two points are traced per enemy - the feet and just above eye level - because
 testing only the feet hides a player whose upper body is already exposed.
 ========================
 */
-// Only the scoreboard flag is trusted here. cl_entity_t::curstate carries no
-// usable health on this engine (it reads 0 for living players as well), and
-// treating that as death marked every teammate and enemy dead, which removed
-// every blip from the radar.
-static bool RadarPlayerDead( int i )
+// The radar keeps its own death stamp, driven by DeathMsg, which is the only
+// death edge this server broadcasts to every client. The ScoreAttrib dead flag
+// is compiled out in some builds, and cl_entity_t::curstate.health reads 0 even
+// for living players, so neither can be the death test on its own.
+bool CHudRadarModern::IsPlayerDead( int i ) const
 {
-	return g_PlayerExtraInfo[i].dead;
+	return m_aRadarPlayerDeadAt[i] > 0.0f;
+}
+
+void CHudRadarModern::NotePlayerDeath( int victim, float time )
+{
+	if( victim <= 0 || victim >= 32 )
+		return;
+	if( m_aRadarPlayerDeadAt[victim] != 0.0f )
+		return;
+	m_aRadarPlayerDeadAt[victim] = time;
+	if( m_aRadarEnemySeen[victim] )
+	{
+		m_aRadarPlayerDeadOrigin[victim] = m_aRadarEnemyLastOrigin[victim];
+		return;
+	}
+	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( victim );
+	m_aRadarPlayerDeadOrigin[victim] = ( pEnt && pEnt->player ) ? pEnt->origin : Vector( 0, 0, 0 );
 }
 
 void CHudRadarModern::UpdateEnemyVisibility( float flTime )
@@ -1577,9 +1597,14 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
 		const bool live = ( pEnt && pEnt->player );
 
-		// A corpse without an entity: keep the last known position for the X.
-		// If a living entity still exists, a stale dead flag is ignored.
-		if( RadarPlayerDead( i ) && !live )
+		// A living entity that has moved away from the death spot counts as a
+		// respawn and clears the stamp; otherwise a dead player keeps the X for
+		// four seconds and then drops off the radar.
+		if( m_aRadarPlayerDeadAt[i] > 0.0f && flTime - m_aRadarPlayerDeadAt[i] > 4.0f && live &&
+			( pEnt->origin - m_aRadarPlayerDeadOrigin[i] ).Length() > 64.0f )
+			m_aRadarPlayerDeadAt[i] = 0.0f;
+
+		if( IsPlayerDead( i ) )
 		{
 			if( m_aRadarPlayerDeadAt[i] == 0.0f && m_aRadarEnemySeen[i] )
 			{
@@ -1592,7 +1617,6 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 			m_aRadarEnemyConfirmed[i] = false;
 			continue;
 		}
-		m_aRadarPlayerDeadAt[i] = 0.0f;
 
 		// Teammates keep the ungated behaviour, but their last position is
 		// still recorded so a dead teammate can keep a fading X.
@@ -1682,13 +1706,11 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
 	const bool live = ( pEnt && pEnt->player );
 
-	// Dead players have no entity left to read, so the X is drawn at the last
-	// position captured while they were still alive (see UpdateEnemyVisibility).
-	// A stale dead flag on a player whose entity still exists is ignored.
-	if( RadarPlayerDead( i ) && !live )
+	// The X is drawn at the last position captured while the player was alive.
+	if( IsPlayerDead( i ) )
 	{
 		const float deadFor = flTime - m_aRadarPlayerDeadAt[i];
-		if( m_aRadarPlayerDeadAt[i] <= 0.0f || deadFor < 0.0f || deadFor >= 4.0f || !m_aRadarEnemySeen[i] )
+		if( deadFor < 0.0f || deadFor >= 4.0f )
 			return;
 		int x, y, deadRadius;
 		if( CalcPoint( m_aRadarPlayerDeadOrigin[i], x, y, deadRadius ) )
@@ -1698,10 +1720,23 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 		const int cr = bFriend ? 190 : 255;
 		const int cg = bFriend ? 210 : 45;
 		const int cb = bFriend ? 235 : 45;
-		for( int row = 0; row < 5; ++row )
-			for( int col = 0; col < 5; ++col )
-				if( kX[row] & ( 0x10 >> col ) )
-					FillRGBA( x - 5 + col * 2, y - 5 + row * 2, 2, 2, cr, cg, cb, alpha );
+		// 4 px per dot (20x20) with a one-pixel black outline: at the old 2 px
+		// the cross was too small to read at a glance.
+		for( int pass = 0; pass < 2; ++pass )
+		{
+			const int s = ( pass == 0 ) ? 6 : 4;
+			const int off = ( pass == 0 ) ? -1 : 0;
+			const int pr = ( pass == 0 ) ? 0 : cr;
+			const int pg = ( pass == 0 ) ? 0 : cg;
+			const int pb = ( pass == 0 ) ? 0 : cb;
+			const int pa = ( pass == 0 ) ? ( alpha * 3 ) / 4 : alpha;
+			const int ox = x - ( 5 * s ) / 2 + off;
+			const int oy = y - ( 5 * s ) / 2 + off;
+			for( int row = 0; row < 5; ++row )
+				for( int col = 0; col < 5; ++col )
+					if( kX[row] & ( 0x10 >> col ) )
+						FillRGBA( ox + col * s, oy + row * s, s, s, pr, pg, pb, pa );
+		}
 		return;
 	}
 
@@ -1753,14 +1788,20 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	if( CalcPoint( vecBlip, x, y, radius ) )
 		return;
 
+	if( c4Carrier )
+	{
+		// Drawn, not sprited: the carrier sheet is red, and modulating it to
+		// gold still reads as enemy red at blip size.
+		FillRGBA( x - 7, y - 7, 14, 14, 255, 200, 40, 235 );
+		FillRGBA( x - 3, y - 3, 6, 6, 255, 255, 255, 245 );
+		return;
+	}
+
 	if( pSprite && pSprite->spr )
 	{
 		SPR_Set( pSprite->spr, r, g, b );
 		SPR_DrawAdditive( x - pSprite->rect.Width() / 2,
 			y - pSprite->rect.Height() / 2, 0, &pSprite->rect );
-		// White core so the carrier stays readable when it overlaps an
-		// enemy blip or the site marker.
-		if( c4Carrier ) FillRGBA( x - 2, y - 2, 4, 4, 255, 255, 255, 235 );
 		return;
 	}
 
@@ -1858,24 +1899,33 @@ void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 	int x, y;
 	if( !ObjectivePoint( bomb.origin, halfSize, x, y ) ) return;
 	const bool bright = ( (int)( flTime * 2.0f ) & 1 ) == 0;
-	const int r = 255, g = planted ? ( bright ? 50 : 110 ) : ( bright ? 190 : 110 );
 	const int backing = max( 7, halfSize + 1 );
 	FillRGBABlend( x - backing, y - backing, backing * 2, backing * 2,
 		8, 10, 12, 210 );
+
+	if( !planted )
+	{
+		// A dropped bomb is amber and drawn by hand: the backpack sheet is red
+		// and modulating it still reads as an enemy blip.
+		const int gg = bright ? 175 : 115;
+		FillRGBABlend( x - 7, y - 7, 14, 14, 255, gg, 20, 235 );
+		FillRGBABlend( x - 3, y - 3, 6, 6, 255, 255, 255, 240 );
+		return;
+	}
+
+	// Planted: keep the hot red-orange pulse, it is an emergency state.
+	const int g = bright ? 50 : 110;
 	if( sprite && sprite->spr )
 	{
-		SPR_Set( sprite->spr, r, g, 30 );
+		SPR_Set( sprite->spr, 255, g, 30 );
 		SPR_DrawAdditive( x - sprite->rect.Width() / 2,
 			y - sprite->rect.Height() / 2, 0, &sprite->rect );
 	}
 	else
 	{
-		FillRGBABlend( x - 5, y - 5, 10, 10, r, g, 30, 255 );
-		if( planted )
-		{
-			FillRGBABlend( x - 3, y - 3, 2, 2, 255, 255, 255, 255 );
-			FillRGBABlend( x + 1, y + 1, 2, 2, 255, 255, 255, 255 );
-		}
+		FillRGBABlend( x - 5, y - 5, 10, 10, 255, g, 30, 255 );
+		FillRGBABlend( x - 3, y - 3, 2, 2, 255, 255, 255, 255 );
+		FillRGBABlend( x + 1, y + 1, 2, 2, 255, 255, 255, 255 );
 	}
 }
 

@@ -36,6 +36,11 @@ public:
 	virtual void Reset();
 	virtual void Shutdown();
 
+	// DeathMsg is the only death edge this server reliably broadcasts; the
+	// ScoreAttrib dead flag is compiled out in some builds, so the radar keeps
+	// its own per-player death stamp.
+	void NotePlayerDeath( int victim, float time );
+
 	// cl_radar_modern 0 restores the classic radar; anything else keeps the
 	// CS:GO one. Defaults to on, matching the mobile build.
 	bool IsEnabled() const;
@@ -45,6 +50,7 @@ public:
 	void SetLegacyState( int iPlayerNum );
 
 private:
+	bool IsPlayerDead( int i ) const;
 	void LoadSprites();
 	void LoadOverview( const char *pszMapName );
 	void LoadObjectives( const char *pszMapName );
