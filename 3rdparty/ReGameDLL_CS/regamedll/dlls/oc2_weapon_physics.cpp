@@ -9,6 +9,9 @@ namespace
 constexpr float kMaxSpeed = 420.0f;
 constexpr float kMaxSpin = 480.0f;
 constexpr float kSkin = 0.25f;
+// Rate at which a grounded weapon eases toward the support-aligned (flat) pose.
+// A fully overturned box (180 degrees) settles in about 0.6 s at this speed.
+constexpr float kRestAlignSpeed = 300.0f;
 cvar_t physicsDebug = { "oc2_weapon_physics_debug", "0", FCVAR_SERVER, 0, nullptr };
 bool registered = false;
 unsigned long long nextShot = 0;
@@ -384,7 +387,7 @@ bool GroundRelax(CWeaponBox *box, Awake &entry, float dt)
 	Vector delta(ShortAngle(target.x - angles.x), 0, ShortAngle(target.z - angles.z));
 	const float distance = delta.Length();
 	if (!Finite(distance) || distance < 0.5f) return false;
-	const float step = Q_min(distance, 120.0f * Clamp(dt, 0.0f, 0.1f));
+	const float step = Q_min(distance, kRestAlignSpeed * Clamp(dt, 0.0f, 0.1f));
 	if (step <= 0) return false;
 	delta = delta * (step / distance);
 	const float projection = SupportProjection(initial, support.vecPlaneNormal);
