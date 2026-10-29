@@ -651,14 +651,49 @@ void CHudRadarModern::LoadObjectives( const char *mapName )
 		m_iObjectiveCount = 0;
 		m_bObjectivesLoaded = false;
 		m_pObjectiveEntities = NULL;
+		// A new map invalidates the previous map's hostage positions.
+		for( int i = 1; i <= MAX_HOSTAGES; ++i )
+		{
+			g_HostageInfo[i].radarflashes = 0;
+			g_HostageInfo[i].dead = false;
+		}
 	}
 	cl_entity_t *worldEntity = gEngfuncs.GetEntityByIndex( 0 );
-	if( !worldEntity || !worldEntity->model || !worldEntity->model->entities ) return;
+	if( !worldEntity || !worldEntity->model ) return;
 	model_t *world = worldEntity->model;
-	if( m_bObjectivesLoaded && m_pObjectiveEntities == world->entities ) return;
+	if( m_bObjectivesLoaded ) return;
 	m_iObjectiveCount = 0;
-	m_pObjectiveEntities = world->entities;
-	char *data = world->entities;
+	m_iObjectiveSource = 0;
+	// The world model's entity string is not reachable on every engine build;
+	// here it comes back empty, which left the radar with no bomb sites and no
+	// hostage rescue areas at all. Fall back to reading the BSP entity lump
+	// from disk and feed the same parser.
+	char *fileData = NULL;
+	int fileLength = 0;
+	{
+		// Load the BSP unconditionally: the entity string may be valid while
+		// model_t submodel bounds are not, and the site centres need both.
+		char *file = (char *)gEngfuncs.COM_LoadFile( mapName, -1, &fileLength );
+		if( file && fileLength > 12 )
+		{
+			const int version = *(int *)file;
+			const int offset = *(int *)( file + 4 );
+			const int lump = *(int *)( file + 8 );
+			if( version == 30 && offset > 0 && lump > 0 && offset + lump <= fileLength )
+				fileData = file;
+		}
+		if( !fileData && file ) gEngfuncs.COM_FreeFile( file );
+	}
+	char *entities = fileData ? fileData + *(int *)( fileData + 4 ) : NULL;
+	if( !entities ) entities = world->entities;
+	if( !entities || !entities[0] )
+	{
+		if( fileData ) gEngfuncs.COM_FreeFile( fileData );
+		return;
+	}
+	m_iObjectiveSource = ( entities == world->entities ) ? 1 : 2;
+	m_pObjectiveEntities = entities;
+	char *data = entities;
 	char token[1024];
 	Vector ctSpawns[64];
 	int ctSpawnCount = 0;
@@ -694,15 +729,40 @@ void CHudRadarModern::LoadObjectives( const char *mapName )
 		const bool ctSpawn = !strcmp( classname, "info_player_start" );
 		if( !bomb && !rescue && !ctSpawn ) continue;
 		Vector center;
-		if( model[0] == '*' && model[1] >= '0' && model[1] <= '9' && world->submodels )
+		bool haveCenter = false;
+		if( model[0] == '*' && model[1] >= '0' && model[1] <= '9' )
 		{
 			const int index = atoi( model + 1 );
-			if( index <= 0 || index >= world->numsubmodels ) continue;
-			for( int axis = 0; axis < 3; ++axis )
-				center[axis] = ( world->submodels[index].mins[axis] + world->submodels[index].maxs[axis] ) * 0.5f;
+			// Prefer the BSP file. The client model can expose submodels whose
+			// bounds are zeroed on this build, which collapsed every site onto
+			// the world origin and left them all outside the radar circle.
+			if( fileData )
+			{
+				int subOffset = 0, subLength = 0;
+				memcpy( &subOffset, fileData + 4 + 14 * 8, sizeof( subOffset ) );
+				memcpy( &subLength, fileData + 8 + 14 * 8, sizeof( subLength ) );
+				if( index > 0 && subOffset > 0 && subLength >= ( index + 1 ) * 64 &&
+					subOffset + subLength <= fileLength )
+				{
+					const char *entry = fileData + subOffset + index * 64;
+					float mins[3], maxs[3];
+					memcpy( mins, entry, sizeof( mins ) );
+					memcpy( maxs, entry + 12, sizeof( maxs ) );
+					for( int axis = 0; axis < 3; ++axis )
+						center[axis] = ( mins[axis] + maxs[axis] ) * 0.5f;
+					haveCenter = true;
+				}
+			}
+			if( !haveCenter && world->submodels && index > 0 && index < world->numsubmodels )
+			{
+				for( int axis = 0; axis < 3; ++axis )
+					center[axis] = ( world->submodels[index].mins[axis] + world->submodels[index].maxs[axis] ) * 0.5f;
+				haveCenter = true;
+			}
 		}
-		else if( sscanf( origin, "%f %f %f", &center[0], &center[1], &center[2] ) != 3 )
-			continue;
+		if( !haveCenter && sscanf( origin, "%f %f %f", &center[0], &center[1], &center[2] ) == 3 )
+			haveCenter = true;
+		if( !haveCenter ) continue;
 		if( !std::isfinite( center[0] ) || !std::isfinite( center[1] ) || !std::isfinite( center[2] ) ) continue;
 		if( ctSpawn )
 		{
@@ -764,6 +824,35 @@ void CHudRadarModern::LoadObjectives( const char *mapName )
 			strcpy( site.group, "#ctspawn" );
 			site.sources = 1;
 		}
+	}
+	// Letter fallback. GoldSrc maps name the plant trigger inconsistently
+	// (tgt_a, target01, empty), and the radar has to show A and B on bomb
+	// maps, so: a trailing digit 1/2 maps to A/B, and when neither site of
+	// a two-site map carries a letter, entity order decides.
+	int bombCount = 0, bombIndex[2] = { -1, -1 };
+	for( int i = 0; i < m_iObjectiveCount; ++i )
+		if( m_Objectives[i].bomb && bombCount < 2 ) bombIndex[bombCount++] = i;
+	for( int i = 0; i < m_iObjectiveCount; ++i )
+	{
+		Objective &site = m_Objectives[i];
+		if( !site.bomb || site.label ) continue;
+		const size_t length = strlen( site.group );
+		if( length && ( site.group[length - 1] == '1' || site.group[length - 1] == '2' ) )
+			site.label = site.group[length - 1] == '1' ? 'A' : 'B';
+	}
+	if( bombCount == 2 && !m_Objectives[bombIndex[0]].label && !m_Objectives[bombIndex[1]].label )
+	{
+		m_Objectives[bombIndex[0]].label = 'A';
+		m_Objectives[bombIndex[1]].label = 'B';
+	}
+	if( bombCount == 2 && m_Objectives[bombIndex[0]].label && m_Objectives[bombIndex[0]].label == m_Objectives[bombIndex[1]].label )
+		m_Objectives[bombIndex[1]].label = m_Objectives[bombIndex[0]].label == 'A' ? 'B' : 'A';
+	if( fileData )
+	{
+		// m_pObjectiveEntities only exists as a change marker; never leave it
+		// pointing into the buffer that is about to be freed.
+		m_pObjectiveEntities = NULL;
+		gEngfuncs.COM_FreeFile( fileData );
 	}
 	m_bObjectivesLoaded = true;
 }
@@ -1526,9 +1615,12 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	const bool c4Carrier = bFriend &&
 		g_PlayerExtraInfo[m_iPlayerNum].teamnumber == TEAM_TERRORIST &&
 		g_PlayerExtraInfo[i].has_c4;
+	// Bomb carrier is gold rather than the orange-red used before: at blip
+	// size (255,70,30) sat only ~11 degrees of hue away from enemy red
+	// (255,0,0), which is why the two were indistinguishable on screen.
 	int r = c4Carrier ? 255 : ( bFriend ? 0 : 255 );
-	int g = c4Carrier ? 70 : ( bFriend ? 120 : 0 );
-	int b = c4Carrier ? 30 : ( bFriend ? 255 : 0 );
+	int g = c4Carrier ? 200 : ( bFriend ? 120 : 0 );
+	int b = c4Carrier ? 40 : ( bFriend ? 255 : 0 );
 
 	CClientSprite *pSprite = c4Carrier ? s_spr[SPR_PLAYER_C4] :
 		( bFriend ? s_spr[SPR_PLAYER_BLUE] : s_spr[SPR_PLAYER_RED] );
@@ -1554,12 +1646,16 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 		SPR_Set( pSprite->spr, r, g, b );
 		SPR_DrawAdditive( x - pSprite->rect.Width() / 2,
 			y - pSprite->rect.Height() / 2, 0, &pSprite->rect );
+		// White core so the carrier stays readable when it overlaps an
+		// enemy blip or the site marker.
+		if( c4Carrier ) FillRGBA( x - 2, y - 2, 4, 4, 255, 255, 255, 235 );
 		return;
 	}
 
 	// no sprite -> the mobile build draws a 20x20 solid square
 	FillRGBA( x - BLIP_SIZE / 2, y - BLIP_SIZE / 2, BLIP_SIZE, BLIP_SIZE,
 		r, g, b, 255 );
+	if( c4Carrier ) FillRGBA( x - 2, y - 2, 4, 4, 255, 255, 255, 235 );
 }
 
 bool CHudRadarModern::ObjectivePoint( const Vector &world, int halfSize, int &x, int &y )
@@ -1580,30 +1676,44 @@ void CHudRadarModern::DrawObjectives( int localTeam )
 		if( !site.bomb && localTeam != TEAM_CT ) continue;
 		int x, y;
 		if( !ObjectivePoint( site.origin, 8, x, y ) ) continue;
-		FillRGBA( x - 7, y - 7, 14, 14, 0, 0, 0, 210 );
+		FillRGBA( x - 9, y - 9, 18, 18, 0, 0, 0, 210 );
 		if( site.bomb )
 		{
-			FillRGBA( x - 5, y - 5, 10, 10, 230, 165, 40, 230 );
-			if( site.label == 'A' || site.label == 'B' )
-			{
-				const int index = HUD_GetSpriteIndexByName( site.label == 'A' ? "radar_a" : "radar_b" );
-				if( index )
-				{
-					HSPRITE sprite = HUD_GetSprite( index );
-					wrect_t rect = HUD_GetSpriteRect( index );
-					if( sprite )
-					{
-						SPR_Set( sprite, 255, 255, 255 );
-						SPR_DrawAdditive( x - rect.Width() / 2, y - rect.Height() / 2, 0, &rect );
-					}
-				}
-			}
+			FillRGBA( x - 7, y - 7, 14, 14, 230, 165, 40, 230 );
+			// The stock radar_a/radar_b sprites are not shipped with this
+			// install, so the letter is drawn by DrawObjectiveLabels() with
+			// the HUD font, after the bomb blips so nothing covers it.
 		}
 		else
 		{
-			FillRGBA( x - 5, y - 5, 10, 10, 35, 205, 195, 230 );
-			FillRGBA( x - 2, y - 2, 4, 4, 255, 255, 255, 240 );
+			FillRGBA( x - 7, y - 7, 14, 14, 35, 205, 195, 230 );
+			FillRGBA( x - 3, y - 3, 6, 6, 255, 255, 255, 240 );
 		}
+	}
+}
+
+/*
+========================
+DrawObjectiveLabels
+
+Runs after the bomb and hostage blips so a planted C4 icon can never hide
+the site letter. White halo first, dark glyph on top, so the letter stays
+legible over the gold marker and over a player blip.
+========================
+*/
+void CHudRadarModern::DrawObjectiveLabels()
+{
+	static const int offX[4] = { -1, 1, 0, 0 };
+	static const int offY[4] = { 0, 0, -1, 1 };
+	for( int i = 0; i < m_iObjectiveCount; ++i )
+	{
+		const Objective &site = m_Objectives[i];
+		if( !site.bomb || ( site.label != 'A' && site.label != 'B' ) ) continue;
+		int x, y;
+		if( !ObjectivePoint( site.origin, 8, x, y ) ) continue;
+		for( int k = 0; k < 4; ++k )
+			gEngfuncs.pfnDrawCharacter( x - 4 + offX[k], y - 4 + offY[k], site.label, 255, 255, 255 );
+		gEngfuncs.pfnDrawCharacter( x - 4, y - 4, site.label, 20, 20, 20 );
 	}
 }
 
@@ -1778,28 +1888,16 @@ int CHudRadarModern::Draw( float flTime )
 	if( s_cl_radar_debug && s_cl_radar_debug->value > 0 )
 	{
 		char szDbg[256];
-		int nFrames = gHUD.m_Spectator.GetMapSprite()
-			? gHUD.m_Spectator.GetMapSprite()->numframes : -1;
 		float selfX, selfY;
 		WorldToTile( gHUD.m_vecOrigin, selfX, selfY );
+		const cl_entity_t *view = gEngfuncs.GetLocalPlayer();
 		snprintf( szDbg, sizeof( szDbg ),
-			"radar: valid=%d frames=%d tiles=%dx%d zoom=%g org=%g,%g pl=%g,%g "
-			"tile=(%.3f,%.3f) px/tile=%g view=%g rot=%d A=%.2f,B=%.2f "
-			"bnd=%d minX=%.0f maxY=%.0f k=%.6f/%.6f pn=%d exo=%g,%g r=%d c=%d,%d",
-			m_bOverviewValid, nFrames,
-			m_iOverviewTilesX, m_iOverviewTilesY,
-			m_OverviewData.zoom,
-			m_OverviewData.origin[0], m_OverviewData.origin[1],
+			"radar: obj=%d src=%d pl=%.0f,%.0f pv=%.0f,%.0f tile=%.2f,%.2f px/t=%.0f h=%d,%d rot=%d",
+			m_iObjectiveCount, m_iObjectiveSource,
 			gHUD.m_vecOrigin[0], gHUD.m_vecOrigin[1],
-			selfX, selfY, m_flPixelsPerTile, s_flRadarViewFraction,
-			s_cl_radar_orient ? (int)s_cl_radar_orient->value : 0,
-			m_flTileA, m_flTileB,
-			m_bBoundsValid ? 1 : 0, m_flMapMinX, m_flMapMaxY,
-			m_flTilesPerUnitX, m_flTilesPerUnitY,
-			m_iPlayerNum,
-			( m_iPlayerNum > 0 && m_iPlayerNum < 32 ) ? g_PlayerExtraInfo[m_iPlayerNum].origin[0] : 0.0f,
-			( m_iPlayerNum > 0 && m_iPlayerNum < 32 ) ? g_PlayerExtraInfo[m_iPlayerNum].origin[1] : 0.0f,
-			m_iRadius, m_iCenterX, m_iCenterY );
+			view ? view->origin[0] : 0.0f, view ? view->origin[1] : 0.0f,
+			selfX, selfY, m_flPixelsPerTile, g_HostageInfo[1].dead ? 1 : 0, g_HostageInfo[1].radarflashes,
+			s_cl_radar_orient ? (int)s_cl_radar_orient->value : 0 );
 		DrawUtils::DrawConsoleString( 4, 260, szDbg );
 	}
 
@@ -1830,9 +1928,13 @@ int CHudRadarModern::Draw( float flTime )
 
 	// ---- circular mask
 	DrawRadarMask( m_iCenterX, m_iCenterY, m_iRadius );
-	const int localTeam = m_iPlayerNum > 0 && m_iPlayerNum <= MAX_PLAYERS ?
-		g_PlayerExtraInfo[m_iPlayerNum].teamnumber : 0;
-	DrawObjectives( localTeam );
+	// Prefer the engine player-info team. g_PlayerExtraInfo.teamnumber is only
+	// written by the scoreboard's TeamInfo handler and reads back 0 here,
+	// which suppressed every hostage marker because DrawHostages gates on CT.
+	int localTeam = m_iPlayerNum > 0 && m_iPlayerNum <= MAX_PLAYERS ?
+		g_PlayerInfoList[m_iPlayerNum].team : 0;
+	if( localTeam <= 0 && m_iPlayerNum > 0 && m_iPlayerNum <= MAX_PLAYERS )
+		localTeam = g_PlayerExtraInfo[m_iPlayerNum].teamnumber;
 
 	// ---- the local player, pinned to the centre
 	DrawSelfMarker( m_iCenterX, m_iCenterY, m_iRadius );
@@ -1844,6 +1946,10 @@ int CHudRadarModern::Draw( float flTime )
 		DrawPlayerBlip( m_iCenterX, m_iCenterY, m_iRadius, i, flTime );
 	DrawHostages( localTeam, flTime );
 	DrawBomb( localTeam, flTime );
+	// Site markers and letters go last: a player standing on the site used to
+	// hide the whole marker under the self arrow at the centre.
+	DrawObjectives( localTeam );
+	DrawObjectiveLabels();
 
 	// ---- warning frame while alive with a bomb in hand
 	DrawWarningFrame( m_iCenterX, m_iCenterY, m_iRadius, flTime );

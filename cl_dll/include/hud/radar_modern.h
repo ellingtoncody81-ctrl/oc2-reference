@@ -49,6 +49,7 @@ private:
 	void LoadOverview( const char *pszMapName );
 	void LoadObjectives( const char *pszMapName );
 	void DrawObjectives( int localTeam );
+	void DrawObjectiveLabels();
 	void DrawBomb( int localTeam, float flTime );
 	void DrawHostages( int localTeam, float flTime );
 	bool ObjectivePoint( const Vector &world, int halfSize, int &x, int &y );
@@ -116,6 +117,7 @@ public:
 	};
 	Objective m_Objectives[32];
 	int m_iObjectiveCount;
+	int m_iObjectiveSource;   // 0 none, 1 world model entities, 2 BSP file
 	char m_szObjectiveMap[64];
 	bool m_bObjectivesLoaded;
 	const char *m_pObjectiveEntities;

@@ -107,7 +107,10 @@ void CHudRadar::Reset()
 
 		if( i <= MAX_HOSTAGES )
 		{
-			g_HostageInfo[i].radarflashes = 0;
+			// Keep origin/radarflashes across a round reset. The server only
+			// resends HostagePos on spawn or movement, and this reset message
+			// can arrive after that update, which used to erase live markers
+			// for the rest of the round. Map changes clear them instead.
 			g_HostageInfo[i].dead = false;
 		}
 	}
