@@ -37,14 +37,44 @@ int g_iHostageNumber = 0;
 int gmsgOC2Hostage = 0;
 unsigned short g_OC2HostageEpoch = 0;
 
-static void OC2_HostageMessage(CBasePlayer *player, int kind, CHostage *hostage)
+// After a hostage has been picked up, the defending team only receives its
+// position while a living teammate can actually see it or its carrier.
+static bool OC2_HostageSpottedByT(CHostage *hostage, CBasePlayer *carrier)
 {
-	if (!player || player->m_iTeam != CT || !gmsgOC2Hostage) return;
-	const int state = hostage ? hostage->OC2_State() : 0;
+	CBaseEntity *target = carrier ? (CBaseEntity *)carrier : (CBaseEntity *)hostage;
+	const Vector point = target->pev->origin + Vector(0, 0, 36);
+	for (int i = 1; i <= gpGlobals->maxClients; ++i)
+	{
+		CBasePlayer *observer = UTIL_PlayerByIndex(i);
+		if (!observer || observer->IsDormant() || !observer->IsAlive() || observer->m_iTeam != TERRORIST) continue;
+		const Vector delta = point - observer->EyePosition();
+		if (delta.Length() < 1.0f) return true;
+		UTIL_MakeVectors(observer->pev->v_angle);
+		if (DotProduct(delta.Normalize(), gpGlobals->v_forward) < 0.5f) continue;
+		TraceResult tr;
+		UTIL_TraceLine(observer->EyePosition(), point, dont_ignore_monsters, observer->edict(), &tr);
+		if (tr.flFraction >= 1.0f || tr.pHit == target->edict()) return true;
+	}
+	return false;
+}
+
+static void OC2_HostageMessage(CBasePlayer *player, int kind, CHostage *hostage, int spotted = -1)
+{
+	if (!player || (player->m_iTeam != CT && player->m_iTeam != TERRORIST) || !gmsgOC2Hostage) return;
+	int state = hostage ? hostage->OC2_State() : 0;
 	CBasePlayer *carrier = hostage ? (CBasePlayer *)(CBaseEntity *)hostage->m_hOC2Carrier : nullptr;
-	const int slot = carrier ? carrier->entindex() : 0;
-	const int uid = carrier ? GETPLAYERUSERID(carrier->edict()) : 0;
-	const Vector pos = hostage ? hostage->OC2_Position() : Vector(0, 0, 0);
+	int slot = carrier ? carrier->entindex() : 0;
+	int uid = carrier ? GETPLAYERUSERID(carrier->edict()) : 0;
+	Vector pos = hostage ? hostage->OC2_Position() : Vector(0, 0, 0);
+	if (hostage && player->m_iTeam == TERRORIST)
+	{
+		const bool terminal = state == 3 || state == 4;
+		const bool moved = carrier || hostage->m_bOC2Untied || state == 1;
+		const bool visible = !terminal && (!moved || (spotted >= 0 ? spotted != 0 : OC2_HostageSpottedByT(hostage, carrier)));
+		state = visible ? 0 : 6; // 6: no position, including rescued hostages
+		slot = uid = 0;
+		if (!visible) pos = Vector(0, 0, 0);
+	}
 	MESSAGE_BEGIN(MSG_ONE, gmsgOC2Hostage, nullptr, player->pev);
 		WRITE_BYTE(1); WRITE_BYTE(kind); WRITE_SHORT(g_OC2HostageEpoch);
 		WRITE_BYTE(hostage ? hostage->m_iHostageIndex : 0);
@@ -70,16 +100,20 @@ void CHostage::OC2_SendState(CBasePlayer *player)
 {
 	if (m_iHostageIndex < 1 || m_iHostageIndex > 24) return;
 	if (player) { OC2_HostageMessage(player, 1, this); return; }
+	CBasePlayer *carrier = (CBasePlayer *)(CBaseEntity *)m_hOC2Carrier;
+	const int state = OC2_State();
+	const bool needsSpot = state != 3 && state != 4 && (carrier || m_bOC2Untied || state == 1);
+	const int spotted = needsSpot ? int(OC2_HostageSpottedByT(this, carrier)) : 0;
 	for (int i = 1; i <= gpGlobals->maxClients; ++i)
 	{
 		CBasePlayer *recipient = UTIL_PlayerByIndex(i);
-		if (recipient && !recipient->IsDormant()) OC2_HostageMessage(recipient, 1, this);
+		if (recipient && !recipient->IsDormant()) OC2_HostageMessage(recipient, 1, this, spotted);
 	}
 }
 
 void OC2_HostageSnapshot(CBasePlayer *player)
 {
-	if (!player || player->m_iTeam != CT) return;
+	if (!player || (player->m_iTeam != CT && player->m_iTeam != TERRORIST)) return;
 	OC2_HostageMessage(player, 0, nullptr);
 	CHostage *hostage = nullptr;
 	while ((hostage = UTIL_FindEntityByClassname(hostage, "hostage_entity")))
@@ -697,6 +731,11 @@ void CHostage::IdleThink()
 		}
 		if (m_bOC2PendingPlacement)
 		{
+			if (gpGlobals->time >= m_flNextRadarTime)
+			{
+				OC2_SendState();
+				m_flNextRadarTime = gpGlobals->time + 1.0f;
+			}
 			pev->nextthink = gpGlobals->time + giveUpTime;
 			return;
 		}
@@ -895,9 +934,10 @@ void CHostage::IdleThink()
 				if (!CSGameRules()->m_flRestartRoundTime)
 				{
 					SendHostagePositionMsg();
-					OC2_SendState();
 				}
 			}
+			// Spotting can change even while the hostage is stationary.
+			if (!CSGameRules()->m_flRestartRoundTime) OC2_SendState();
 
 			m_flNextRadarTime = gpGlobals->time + 1.0f;
 		}
@@ -998,12 +1038,20 @@ bool CHostage::CanTakeDamage(entvars_t *pevAttacker)
 
 void CHostage::TraceAttack(entvars_t *pevAttacker, float flDamage, Vector vecDir, TraceResult *ptr, int bitsDamageType)
 {
-	// Hostages remain solid/useable but cannot lose health or spawn blood.
+	if (pev->takedamage == DAMAGE_NO || !ptr) return;
+	if (CVAR_GET_FLOAT("sv_cheats") != 0.0f)
+		ALERT(at_console, "oc2hostage_hit: id=%d hitgroup=%d damage=%.1f health=%.1f type=%d\n", m_iHostageIndex, ptr->iHitgroup, flDamage, pev->health, bitsDamageType);
+	// Keep normal hit feedback and hitgroup handling. TakeDamage below absorbs
+	// the queued damage, so the hostage remains alive and usable.
+	CBaseMonster::TraceAttack(pevAttacker, flDamage, vecDir, ptr, bitsDamageType);
+	TraceBleed(flDamage, vecDir, ptr, bitsDamageType);
 }
 
 BOOL CHostage::TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType)
 {
-	return FALSE;
+	if (pev->takedamage == DAMAGE_NO || m_iOC2Terminal) return FALSE;
+	PlayPainSound();
+	return TRUE;
 }
 
 float CHostage::GetModifiedDamage(float flDamage, int nHitGroup)
