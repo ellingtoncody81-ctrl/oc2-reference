@@ -318,6 +318,28 @@ void EXT_FUNC __API_HOOK(PM_PlayStepSound)(int step, float fvol)
 		case 3: pmove->PM_PlaySound(CHAN_BODY, "player/pl_snow4.wav", fvol, ATTN_NORM, 0, PITCH_NORM); break;
 		}
 		break;
+	case STEP_WOOD:
+		switch (irand)
+		{
+		// right foot
+		case 0: pmove->PM_PlaySound(CHAN_BODY, "player/pl_wood1.wav", fvol, ATTN_NORM, 0, PITCH_NORM); break;
+		case 1: pmove->PM_PlaySound(CHAN_BODY, "player/pl_wood3.wav", fvol, ATTN_NORM, 0, PITCH_NORM); break;
+		// left foot
+		case 2: pmove->PM_PlaySound(CHAN_BODY, "player/pl_wood2.wav", fvol, ATTN_NORM, 0, PITCH_NORM); break;
+		case 3: pmove->PM_PlaySound(CHAN_BODY, "player/pl_wood4.wav", fvol, ATTN_NORM, 0, PITCH_NORM); break;
+		}
+		break;
+	case STEP_GRASS:
+		switch (irand)
+		{
+		// right foot
+		case 0: pmove->PM_PlaySound(CHAN_BODY, "player/pl_grass1.wav", fvol, ATTN_NORM, 0, PITCH_NORM); break;
+		case 1: pmove->PM_PlaySound(CHAN_BODY, "player/pl_grass3.wav", fvol, ATTN_NORM, 0, PITCH_NORM); break;
+		// left foot
+		case 2: pmove->PM_PlaySound(CHAN_BODY, "player/pl_grass2.wav", fvol, ATTN_NORM, 0, PITCH_NORM); break;
+		case 3: pmove->PM_PlaySound(CHAN_BODY, "player/pl_grass4.wav", fvol, ATTN_NORM, 0, PITCH_NORM); break;
+		}
+		break;
 	}
 }
 
@@ -334,6 +356,8 @@ int PM_MapTextureTypeStepType(char chTextureType)
 	case CHAR_TEX_TILE:     return STEP_TILE;
 	case CHAR_TEX_SLOSH:    return STEP_SLOSH;
 	case CHAR_TEX_SNOW:     return STEP_SNOW;
+	case CHAR_TEX_WOOD:     return STEP_WOOD;
+	case CHAR_TEX_GRASS:    return STEP_GRASS;
 	}
 }
 
