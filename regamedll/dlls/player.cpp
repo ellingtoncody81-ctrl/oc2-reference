@@ -2250,6 +2250,7 @@ LINK_HOOK_CLASS_VOID_CHAIN(CBasePlayer, Killed, (entvars_t *pevAttacker, int iGi
 
 void EXT_FUNC CBasePlayer::__API_HOOK(Killed)(entvars_t *pevAttacker, int iGib)
 {
+	OC2_HostageDropPlayer(this);
 	ResetBuyPresentation();
 	m_canSwitchObserverModes = false;
 
@@ -4301,6 +4302,11 @@ bool CanSeeUseable(CBasePlayer *me, CBaseEntity *pEntity)
 
 void CBasePlayer::PlayerUse()
 {
+	if (m_afButtonPressed & IN_USE)
+	{
+		CHostage *carried = OC2_HostageCarriedBy(this);
+		if (carried) { carried->OC2_Drop(false); return; }
+	}
 	// Was use pressed or released?
 	if (!((pev->button | m_afButtonPressed | m_afButtonReleased) & IN_USE))
 		return;
@@ -7733,6 +7739,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateClientData)()
 		SetBombIcon(FALSE);
 		SyncRoundTimer();
 		SendHostagePos();
+		OC2_HostageSnapshot(this);
 		SendWeatherInfo();
 
 		if (g_pGameRules->IsMultiplayer())
@@ -8294,6 +8301,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(ResetMaxSpeed)()
 	}
 
 	pev->maxspeed = speed;
+	if (OC2_HostageCarriedBy(this) && GetObserverMode() == OBS_NONE &&
+		!(g_pGameRules->IsMultiplayer() && g_pGameRules->IsFreezePeriod()))
+		pev->maxspeed *= 0.8f;
 }
 
 LINK_HOOK_CLASS_CHAIN(bool, CBasePlayer, HintMessageEx, (const char *pMessage, float duration, bool bDisplayIfPlayerDead, bool bOverride), pMessage, duration, bDisplayIfPlayerDead, bOverride)

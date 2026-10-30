@@ -400,6 +400,21 @@ void TestCommand(CBasePlayer *caller)
   target->pev->fixangle=1;
   return;
  }
+ if(FStrEq(action,"aimhostage"))
+ {
+  if(value<=gpGlobals->maxClients||value>=gpGlobals->maxEntities)return;
+  edict_t *edict=INDEXENT(value);
+  if(FNullEnt(edict)||!FClassnameIs(&edict->v,"hostage_entity"))return;
+  auto *hostage=CBaseEntity::Instance(edict);
+  if(!hostage||!hostage->IsAlive())return;
+  // Local cheat camera placement only. The subsequent +attack/+use still
+  // executes the normal weapon trace, damage and interaction paths.
+  Vector angles=UTIL_VecToAngles(hostage->Center()-target->GetGunPosition());
+  angles.x=-angles.x;angles.z=0;
+  target->pev->v_angle=target->pev->angles=angles;
+  target->pev->fixangle=1;
+  return;
+ }
  if(FStrEq(action,"knife"))
  {
   if(value==59||(value&&!FindKnifeEntry(catalog,value)))return;
