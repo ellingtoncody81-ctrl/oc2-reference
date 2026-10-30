@@ -57,6 +57,8 @@
 #define STEP_WADE			7
 #define STEP_LADDER			8
 #define STEP_SNOW			9
+#define STEP_WOOD			10
+#define STEP_GRASS			11
 
 #define WJ_HEIGHT				8
 #define	STOP_EPSILON				0.1
