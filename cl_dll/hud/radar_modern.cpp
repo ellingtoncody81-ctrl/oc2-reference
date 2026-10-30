@@ -134,6 +134,10 @@ int CHudRadarModern::Init( void )
 	m_bSpritesLoaded    = false;
 	m_flLastCapture     = 0;
 	m_flLastBombPlanted = 0;
+	m_iDroppedBombEnt   = 0;
+	m_flDroppedBombScanStart = 0.0f;
+	m_vecDroppedBombPrevOrigin = Vector( 0, 0, 0 );
+	m_flDroppedBombPrevAt = 0.0f;
 	m_flRadarVisLast    = 0;
 	m_iPlayerNum        = 0;
 	m_iObjectiveCount   = 0;
@@ -288,6 +292,10 @@ void CHudRadarModern::Reset( void )
 {
 	m_flLastCapture     = 0;
 	m_flLastBombPlanted = 0;
+	m_iDroppedBombEnt   = 0;
+	m_flDroppedBombScanStart = 0.0f;
+	m_vecDroppedBombPrevOrigin = Vector( 0, 0, 0 );
+	m_flDroppedBombPrevAt = 0.0f;
 
 	// A new map or round invalidates every per-player radar state.
 	m_flRadarVisLast = 0;
@@ -1938,6 +1946,67 @@ void CHudRadarModern::DrawObjectiveLabels()
 	}
 }
 
+/*
+========================
+FindDroppedBombBox
+
+The dropped C4 is a "weaponbox" whose model is models/w_backpack.mdl - the
+only place in the game that model is used, and the C4 item itself is packed
+with EF_NODRAW (regamedll weapons.cpp:2493-2495), so this match is unique.
+The box exists the frame the bomb leaves the player, which is why the radar no
+longer has to wait for the one-second BombThink re-send of the BombDrop
+message. There is no reliable "is this entity fresh" field on the client, but
+the box stops moving once it lands, so a stale origin is the landing spot.
+========================
+*/
+static cl_entity_t *FindDroppedBombBox( int &iCached, float &flNextScan, float flTime,
+	bool bForce )
+{
+	if( iCached > 0 )
+	{
+		cl_entity_t *pCached = gEngfuncs.GetEntityByIndex( iCached );
+		if( pCached && pCached->model &&
+			!stricmp( pCached->model->name, "models/w_backpack.mdl" ) )
+			return pCached;
+		iCached = 0;
+		// A dead cache must not wait for the throttle window: the box may have
+		// been replaced by a fresh one on the very next frame.
+		flNextScan = 0.0f;
+	}
+	if( !bForce && flTime < flNextScan )
+		return NULL;
+	flNextScan = flTime + 0.1f;
+	for( int i = 1; i < MAX_EDICTS; i++ )
+	{
+		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
+		if( !pEnt || pEnt->player || !pEnt->model ) continue;
+		if( !stricmp( pEnt->model->name, "models/w_backpack.mdl" ) )
+		{
+			iCached = i;
+			return pEnt;
+		}
+	}
+	return NULL;
+}
+
+// Raw snapshot position, not pEnt->origin: the rendered origin is interpolated
+// about 100 ms behind (cl_interp), which is ~25 units at running speed and is
+// exactly why a 32 unit comparison used to miss while the thrower moved.
+static bool AnyLivingPlayerNear( const Vector &vecPos, float flRadius )
+{
+	const int iMaxClients = gEngfuncs.GetMaxClients();
+	for( int i = 1; i <= iMaxClients; i++ )
+	{
+		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
+		if( !pEnt || !pEnt->player ) continue;
+		const Vector vecSnapshot( pEnt->curstate.origin[0], pEnt->curstate.origin[1],
+			pEnt->curstate.origin[2] );
+		if( ( vecSnapshot - vecPos ).Length() < flRadius )
+			return true;
+	}
+	return false;
+}
+
 void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 {
 	const extra_player_info_t &bomb = g_PlayerExtraInfo[33];
@@ -1946,20 +2015,47 @@ void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 		( bomb.origin[0] == 0 && bomb.origin[1] == 0 && bomb.origin[2] == 0 ) ) return;
 	const bool planted = bomb.playerclass == 1;
 	// A voluntary drop reaches the client as two BombDrop messages: the first
-	// one still carries the thrower's own origin, and only the weapon box
-	// re-send about a second later carries the landing spot. Drawing the
-	// hand-off position made the dot pop out of the player and jump, so skip a
-	// dropped position that is still sitting inside a living player.
+	// one still carries the thrower's own origin (regamedll player.cpp:8718,
+	// sent before the box even exists), and only the weapon box re-send about
+	// a second later carries the landing spot. The box is already in the
+	// client entity list, so prefer it and fall back to the message only when
+	// it is out of the PVS.
+	const Vector vecMessage( bomb.origin[0], bomb.origin[1], bomb.origin[2] );
+	Vector vecBomb = vecMessage;
 	if( !planted )
 	{
-		const Vector vecReported( bomb.origin[0], bomb.origin[1], bomb.origin[2] );
-		const int iMaxClients = gEngfuncs.GetMaxClients();
-		for( int i = 1; i <= iMaxClients; i++ )
+		// A fresh BombDrop means the bomb just left a player: sweep now instead
+		// of waiting out the throttle, so the box is picked up on the first
+		// frame it exists.
+		const bool bFreshMessage = ( flTime - bomb.radarflashtime ) < 0.3f;
+		cl_entity_t *pBox = FindDroppedBombBox( m_iDroppedBombEnt, m_flDroppedBombScanStart,
+			flTime, bFreshMessage );
+		if( pBox )
 		{
-			cl_entity_t *pOther = gEngfuncs.GetEntityByIndex( i );
-			if( !pOther || !pOther->player ) continue;
-			if( ( pOther->origin - vecReported ).Length() < 32.0f )
+			// The box is tossed forward and keeps moving for a moment after the
+			// drop; drawing it then reproduces the "dot pops out of the player"
+			// report. Hold the dot until the box has come to rest, and detect
+			// that by watching it stand still - relying on curstate.velocity
+			// alone is fragile because velocity is not always networked for
+			// non-player entities.
+			const Vector vecBoxNow( pBox->origin[0], pBox->origin[1], pBox->origin[2] );
+			const Vector vecVel( pBox->curstate.velocity[0], pBox->curstate.velocity[1],
+				pBox->curstate.velocity[2] );
+			const bool bStale = m_flDroppedBombPrevAt <= 0.0f ||
+				( flTime - m_flDroppedBombPrevAt ) > 0.5f;
+			const float flMoved = bStale ? 0.0f
+				: ( vecBoxNow - m_vecDroppedBombPrevOrigin ).Length();
+			m_vecDroppedBombPrevOrigin = vecBoxNow;
+			m_flDroppedBombPrevAt = flTime;
+			if( bStale || flMoved > 2.0f || vecVel.Length() > 30.0f )
 				return;
+			vecBomb = vecBoxNow;
+		}
+		else if( AnyLivingPlayerNear( vecMessage, 48.0f ) )
+		{
+			// No box in the entity list and the message still sits on a living
+			// player: that is the hand-off position, not the landing spot.
+			return;
 		}
 	}
 	CClientSprite *sprite = s_spr[SPR_C4];
@@ -1969,7 +2065,7 @@ void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 		? ( ( sprite && sprite->spr ) ? max( sprite->rect.Width(), sprite->rect.Height() ) / 2 : 11 )
 		: kBlipRadius + 1;
 	int x, y;
-	if( !ObjectivePoint( bomb.origin, halfSize, x, y ) ) return;
+	if( !ObjectivePoint( vecBomb, halfSize, x, y ) ) return;
 	const bool bright = ( (int)( flTime * 2.0f ) & 1 ) == 0;
 
 	if( !planted )

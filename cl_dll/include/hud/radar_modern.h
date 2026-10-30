@@ -187,6 +187,14 @@ public:
 	// respawns that land too close to the corpse for the jump test above.
 	float m_aRadarPlayerDeadMoveStreak[32];
 
+	// Dropped C4: while the weapon box is in the client entity list its origin
+	// is authoritative; the BombDrop message arrives a second late because the
+	// first one is sent before the box exists.
+	int   m_iDroppedBombEnt;        // 0 = not resolved yet
+	float m_flDroppedBombScanStart; // throttles the 1..MAX_EDICTS sweep
+	Vector m_vecDroppedBombPrevOrigin;
+	float m_flDroppedBombPrevAt;    // 0 = the box has not been seen yet
+
 	// ---- world -> overview mapping, rebuilt every frame from the BSP world
 	//      model bounds. The overview .txt zoom/origin are the CS spectator
 	//      framing convention, not a description of the bitmap, so they
