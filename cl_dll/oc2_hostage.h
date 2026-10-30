@@ -4,7 +4,7 @@
 // payload: version, kind, epoch, index, state, carrier, userid, x/y/z.
 namespace oc2_hostage
 {
-enum Status { Idle = 0, Following = 1, Carried = 2, Dead = 3, Rescued = 4, LegacyTerminal = 5 };
+enum Status { Idle = 0, Following = 1, Carried = 2, Dead = 3, Rescued = 4, LegacyTerminal = 5, Hidden = 6 };
 struct State
 {
     bool valid = false;

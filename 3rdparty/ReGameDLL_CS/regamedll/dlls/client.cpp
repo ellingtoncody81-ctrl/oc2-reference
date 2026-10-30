@@ -2089,6 +2089,7 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
 	}
 
 	pPlayer->TeamChangeUpdate();
+	OC2_HostageSnapshot(pPlayer);
 
 	szOldTeam = GetTeam(oldTeam);
 	szNewTeam = GetTeam(team);

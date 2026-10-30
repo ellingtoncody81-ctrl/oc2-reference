@@ -2351,7 +2351,7 @@ void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 
 void CHudRadarModern::DrawHostages( int localTeam, float flTime )
 {
-	if( localTeam != TEAM_CT ) return;
+	if( localTeam != TEAM_CT && localTeam != TEAM_TERRORIST ) return;
 	const float now = gEngfuncs.GetClientTime();
 	for( int i = 1; i <= MAX_HOSTAGES; ++i )
 	{
@@ -2549,18 +2549,7 @@ int CHudRadarModern::Draw( float flTime )
 	int b = (int)( m_pNewRadarB->value * 255 );
 	int a = (int)( m_pNewRadarA->value * 255 );
 
-	if( s_spr[SPR_RADAR] && s_spr[SPR_RADAR]->spr )
-	{
-		// iradio.spr is only a 32x32 icon; the mobile build scales the radar
-		// body to the computed radius, but SPR_DrawAdditive cannot scale, so
-		// keep the plain call and let the frame carry the size.
-		SPR_Set( s_spr[SPR_RADAR]->spr, r, g, b );
-		SPR_DrawAdditive( 0, m_iCenterX - m_iRadius, m_iCenterY - m_iRadius,
-			&s_spr[SPR_RADAR]->rect );
-	}
-
-	// Border in the configured colour, always. It used to sit in the else
-	// branch above, so it vanished the moment iradio.spr started loading.
+	// Border in the configured colour. The radar's iradio icon is hidden.
 	// Skipped while the bomb warning is up: that ring is drawn at alpha 100 in
 	// its dim phase and a white border underneath turns it pink.
 	{

@@ -7571,6 +7571,8 @@ void CBasePlayer::SendAmmoUpdate()
 
 void CBasePlayer::SendHostagePos()
 {
+	// The legacy message has no visibility filtering; T uses OC2Hostage.
+	if (m_iTeam != CT) return;
 	CHostage *pHostage = nullptr;
 
 	while ((pHostage = UTIL_FindEntityByClassname(pHostage, "hostage_entity")))

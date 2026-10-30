@@ -64,7 +64,7 @@ void SetState(State &dst, const State &previous, int status, int carrier, int us
 {
     dst.valid = true;
     dst.extended = true;
-    dst.hasPosition = true;
+    dst.hasPosition = status != Hidden;
     dst.status = status;
     dst.carrier = carrier;
     dst.userid = userid;
@@ -78,7 +78,7 @@ void SyncLegacy(int index, const State &previous)
 {
     const State &s = states[index];
     hostage_info_t &legacy = g_HostageInfo[index];
-    if (!s.valid) { legacy = hostage_info_t{}; return; }
+    if (!s.valid || !s.hasPosition) { legacy = hostage_info_t{}; return; }
     legacy.origin = s.origin;
     const bool terminal = s.status == Dead || s.status == Rescued;
     if (!previous.valid || previous.status != s.status)
@@ -102,8 +102,9 @@ int Message(const char *, int size, void *buffer)
     const Vector origin(x, y, z);
     if (version != 1 || kind > 2) return 1;
     if (kind != 1 && (index || status || carrier || userid || origin != Vector(0, 0, 0))) return 1;
-    if (kind == 1 && (index < 1 || index > MAX_HOSTAGES || status > Rescued || carrier > 32 || userid < 0 ||
-        ((carrier == 0) != (userid == 0)) || (status == Carried && carrier == 0))) return 1;
+    if (kind == 1 && (index < 1 || index > MAX_HOSTAGES || (status > Rescued && status != Hidden) || carrier > 32 || userid < 0 ||
+        ((carrier == 0) != (userid == 0)) || (status == Carried && carrier == 0) ||
+        (status == Hidden && (carrier || userid || origin != Vector(0, 0, 0))))) return 1;
     lastVersion = version;
     if (kind == 0)
     {
