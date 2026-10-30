@@ -103,6 +103,9 @@ void CHudRadar::Reset()
 	// make radar don't draw old players after new map
 	for( int i = 0; i < 34; i++ )
 	{
+		if( i == 33 )
+			continue;   // the C4 slot is cleared on HudRound in death.cpp
+
 		g_PlayerExtraInfo[i].radarflashes = 0;
 
 		if( i <= MAX_HOSTAGES )
@@ -114,9 +117,12 @@ void CHudRadar::Reset()
 			g_HostageInfo[i].dead = false;
 		}
 	}
-	g_PlayerExtraInfo[33].dead = true;
-	g_PlayerExtraInfo[33].playerclass = 0;
-	g_PlayerExtraInfo[33].origin = Vector( 0, 0, 0 );
+
+	// The C4 slot is deliberately not touched here. ResetHUD also arrives mid
+	// round (fullupdate in death.cpp:328), and wiping the slot there made an
+	// already planted bomb disappear from the radar and from the timer until the
+	// server resent it. The real round boundary is HudRound, which clears it in
+	// death.cpp.
 }
 
 static void Radar_InitBitmap( int w, int h, byte *buf )

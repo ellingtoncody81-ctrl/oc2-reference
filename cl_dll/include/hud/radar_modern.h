@@ -187,13 +187,18 @@ public:
 	// respawns that land too close to the corpse for the jump test above.
 	float m_aRadarPlayerDeadMoveStreak[32];
 
-	// Dropped C4: while the weapon box is in the client entity list its origin
-	// is authoritative; the BombDrop message arrives a second late because the
-	// first one is sent before the box exists.
+	// Dropped C4: the BombDrop message is the source of truth (its first send is
+	// the thrower's own origin, the landing spot follows one second later). The
+	// weapon box is only used to draw earlier, after it agrees with the message
+	// and has stopped moving.
 	int   m_iDroppedBombEnt;        // 0 = not resolved yet
 	float m_flDroppedBombScanStart; // throttles the 1..MAX_EDICTS sweep
 	Vector m_vecDroppedBombPrevOrigin;
 	float m_flDroppedBombPrevAt;    // 0 = the box has not been seen yet
+	// radarflashtime is refreshed by every BombDrop re-send, so the age of the
+	// drop has to be tracked from the state transition instead.
+	bool  m_bBombDropActive;
+	float m_flBombDropStart;
 
 	// ---- world -> overview mapping, rebuilt every frame from the BSP world
 	//      model bounds. The overview .txt zoom/origin are the CS spectator

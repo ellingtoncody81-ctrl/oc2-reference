@@ -28,6 +28,7 @@ Measurements taken from the decompiled binary:
 #include "pm_defs.h"			// PM_STUDIO_BOX / PM_GLASS_IGNORE / pmtrace_t
 #include "radar_int.h"
 #include "hud/radar_modern.h"
+#include "view_ads.h"		// V_CurrentADSWorldFOV: the cone must follow the scope
 
 #include <math.h>
 #include <cmath>
@@ -138,6 +139,8 @@ int CHudRadarModern::Init( void )
 	m_flDroppedBombScanStart = 0.0f;
 	m_vecDroppedBombPrevOrigin = Vector( 0, 0, 0 );
 	m_flDroppedBombPrevAt = 0.0f;
+	m_bBombDropActive = false;
+	m_flBombDropStart = 0.0f;
 	m_flRadarVisLast    = 0;
 	m_iPlayerNum        = 0;
 	m_iObjectiveCount   = 0;
@@ -286,6 +289,14 @@ void CHudRadarModern::Shutdown( void )
 void CHudRadarModern::InitHUDData( void )
 {
 	m_flLastCapture = 0;
+	// InitHUD runs without a Reset on some paths, and a stale drop start would
+	// skip the hand-off silence and draw the thrower's origin as the landing spot.
+	m_bBombDropActive = false;
+	m_flBombDropStart = 0.0f;
+	m_iDroppedBombEnt = 0;
+	m_flDroppedBombScanStart = 0.0f;
+	m_vecDroppedBombPrevOrigin = Vector( 0, 0, 0 );
+	m_flDroppedBombPrevAt = 0.0f;
 }
 
 void CHudRadarModern::Reset( void )
@@ -296,6 +307,8 @@ void CHudRadarModern::Reset( void )
 	m_flDroppedBombScanStart = 0.0f;
 	m_vecDroppedBombPrevOrigin = Vector( 0, 0, 0 );
 	m_flDroppedBombPrevAt = 0.0f;
+	m_bBombDropActive = false;
+	m_flBombDropStart = 0.0f;
 
 	// A new map or round invalidates every per-player radar state.
 	m_flRadarVisLast = 0;
@@ -1218,9 +1231,12 @@ void CHudRadarModern::DrawSelfMarker( int cx, int cy, int radius )
 	if( m_iPlayerNum > 0 && m_iPlayerNum <= MAX_PLAYERS &&
 		g_PlayerExtraInfo[m_iPlayerNum].has_c4 )
 	{
-		// Gold, not the old orange-red (255,70,30): that sat next to enemy red.
-		g = 200;
-		b = 40;
+		// Carrying the bomb: a deeper amber, not the old 255,200,40. Against the
+		// plain 255,220,0 that was a 20/40 step and read as the same colour, so
+		// the state change was invisible in game.
+		r = 255;
+		g = 140;
+		b = 0;
 	}
 
 	// Always draw the geometry, never rely on a sprite being present: the
@@ -1422,6 +1438,20 @@ void CHudRadarModern::DrawRadarFrame( int cx, int cy, int radius, int r, int g, 
 	const float flInner = flOuter - (float)max( 1, radius / 32 );
 	const float flStep = ( 2.0f * 3.14159265358979f ) / (float)iSegments;
 
+	// The engine's TriColor4ub forces alpha to 1.0 (cl_game.c:3237), so an alpha
+	// argument here is silently dropped. Fold it into the colour only for the
+	// opaque ring (the bomb warning): its dim phase used to be identical to the
+	// bright one, so the ring never blinked. The additive border keeps full
+	// brightness on purpose - dimming it there would change the normal look.
+	if( !additive && a < 255 )
+	{
+		const int ai = ( a < 0 ) ? 0 : a;
+		r = r * ai / 255;
+		g = g * ai / 255;
+		b = b * ai / 255;
+	}
+	a = 255;
+
 	// untextured, but still has to be told so: the last bound texture is
 	// still live here and would tint the whole frame
 	if( gHUD.m_WhiteTex )
@@ -1531,6 +1561,8 @@ void CHudRadarModern::NotePlayerDeath( int victim, float time )
 	m_aRadarPlayerDeadMoveStreak[victim] = 0.0f;
 }
 
+static int RadarTeamOf( int i );   // defined next to DrawPlayerBlip
+
 void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 {
 	// Any path that turns gating off must also release the per-player state.
@@ -1552,7 +1584,7 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 
 	cl_entity_t *pLocal = gEngfuncs.GetLocalPlayer();
 	int iLocalTeam = ( m_iPlayerNum > 0 && m_iPlayerNum < 32 )
-		? g_PlayerInfoList[ m_iPlayerNum ].team : -1;
+		? RadarTeamOf( m_iPlayerNum ) : -1;
 
 	// Without a known team "enemy" is undefined, and a spectator has no PVS of
 	// their own, so both cases fall back to drawing everything.
@@ -1595,7 +1627,14 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 	// m_iFOV is the 4:3 horizontal FOV. The cone is tested against a single
 	// point per target, so pad it - a widescreen aspect and a target sitting at
 	// the screen edge both fall outside fov/2 otherwise.
+	// It is the hip-fire value: this client implements ADS by changing
+	// clientdata->fov only, so m_iFOV never narrows and a scoped player used to
+	// keep the full 90 degree cone. Prefer the live ADS world FOV when the
+	// weapon is actually scoped.
 	float flFov = ( gHUD.m_iFOV > 1 ) ? (float)gHUD.m_iFOV : 90.0f;
+	const float flAdsFov = V_CurrentADSWorldFOV();
+	if( flAdsFov > 1.0f && flAdsFov < flFov )
+		flFov = flAdsFov;
 	float flCosHalf = cosf( DEG2RAD( flFov * 0.5f + 10.0f ) );
 
 	// The PM state has to be armed before any trace, or every trace reports
@@ -1670,7 +1709,7 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 
 		// Teammates keep the ungated behaviour, but their last position is
 		// still recorded so a dead teammate can keep a fading X.
-		if( g_PlayerInfoList[i].team == iLocalTeam )
+		if( RadarTeamOf( i ) == iLocalTeam )
 		{
 			if( live )
 			{
@@ -1744,11 +1783,16 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 	gEngfuncs.pEventAPI->EV_PopPMStates();
 }
 
-// Every player marker is a disc of this radius, so the C4 dot can never come
-// out a different size from the dot the player is used to. 8 px on a 155 px
-// radar is 5.5% of the diameter; CS:GO's player icon lands at roughly 5-6%
-// once its panorama icon scale is applied, and 5 px read as too small in game.
-static const int kBlipRadius = 8;
+// Marker discs scale with the radar, so 720p and 1080p keep the same visual
+// weight. A fixed 8 px disc was 1.6x the self arrow at 1080p while it matched
+// at 720p, because the arrow scales with radius and the disc did not.
+static int BlipRadiusFor( int radius )
+{
+	int iR = radius / 19;
+	if( iR < 5 ) iR = 5;
+	if( iR > 10 ) iR = 10;
+	return iR;
+}
 
 /*
 ========================
@@ -1771,14 +1815,35 @@ static void FillDisc( int cx, int cy, int radius, int r, int g, int b, int a )
 	}
 }
 
+// One team source for the visibility gate and for the draw colours. The engine
+// snapshot g_PlayerInfoList[].team is refreshed only when the scoreboard is
+// drawn or a TeamInfo message arrives, so fall back to the value the scoreboard
+// stores for the same player. Unknown (0) stays unknown rather than becoming an
+// enemy: both sides comparing equal keeps a teammate cyan and visible.
+static int RadarTeamOf( int i )
+{
+	if( i <= 0 || i > MAX_PLAYERS )
+		return 0;
+	// TeamInfo is pushed on every team change, while the engine snapshot is a
+	// cache filled only when the scoreboard is drawn, so the message value wins
+	// when both are set.
+	const int iMsgTeam = g_PlayerExtraInfo[i].teamnumber;
+	if( iMsgTeam > 0 )
+		return iMsgTeam;
+	return g_PlayerInfoList[i].team;
+}
+
 void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float flTime )
 {
 	if( i == m_iPlayerNum )
 		return;
 
-	int iLocalTeam = g_PlayerInfoList[ m_iPlayerNum ].team;
-	int iTheirTeam = g_PlayerInfoList[ i ].team;
-	bool bFriend = ( iLocalTeam >= 0 && iTheirTeam >= 0 && iTheirTeam == iLocalTeam );
+	const int iLocalTeam = RadarTeamOf( m_iPlayerNum );
+	const int iTheirTeam = RadarTeamOf( i );
+	// >= 0, not > 0: while the team is still unassigned on both sides they
+	// compare equal and stay teammates, so the dot keeps its colour and stays
+	// visible. Treating an unknown as an enemy turned teammates red.
+	const bool bFriend = ( iLocalTeam >= 0 && iTheirTeam >= 0 && iTheirTeam == iLocalTeam );
 
 	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
 	const bool live = ( pEnt && pEnt->player );
@@ -1862,8 +1927,9 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 		return;
 
 	// Dark rim first: it is what keeps a light dot readable on a light floor.
-	FillDisc( x, y, kBlipRadius + 1, 0, 0, 0, ( alpha * 3 ) / 5 );
-	FillDisc( x, y, kBlipRadius, r, g, b, alpha );
+	const int iBlipR = BlipRadiusFor( radius );
+	FillDisc( x, y, iBlipR + 1, 0, 0, 0, ( alpha * 3 ) / 5 );
+	FillDisc( x, y, iBlipR, r, g, b, alpha );
 	if( c4Carrier )
 		FillRGBABlend( x - 2, y - 2, 5, 5, 255, 255, 255, ( alpha * 4 ) / 5 );
 }
@@ -1953,14 +2019,15 @@ FindDroppedBombBox
 The dropped C4 is a "weaponbox" whose model is models/w_backpack.mdl - the
 only place in the game that model is used, and the C4 item itself is packed
 with EF_NODRAW (regamedll weapons.cpp:2493-2495), so this match is unique.
-The box exists the frame the bomb leaves the player, which is why the radar no
-longer has to wait for the one-second BombThink re-send of the BombDrop
-message. There is no reliable "is this entity fresh" field on the client, but
-the box stops moving once it lands, so a stale origin is the landing spot.
+The box exists the frame the bomb leaves the player, so it can shorten the wait
+for the one-second BombThink re-send of the BombDrop message. It must never be
+trusted on its own: the client keeps every field of a removed entity, so a
+removed box still reports the old model and the old origin. Callers therefore
+check the box against the message that is live right now.
 ========================
 */
 static cl_entity_t *FindDroppedBombBox( int &iCached, float &flNextScan, float flTime,
-	bool bForce )
+	const Vector &vecNear )
 {
 	if( iCached > 0 )
 	{
@@ -1973,43 +2040,60 @@ static cl_entity_t *FindDroppedBombBox( int &iCached, float &flNextScan, float f
 		// been replaced by a fresh one on the very next frame.
 		flNextScan = 0.0f;
 	}
-	if( !bForce && flTime < flNextScan )
+	if( flTime < flNextScan )
 		return NULL;
 	flNextScan = flTime + 0.1f;
+
+	// A removed entity keeps its model name forever, so several slots can look
+	// like the bomb. Take the one closest to the position the message is
+	// reporting now - the box that belongs to this drop is right there, an old
+	// one is wherever it was left.
+	cl_entity_t *pBest = NULL;
+	float flBestDist = 1e9f;
 	for( int i = 1; i < MAX_EDICTS; i++ )
 	{
 		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
 		if( !pEnt || pEnt->player || !pEnt->model ) continue;
-		if( !stricmp( pEnt->model->name, "models/w_backpack.mdl" ) )
+		if( stricmp( pEnt->model->name, "models/w_backpack.mdl" ) ) continue;
+		const Vector vecBox( pEnt->origin[0], pEnt->origin[1], pEnt->origin[2] );
+		const float flDist = ( vecBox - vecNear ).Length();
+		if( flDist < flBestDist )
 		{
+			flBestDist = flDist;
+			pBest = pEnt;
 			iCached = i;
-			return pEnt;
 		}
 	}
-	return NULL;
-}
-
-// Raw snapshot position, not pEnt->origin: the rendered origin is interpolated
-// about 100 ms behind (cl_interp), which is ~25 units at running speed and is
-// exactly why a 32 unit comparison used to miss while the thrower moved.
-static bool AnyLivingPlayerNear( const Vector &vecPos, float flRadius )
-{
-	const int iMaxClients = gEngfuncs.GetMaxClients();
-	for( int i = 1; i <= iMaxClients; i++ )
-	{
-		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
-		if( !pEnt || !pEnt->player ) continue;
-		const Vector vecSnapshot( pEnt->curstate.origin[0], pEnt->curstate.origin[1],
-			pEnt->curstate.origin[2] );
-		if( ( vecSnapshot - vecPos ).Length() < flRadius )
-			return true;
-	}
-	return false;
+	if( !pBest )
+		iCached = 0;
+	return pBest;
 }
 
 void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 {
 	const extra_player_info_t &bomb = g_PlayerExtraInfo[33];
+	// The drop age cannot come from radarflashtime: every BombDrop refreshes it
+	// (radar.cpp:552), including the one-second BombThink re-sends, so that age
+	// never exceeds a second and a "first 1.2 s" window would never close. Own
+	// the state transition instead - a fresh drop resets the box cache too,
+	// which is what let a removed box keep serving its old position.
+	const bool bDropState = ( !bomb.dead && bomb.radarflashes && bomb.playerclass == 0 );
+	if( !bDropState )
+	{
+		m_bBombDropActive = false;
+		m_flBombDropStart = 0.0f;
+		m_iDroppedBombEnt = 0;
+		m_flDroppedBombPrevAt = 0.0f;
+	}
+	else if( !m_bBombDropActive )
+	{
+		m_bBombDropActive = true;
+		m_flBombDropStart = flTime;
+		m_iDroppedBombEnt = 0;
+		m_flDroppedBombPrevAt = 0.0f;
+	}
+	const float flDropAge = m_bBombDropActive ? ( flTime - m_flBombDropStart ) : 0.0f;
+
 	if( bomb.dead || !bomb.radarflashes ||
 		( bomb.playerclass == 0 && localTeam != TEAM_TERRORIST ) ||
 		( bomb.origin[0] == 0 && bomb.origin[1] == 0 && bomb.origin[2] == 0 ) ) return;
@@ -2018,52 +2102,62 @@ void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 	// one still carries the thrower's own origin (regamedll player.cpp:8718,
 	// sent before the box even exists), and only the weapon box re-send about
 	// a second later carries the landing spot. The box is already in the
-	// client entity list, so prefer it and fall back to the message only when
-	// it is out of the PVS.
+	// client entity list, so it may shorten the wait - but only when it agrees
+	// with the message position and has come to rest. The message stays the
+	// source of truth; the box only decides how early the dot may appear.
 	const Vector vecMessage( bomb.origin[0], bomb.origin[1], bomb.origin[2] );
 	Vector vecBomb = vecMessage;
 	if( !planted )
 	{
-		// A fresh BombDrop means the bomb just left a player: sweep now instead
-		// of waiting out the throttle, so the box is picked up on the first
-		// frame it exists.
-		const bool bFreshMessage = ( flTime - bomb.radarflashtime ) < 0.3f;
-		cl_entity_t *pBox = FindDroppedBombBox( m_iDroppedBombEnt, m_flDroppedBombScanStart,
-			flTime, bFreshMessage );
-		if( pBox )
+		// The message is the truth: it is the only thing that belongs to *this*
+		// drop. A box entity may only shorten the wait, and only while it agrees
+		// with the message that is live right now - the engine keeps every field
+		// of a removed entity (cl_frame.c:756-770), so a slot that once held the
+		// bomb box still reports the old model and the old origin forever.
+		const float flMsgAge = flDropAge;
+		bool bBoxUsed = false;
+		if( flMsgAge < 2.5f )
 		{
-			// The box is tossed forward and keeps moving for a moment after the
-			// drop; drawing it then reproduces the "dot pops out of the player"
-			// report. Hold the dot until the box has come to rest, and detect
-			// that by watching it stand still - relying on curstate.velocity
-			// alone is fragile because velocity is not always networked for
-			// non-player entities.
-			const Vector vecBoxNow( pBox->origin[0], pBox->origin[1], pBox->origin[2] );
-			const Vector vecVel( pBox->curstate.velocity[0], pBox->curstate.velocity[1],
-				pBox->curstate.velocity[2] );
-			const bool bStale = m_flDroppedBombPrevAt <= 0.0f ||
-				( flTime - m_flDroppedBombPrevAt ) > 0.5f;
-			const float flMoved = bStale ? 0.0f
-				: ( vecBoxNow - m_vecDroppedBombPrevOrigin ).Length();
-			m_vecDroppedBombPrevOrigin = vecBoxNow;
-			m_flDroppedBombPrevAt = flTime;
-			if( bStale || flMoved > 2.0f || vecVel.Length() > 30.0f )
-				return;
-			vecBomb = vecBoxNow;
+			cl_entity_t *pBox = FindDroppedBombBox( m_iDroppedBombEnt,
+				m_flDroppedBombScanStart, flTime, vecMessage );
+			if( pBox )
+			{
+				const Vector vecBox( pBox->origin[0], pBox->origin[1], pBox->origin[2] );
+				if( ( vecBox - vecMessage ).Length() < 128.0f )
+				{
+					// Settled only: while the box is still flying it sits on the
+					// thrower, which is the "dot pops out of the player" report.
+					const bool bStale = m_flDroppedBombPrevAt <= 0.0f ||
+						( flTime - m_flDroppedBombPrevAt ) > 0.5f;
+					const float flMoved = bStale ? 0.0f
+						: ( vecBox - m_vecDroppedBombPrevOrigin ).Length();
+					const Vector vecVel( pBox->curstate.velocity[0],
+						pBox->curstate.velocity[1], pBox->curstate.velocity[2] );
+					m_vecDroppedBombPrevOrigin = vecBox;
+					m_flDroppedBombPrevAt = flTime;
+					if( !bStale && flMoved <= 2.0f && vecVel.Length() <= 30.0f )
+					{
+						vecBomb = vecBox;
+						bBoxUsed = true;
+					}
+				}
+			}
 		}
-		else if( AnyLivingPlayerNear( vecMessage, 48.0f ) )
-		{
-			// No box in the entity list and the message still sits on a living
-			// player: that is the hand-off position, not the landing spot.
+		// The first BombDrop of a drop carries the thrower's own origin
+		// (regamedll player.cpp:8718) and the landing spot only arrives with the
+		// one-second BombThink re-send. For that first second, draw nothing at
+		// all: a proximity test against players missed as soon as the thrower
+		// ran away from his own origin, and the marker then appeared behind him.
+		// A settled box above is the only thing allowed to draw earlier.
+		if( !bBoxUsed && flDropAge < 1.0f )
 			return;
-		}
 	}
 	CClientSprite *sprite = s_spr[SPR_C4];
 	// The planted icon keeps its native 32x32 size, so its half size is the
 	// culling margin; everything else is blip sized.
 	const int halfSize = planted
 		? ( ( sprite && sprite->spr ) ? max( sprite->rect.Width(), sprite->rect.Height() ) / 2 : 11 )
-		: kBlipRadius + 1;
+		: BlipRadiusFor( m_iRadius ) + 1;
 	int x, y;
 	if( !ObjectivePoint( vecBomb, halfSize, x, y ) ) return;
 	const bool bright = ( (int)( flTime * 2.0f ) & 1 ) == 0;
@@ -2072,8 +2166,9 @@ void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 	{
 		// Dropped: amber, the same size as a player dot, no backing plate.
 		const int gg = bright ? 175 : 115;
-		FillDisc( x, y, kBlipRadius + 1, 0, 0, 0, 140 );
-		FillDisc( x, y, kBlipRadius, 255, gg, 20, 240 );
+		const int iBlipR = BlipRadiusFor( m_iRadius );
+		FillDisc( x, y, iBlipR + 1, 0, 0, 0, 140 );
+		FillDisc( x, y, iBlipR, 255, gg, 20, 240 );
 		FillRGBABlend( x - 2, y - 2, 5, 5, 255, 255, 255, 235 );
 		return;
 	}
@@ -2333,13 +2428,10 @@ int CHudRadarModern::Draw( float flTime )
 
 	// ---- circular mask
 	DrawRadarMask( m_iCenterX, m_iCenterY, m_iRadius );
-	// Prefer the engine player-info team. g_PlayerExtraInfo.teamnumber is only
-	// written by the scoreboard's TeamInfo handler and reads back 0 here,
-	// which suppressed every hostage marker because DrawHostages gates on CT.
-	int localTeam = m_iPlayerNum > 0 && m_iPlayerNum <= MAX_PLAYERS ?
-		g_PlayerInfoList[m_iPlayerNum].team : 0;
-	if( localTeam <= 0 && m_iPlayerNum > 0 && m_iPlayerNum <= MAX_PLAYERS )
-		localTeam = g_PlayerExtraInfo[m_iPlayerNum].teamnumber;
+	// One source for the local team as well: RadarTeamOf prefers the TeamInfo
+	// value and falls back to the engine snapshot. The old inline copy here
+	// preferred the snapshot and disagreed with the blip colours.
+	const int localTeam = RadarTeamOf( m_iPlayerNum );
 
 	// ---- the local player, pinned to the centre
 	DrawSelfMarker( m_iCenterX, m_iCenterY, m_iRadius );
@@ -2353,10 +2445,11 @@ int CHudRadarModern::Draw( float flTime )
 	// Site markers and letters go last: a player standing on the site used to
 	// hide the whole marker under the self arrow at the centre.
 	DrawObjectives( localTeam );
-	DrawObjectiveLabels();
-	// The planted C4 icon goes after the letters: drawn before, the site
-	// letter sat on top of it and only the letter's counters showed any red.
+	// Planted icon first, site letters on top: the icon is a native 32x32 and
+	// painted last used to cover the 15x21 glyph, which is the only thing that
+	// says which site it is.
 	DrawBomb( localTeam, flTime );
+	DrawObjectiveLabels();
 
 	// ---- warning frame while alive with a bomb in hand
 	DrawWarningFrame( m_iCenterX, m_iCenterY, m_iRadius, flTime );
