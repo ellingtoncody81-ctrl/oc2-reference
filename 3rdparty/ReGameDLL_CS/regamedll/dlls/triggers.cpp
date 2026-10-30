@@ -1989,6 +1989,8 @@ void CHostageRescue::HostageRescueTouch(CBaseEntity *pOther)
 	if (pOther->IsPlayer())
 	{
 		((CBasePlayer *)pOther)->m_signals.Signal(SIGNAL_RESCUE);
+		CHostage *carried = OC2_HostageCarriedBy((CBasePlayer *)pOther);
+		if (carried) carried->m_bRescueMe = TRUE;
 	}
 
 	if (FClassnameIs(pOther->pev, "hostage_entity"))

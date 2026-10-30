@@ -210,6 +210,8 @@ void LinkUserMessages()
 	gmsgSendCorpse    = REG_USER_MSG("ClCorpse", -1);
 	gmsgHostagePos    = REG_USER_MSG("HostagePos", 8);
 	gmsgHostageK      = REG_USER_MSG("HostageK", 1);
+	gmsgOC2Hostage    = REG_USER_MSG("OC2Hostage", 17);
+	ADD_SERVER_COMMAND("oc2_hostage_dump", OC2_HostageDump);
 	gmsgHLTV          = REG_USER_MSG("HLTV", 2);
 	gmsgSpecHealth    = REG_USER_MSG("SpecHealth", 1);
 	gmsgForceCam      = REG_USER_MSG("ForceCam", 3);
@@ -327,6 +329,7 @@ BOOL EXT_FUNC ClientConnect(edict_t *pEntity, const char *pszName, const char *p
 void EXT_FUNC ClientDisconnect(edict_t *pEntity)
 {
 	CBasePlayer *pPlayer = CBasePlayer::Instance(pEntity);
+	if (pPlayer) OC2_HostageDropPlayer(pPlayer);
 	OC2_ItemsClientDisconnected(pPlayer);
 
 	if (!g_pGameRules->IsGameOver())

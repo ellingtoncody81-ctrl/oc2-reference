@@ -60,7 +60,9 @@ private:
 	void LoadObjectives( const char *pszMapName );
 	void DrawObjectives( int localTeam );
 	void DrawObjectiveLabels();
-	void DrawSiteLetter( int cx, int cy, char letter, int scale );
+	void DrawSiteLetter( int cx, int cy, char letter, int scale, int red = 240, int green = 170, int blue = 40 );
+	int ProjectRescueRegion( const Vector &mins, const Vector &maxs, float *x, float *y,
+		float *edgeU = NULL, float *edgeV = NULL ) const;
 	void DrawBomb( int localTeam, float flTime );
 	void DrawHostages( int localTeam, float flTime );
 	bool ObjectivePoint( const Vector &world, int halfSize, int &x, int &y );
@@ -121,6 +123,8 @@ public:
 	struct Objective
 	{
 		Vector origin;
+		Vector boundsMin, boundsMax;
+		bool exactBounds;
 		bool bomb;
 		char label;
 		char group[64];

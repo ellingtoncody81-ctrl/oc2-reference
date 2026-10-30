@@ -16,6 +16,7 @@
 // death notice
 //
 #include "hud.h"
+#include "oc2_hostage.h"
 #include "cl_util.h"
 #include "parsemsg.h"
 
@@ -332,6 +333,7 @@ void CHudDeathNotice::Reset()
 
 int CHudDeathNotice::MsgFunc_HudRound(const char *pszName, int iSize, void *pbuf)
 {
+	oc2_hostage::RoundReset();
 	// GoldSrc bridge for CS:GO CCSPlayer::RoundRespawn (cs_player.cpp:8363-8364).
 	kill_feedback::ResetRound(s_KillFeedback);
 	gHUD.m_Timer.ResetRound();

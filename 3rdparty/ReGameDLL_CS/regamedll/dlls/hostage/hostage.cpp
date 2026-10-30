@@ -34,6 +34,187 @@ cvar_t cv_hostage_stop  = { "hostage_stop", "0", FCVAR_SERVER, 0.0f, nullptr };
 
 CHostageManager *g_pHostages = nullptr;
 int g_iHostageNumber = 0;
+int gmsgOC2Hostage = 0;
+unsigned short g_OC2HostageEpoch = 0;
+
+static void OC2_HostageMessage(CBasePlayer *player, int kind, CHostage *hostage)
+{
+	if (!player || player->m_iTeam != CT || !gmsgOC2Hostage) return;
+	const int state = hostage ? hostage->OC2_State() : 0;
+	CBasePlayer *carrier = hostage ? (CBasePlayer *)(CBaseEntity *)hostage->m_hOC2Carrier : nullptr;
+	const int slot = carrier ? carrier->entindex() : 0;
+	const int uid = carrier ? GETPLAYERUSERID(carrier->edict()) : 0;
+	const Vector pos = hostage ? hostage->OC2_Position() : Vector(0, 0, 0);
+	MESSAGE_BEGIN(MSG_ONE, gmsgOC2Hostage, nullptr, player->pev);
+		WRITE_BYTE(1); WRITE_BYTE(kind); WRITE_SHORT(g_OC2HostageEpoch);
+		WRITE_BYTE(hostage ? hostage->m_iHostageIndex : 0);
+		WRITE_BYTE(state); WRITE_BYTE(slot); WRITE_LONG(uid);
+		WRITE_COORD(pos.x); WRITE_COORD(pos.y); WRITE_COORD(pos.z);
+	MESSAGE_END();
+}
+
+int CHostage::OC2_State()
+{
+	if (m_iOC2Terminal) return m_iOC2Terminal;
+	if (m_hOC2Carrier) return 2;
+	return IsFollowingSomeone() ? 1 : 0;
+}
+
+Vector CHostage::OC2_Position()
+{
+	CBaseEntity *carrier = m_hOC2Carrier;
+	return carrier ? carrier->pev->origin : pev->origin;
+}
+
+void CHostage::OC2_SendState(CBasePlayer *player)
+{
+	if (m_iHostageIndex < 1 || m_iHostageIndex > 24) return;
+	if (player) { OC2_HostageMessage(player, 1, this); return; }
+	for (int i = 1; i <= gpGlobals->maxClients; ++i)
+	{
+		CBasePlayer *recipient = UTIL_PlayerByIndex(i);
+		if (recipient && !recipient->IsDormant()) OC2_HostageMessage(recipient, 1, this);
+	}
+}
+
+void OC2_HostageSnapshot(CBasePlayer *player)
+{
+	if (!player || player->m_iTeam != CT) return;
+	OC2_HostageMessage(player, 0, nullptr);
+	CHostage *hostage = nullptr;
+	while ((hostage = UTIL_FindEntityByClassname(hostage, "hostage_entity")))
+		hostage->OC2_SendState(player);
+	OC2_HostageMessage(player, 2, nullptr);
+}
+
+void OC2_HostageRoundStart()
+{
+	++g_OC2HostageEpoch;
+	for (int i = 1; i <= gpGlobals->maxClients; ++i)
+		OC2_HostageSnapshot(UTIL_PlayerByIndex(i));
+}
+
+CHostage *OC2_HostageCarriedBy(CBasePlayer *player)
+{
+	CHostage *hostage = nullptr;
+	while ((hostage = UTIL_FindEntityByClassname(hostage, "hostage_entity")))
+		if ((CBaseEntity *)hostage->m_hOC2Carrier == player) return hostage;
+	return nullptr;
+}
+
+void OC2_HostageDropPlayer(CBasePlayer *player)
+{
+	CHostage *hostage = OC2_HostageCarriedBy(player);
+	if (hostage) hostage->OC2_Drop(true);
+}
+
+bool CHostage::OC2_PickUp(CBasePlayer *player)
+{
+	if (!player || player->entindex() < 1 || player->entindex() > 32 ||
+		!player->IsAlive() || player->m_iTeam != CT || !IsAlive() ||
+		m_hOC2Carrier || m_bOC2PendingPlacement || OC2_HostageCarriedBy(player) ||
+		(player->pev->origin - pev->origin).Length() > 96.0f) return false;
+	TraceResult tr;
+	UTIL_TraceLine(player->EyePosition(), pev->origin + Vector(0, 0, 36), dont_ignore_monsters, player->edict(), &tr);
+	if (tr.flFraction < 1.0f && tr.pHit != edict()) return false;
+	m_vecOC2LastSafe = pev->origin;
+	m_iOC2OriginalModel = pev->model;
+	m_iOC2OriginalMoveType = pev->movetype;
+	m_iOC2OriginalSolid = pev->solid;
+	m_vecOC2OriginalVAngle = pev->v_angle;
+	if (m_improv) m_improv->Idle();
+	m_State = STAND; m_hTargetEnt = nullptr; m_hStoppedTargetEnt = nullptr;
+	m_hOC2Carrier = player;
+	SET_MODEL(edict(), "models/hostage/p_hostage_carry.mdl");
+	pev->sequence = 0; pev->frame = 0; pev->velocity = Vector(0, 0, 0);
+	pev->solid = SOLID_NOT; pev->movetype = MOVETYPE_FOLLOW; pev->aiment = player->edict();
+	pev->v_angle = Vector(0, 0, 0);
+	player->ResetMaxSpeed();
+	GiveCTTouchBonus(player);
+	player->HostageUsed();
+	if (TheBots) TheBots->OnEvent(EVENT_HOSTAGE_USED, player);
+	OC2_SendState();
+	return true;
+}
+
+bool CHostage::OC2_FindDrop(const Vector &center, edict_t *ignore, Vector &target)
+{
+	// The old pickup point is only a candidate when nearby; it must pass the
+	// same path, ground and full-hull tests as every other candidate.
+	for (int i = 0; i < 33; ++i)
+	{
+		Vector candidate;
+		if (i == 32)
+		{
+			candidate = m_vecOC2LastSafe + Vector(0, 0, 36);
+			if ((candidate - center).Length() > 192.0f) continue;
+		}
+		else
+		{
+			const float angle = (i % 8) * 0.7853981634f;
+			const float distance = 32.0f * (1 + i / 8);
+			candidate = center + Vector(cos(angle) * distance, sin(angle) * distance, 0);
+		}
+		TraceResult path, floor, fit;
+		UTIL_TraceHull(center, candidate, dont_ignore_monsters, human_hull, ignore, &path);
+		if (path.fStartSolid || path.fAllSolid || path.flFraction < 1.0f) continue;
+		UTIL_TraceHull(candidate, candidate - Vector(0, 0, 128), dont_ignore_monsters, human_hull, ignore, &floor);
+		if (floor.fStartSolid || floor.fAllSolid || floor.flFraction >= 1.0f || floor.vecPlaneNormal.z < 0.7f) continue;
+		// Ignore the hostage, not the player, when checking the final volume.
+		const Vector hullCenter = floor.vecEndPos + Vector(0, 0, 1);
+		UTIL_TraceHull(hullCenter, hullCenter, dont_ignore_monsters, human_hull, edict(), &fit);
+		if (fit.fStartSolid || fit.fAllSolid) continue;
+		target = hullCenter - Vector(0, 0, 36);
+		return true;
+	}
+	return false;
+}
+
+bool CHostage::OC2_Drop(bool forced)
+{
+	CBasePlayer *player = (CBasePlayer *)(CBaseEntity *)m_hOC2Carrier;
+	if (!player && (!forced || pev->movetype != MOVETYPE_FOLLOW)) return false;
+	const Vector center = player ? player->pev->origin : pev->origin;
+	Vector target;
+	const bool found = OC2_FindDrop(center, player ? player->edict() : edict(), target);
+	if (!found && !forced) return false;
+	m_hOC2Carrier = nullptr;
+	pev->aiment = nullptr;
+	pev->movetype = found ? m_iOC2OriginalMoveType : MOVETYPE_NONE;
+	pev->solid = found ? m_iOC2OriginalSolid : SOLID_NOT;
+	pev->v_angle = m_vecOC2OriginalVAngle;
+	SET_MODEL(edict(), STRING(m_iOC2OriginalModel));
+	UTIL_SetSize(pev, VEC_HOSTAGE_HULL_MIN, VEC_HOSTAGE_HULL_MAX);
+	UTIL_SetOrigin(pev, found ? target : center); pev->velocity = Vector(0, 0, 0);
+	m_bOC2PendingPlacement = !found;
+	m_flOC2NextPlacement = gpGlobals->time + 0.25f;
+	SetActivity(ACT_IDLE);
+	if (player) player->ResetMaxSpeed();
+	OC2_SendState();
+	return true;
+}
+
+void OC2_HostageDump()
+{
+	int total = 0, alive = 0, dead = 0, rescued = 0;
+	CHostage *h = nullptr;
+	while ((h = UTIL_FindEntityByClassname(h, "hostage_entity")))
+	{
+		++total; int state = h->OC2_State();
+		if (state == 3) ++dead; else if (state == 4) ++rescued; else ++alive;
+	}
+	const float ratio = Q_min(Q_max(hostages_rescued_ratio.value, 0.0f), 1.0f);
+	const int goal = (int)ceil((rescued + alive) * ratio);
+	ALERT(at_console, "oc2hostage: time=%.3f epoch=%u total=%d alive=%d rescued=%d dead=%d round_win=%d ratio=%.3f goal=%d\n", gpGlobals->time, g_OC2HostageEpoch, total, alive, rescued, dead, CSGameRules()->m_iRoundWinStatus, ratio, goal);
+	h = nullptr;
+	while ((h = UTIL_FindEntityByClassname(h, "hostage_entity")))
+	{
+		int state = h->OC2_State();
+		CBasePlayer *p = (CBasePlayer *)(CBaseEntity *)h->m_hOC2Carrier;
+		Vector v = h->OC2_Position();
+		ALERT(at_console, "oc2hostage_state: id=%d entity=%d state=%d carrier=%d userid=%d model=%s origin=%.1f,%.1f,%.1f speed=%.1f pending=%d solid=%d\n", h->m_iHostageIndex, h->entindex(), state, p ? p->entindex() : 0, p ? GETPLAYERUSERID(p->edict()) : 0, STRING(h->pev->model), v.x, v.y, v.z, p ? p->pev->maxspeed : 0.0f, int(h->m_bOC2PendingPlacement), int(h->pev->solid));
+	}
+}
 
 struct
 {
@@ -197,6 +378,10 @@ LINK_ENTITY_TO_CLASS(monster_scientist, CHostage, CCSHostage)
 
 void CHostage::Spawn()
 {
+	m_hOC2Carrier = nullptr;
+	m_iOC2Terminal = 0;
+	m_bOC2PendingPlacement = false;
+	m_flOC2NextPlacement = 0.0f;
 	if (!g_pHostages) {
 		g_pHostages = new CHostageManager;
 	}
@@ -269,6 +454,8 @@ void CHostage::Spawn()
 
 void CHostage::Precache()
 {
+	PRECACHE_MODEL("models/hostage/p_hostage_carry.mdl");
+	PRECACHE_MODEL("models/hostage/v_hostage_arm.mdl");
 	if (cv_hostage_ai_enable.value)
 	{
 		string_t model = iStringNull;
@@ -351,6 +538,34 @@ void CHostage::IdleThink()
 	const float upkeepRate = 0.03f;
 	const float giveUpTime = (1 / 30.0f);
 	float const updateRate = 0.1f;
+	CBasePlayer *oc2Carrier = (CBasePlayer *)(CBaseEntity *)m_hOC2Carrier;
+	if (!oc2Carrier && pev->movetype == MOVETYPE_FOLLOW) OC2_Drop(true);
+	if (oc2Carrier && (!oc2Carrier->IsAlive() || oc2Carrier->m_iTeam != CT || oc2Carrier->IsDormant()))
+	{
+		OC2_Drop(true);
+		oc2Carrier = nullptr;
+	}
+	if (m_bOC2PendingPlacement)
+	{
+		if (gpGlobals->time >= m_flOC2NextPlacement)
+		{
+			Vector target;
+			m_flOC2NextPlacement = gpGlobals->time + 0.25f;
+			if (OC2_FindDrop(pev->origin, edict(), target))
+			{
+				m_bOC2PendingPlacement = false;
+				pev->movetype = m_iOC2OriginalMoveType;
+				pev->solid = m_iOC2OriginalSolid;
+				UTIL_SetOrigin(pev, target);
+				OC2_SendState();
+			}
+		}
+		if (m_bOC2PendingPlacement)
+		{
+			pev->nextthink = gpGlobals->time + giveUpTime;
+			return;
+		}
+	}
 
 	if (cv_hostage_ai_enable.value && !TheNavAreaList.empty())
 	{
@@ -373,7 +588,7 @@ void CHostage::IdleThink()
 	flInterval = StudioFrameAdvance();
 	DispatchAnimEvents(flInterval);
 
-	if (m_improv)
+	if (m_improv && !oc2Carrier)
 	{
 		m_improv->OnUpkeep(upkeepRate);
 	}
@@ -398,11 +613,13 @@ void CHostage::IdleThink()
 		m_bStuck = FALSE;
 	}
 
-	if (m_hTargetEnt || m_improv)
+	if (m_hTargetEnt || m_improv || oc2Carrier)
 	{
 		CBasePlayer *pPlayer = nullptr;
 
-		if (m_improv)
+		if (oc2Carrier)
+			pPlayer = oc2Carrier;
+		else if (m_improv)
 		{
 			if (m_improv->IsFollowing())
 				pPlayer = m_improv->GetFollowLeader();
@@ -424,7 +641,7 @@ void CHostage::IdleThink()
 				CBaseEntity *pSpot = nullptr;
 				while ((pSpot = UTIL_FindEntityByClassname(pSpot, "info_hostage_rescue")))
 				{
-					if ((pSpot->pev->origin - pev->origin).Length() < MAX_HOSTAGES_RESCUE_RADIUS)
+					if ((pSpot->pev->origin - OC2_Position()).Length() < MAX_HOSTAGES_RESCUE_RADIUS)
 					{
 						m_bRescueMe = TRUE;
 						break;
@@ -437,7 +654,7 @@ void CHostage::IdleThink()
 
 					while ((pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_start")))
 					{
-						if ((pSpot->pev->origin - pev->origin).Length() < MAX_HOSTAGES_RESCUE_RADIUS)
+						if ((pSpot->pev->origin - OC2_Position()).Length() < MAX_HOSTAGES_RESCUE_RADIUS)
 						{
 							m_bRescueMe = TRUE;
 							break;
@@ -448,6 +665,17 @@ void CHostage::IdleThink()
 
 			if (m_bRescueMe)
 			{
+				if (oc2Carrier)
+				{
+					Vector rescuePos = OC2_Position();
+					OC2_Drop(true);
+					pev->solid = SOLID_NOT;
+					pev->movetype = MOVETYPE_NONE;
+					UTIL_SetOrigin(pev, rescuePos);
+				}
+				m_bOC2PendingPlacement = false;
+				m_iOC2Terminal = 4;
+				OC2_SendState();
 				if (TheBots)
 				{
 					TheBots->OnEvent(EVENT_HOSTAGE_RESCUED, pPlayer, this);
@@ -494,11 +722,11 @@ void CHostage::IdleThink()
 		}
 	}
 
-	if (m_improv)
+	if (m_improv && !oc2Carrier)
 	{
 		m_improv->OnUpdate(updateRate);
 	}
-	else
+	else if (!oc2Carrier)
 	{
 		DoFollow();
 
@@ -523,15 +751,16 @@ void CHostage::IdleThink()
 	{
 		if (m_flNextRadarTime <= gpGlobals->time)
 		{
-			Vector vDistance = m_vOldPos - pev->origin;
+			Vector vDistance = m_vOldPos - OC2_Position();
 
 			if (vDistance.Length() > 1.0f)
 			{
-				m_vOldPos = pev->origin;
+				m_vOldPos = OC2_Position();
 
 				if (!CSGameRules()->m_flRestartRoundTime)
 				{
 					SendHostagePositionMsg();
+					OC2_SendState();
 				}
 			}
 
@@ -557,6 +786,18 @@ void CHostage::Remove()
 
 void CHostage::RePosition()
 {
+	CBasePlayer *carrier = (CBasePlayer *)(CBaseEntity *)m_hOC2Carrier;
+	if (carrier || pev->movetype == MOVETYPE_FOLLOW || m_bOC2PendingPlacement)
+	{
+		m_hOC2Carrier = nullptr;
+		pev->aiment = nullptr;
+		pev->v_angle = m_vecOC2OriginalVAngle;
+		SET_MODEL(edict(), STRING(m_iOC2OriginalModel));
+		if (carrier) carrier->ResetMaxSpeed();
+	}
+	m_bOC2PendingPlacement = false;
+	m_flOC2NextPlacement = 0.0f;
+	m_iOC2Terminal = 0;
 	pev->health = pev->max_health;
 	pev->movetype = MOVETYPE_STEP;
 	pev->solid = SOLID_SLIDEBOX;
@@ -692,6 +933,8 @@ BOOL CHostage::TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float
 	}
 	else
 	{
+		if (m_hOC2Carrier) OC2_Drop(true);
+		m_bOC2PendingPlacement = false;
 		pev->health = 0;
 		pev->movetype = MOVETYPE_TOSS;
 		pev->flags &= ~FL_ONGROUND;
@@ -718,6 +961,8 @@ BOOL CHostage::TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float
 			m_improv->Chatter(HOSTAGE_CHATTER_DEATH_CRY);
 		}
 
+		m_iOC2Terminal = 3;
+		OC2_SendState();
 		CSGameRules()->CheckWinConditions();
 
 		if (!CSGameRules()->m_flRestartRoundTime)
@@ -882,6 +1127,8 @@ void CHostage::Use(CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useTy
 {
 	if (!pActivator->IsPlayer())
 		return;
+	if (useType == USE_SET && value == 0.0f)
+		return;
 
 #ifdef REGAMEDLL_FIXES
 	if (!IsAlive())
@@ -892,6 +1139,11 @@ void CHostage::Use(CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useTy
 #endif
 
 	CBasePlayer *pPlayer = (CBasePlayer *)pActivator;
+	if (pPlayer->m_iTeam == CT && gpGlobals->time >= m_flNextChange)
+	{
+		if (OC2_PickUp(pPlayer)) m_flNextChange = gpGlobals->time + 0.25f;
+		return;
+	}
 	if (pPlayer->m_iTeam != CT)
 	{
 		if (!(pPlayer->m_flDisplayHistory & DHF_HOSTAGE_CTMOVE))

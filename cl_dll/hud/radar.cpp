@@ -28,6 +28,7 @@ version.
 */
 
 #include "hud.h"
+#include "oc2_hostage.h"
 #include "cl_util.h"
 #include "parsemsg.h"
 #include "draw_util.h"
@@ -79,6 +80,7 @@ static byte	data2D[BLOCK_SIZE_MAX*4];	// intermediate texbuffer
 
 int CHudRadar::Init()
 {
+	oc2_hostage::Init();
 	HOOK_MESSAGE( gHUD.m_Radar, Radar );
 	HOOK_COMMAND( gHUD.m_Radar, "drawradar", ShowRadar );
 	HOOK_COMMAND( gHUD.m_Radar, "hideradar", HideRadar );
@@ -108,14 +110,6 @@ void CHudRadar::Reset()
 
 		g_PlayerExtraInfo[i].radarflashes = 0;
 
-		if( i <= MAX_HOSTAGES )
-		{
-			// Keep origin/radarflashes across a round reset. The server only
-			// resends HostagePos on spawn or movement, and this reset message
-			// can arrive after that update, which used to erase live markers
-			// for the rest of the round. Map changes clear them instead.
-			g_HostageInfo[i].dead = false;
-		}
 	}
 
 	// The C4 slot is deliberately not touched here. ResetHUD also arrives mid
@@ -195,6 +189,7 @@ void CHudRadar::Shutdown( void )
 
 void CHudRadar::InitHUDData( void )
 {
+	oc2_hostage::MapReset();
 	UserCmd_ShowRadar();
 	Reset();
 	g_PlayerExtraInfo[33].dead = true;
@@ -582,9 +577,10 @@ int CHudRadar::MsgFunc_HostagePos(const char *pszName, int iSize, void *pbuf)
 	int idx = reader.ReadByte();
 	if( idx >= 1 && idx <= MAX_HOSTAGES )
 	{
-		g_HostageInfo[idx].origin.x = reader.ReadCoord();
-		g_HostageInfo[idx].origin.y = reader.ReadCoord();
-		g_HostageInfo[idx].origin.z = reader.ReadCoord();
+		Vector origin;
+		origin.x = reader.ReadCoord(); origin.y = reader.ReadCoord(); origin.z = reader.ReadCoord();
+		if( !oc2_hostage::LegacyPosition(idx, origin, gEngfuncs.GetClientTime()) ) return 1;
+		g_HostageInfo[idx].origin = origin;
 		g_HostageInfo[idx].dead = false;
 
 		if( Flag == 1 || !g_HostageInfo[idx].radarflashes ) // initial or first known update
@@ -602,6 +598,7 @@ int CHudRadar::MsgFunc_HostageK(const char *pszName, int iSize, void *pbuf)
 {
 	BufferReader reader( pszName, pbuf, iSize );
 	int idx = reader.ReadByte();
+	if ( !oc2_hostage::LegacyEnd(idx, gEngfuncs.GetClientTime()) ) return 1;
 	if ( idx >= 1 && idx <= MAX_HOSTAGES && g_HostageInfo[idx].radarflashes )
 	{
 		g_HostageInfo[idx].dead = true;

@@ -54,6 +54,7 @@
 #include "wpn_shared/oc2_reload.h"
 #include "view_ads.h"
 #include "accessory_client.h"
+#include "oc2_hostage.h"
 
 extern CGameStudioModelRenderer g_StudioRenderer;
 extern engine_studio_api_t IEngineStudio;
@@ -1379,6 +1380,90 @@ static void DrawOC2EquipmentArms(CStudioModelRenderer &renderer, alight_t &light
 	IEngineStudio.SetForceFaceFlags(savedFaceFlags);
 }
 
+// Draw the hostage arm in the current viewmodel pass, with its own model and
+// animation but the same projection, depth and handedness as the weapon.
+static void DrawOC2HostageArm(CStudioModelRenderer &renderer, alight_t &lighting, float *lightdir)
+{
+	int sequence = 0;
+	float frame = 0;
+	const float now = gEngfuncs.GetClientTime();
+	if (!oc2_hostage::ViewPose(now, sequence, frame)) return;
+	model_t *model = IEngineStudio.Mod_ForName("models/hostage/v_hostage_arm.mdl", false);
+	studiohdr_t *header = model && model->type == mod_studio ? (studiohdr_t *)IEngineStudio.Mod_Extradata(model) : NULL;
+	if (!header || header->numbodyparts < 1 || header->numbones < 1 || header->numbones > MAXSTUDIOBONES ||
+		sequence < 0 || sequence >= header->numseq ||
+		!StudioRange(header, header->boneindex, header->numbones, sizeof(mstudiobone_t)) ||
+		!StudioRange(header, header->seqindex, header->numseq, sizeof(mstudioseqdesc_t))) return;
+	const mstudiobone_t *bones = (const mstudiobone_t *)((const byte *)header + header->boneindex);
+	for (int i = 0; i < header->numbones; ++i)
+		if (bones[i].parent < -1 || bones[i].parent >= i) return;
+
+	const cl_entity_t savedEntity = *renderer.m_pCurrentEntity;
+	studiohdr_t *const savedHeader = renderer.m_pStudioHeader;
+	model_t *const savedModel = renderer.m_pRenderModel;
+	mstudiobodyparts_t *const savedPart = renderer.m_pBodyPart;
+	mstudiomodel_t *const savedSub = renderer.m_pSubModel;
+	const int savedFaceFlags = IEngineStudio.GetForceFaceFlags();
+	float savedBones[MAXSTUDIOBONES][3][4], savedLights[MAXSTUDIOBONES][3][4];
+	memcpy(savedBones, *renderer.m_pbonetransform, sizeof(savedBones));
+	memcpy(savedLights, *renderer.m_plighttransform, sizeof(savedLights));
+	const bool mirror = MirrorViewModel(savedHeader);
+
+	renderer.m_pRenderModel = model;
+	renderer.m_pStudioHeader = header;
+	renderer.m_pCurrentEntity->model = model;
+	renderer.m_pCurrentEntity->curstate.sequence = sequence;
+	renderer.m_pCurrentEntity->curstate.body = 0;
+	renderer.m_pCurrentEntity->curstate.skin = 0;
+	IEngineStudio.StudioSetHeader(header);
+	IEngineStudio.SetRenderModel(model);
+	float pos[MAXSTUDIOBONES][3] = {};
+	vec4_t q[MAXSTUDIOBONES] = {};
+	renderer.StudioSampleSequence(sequence, frame, 0, 0, pos, q);
+	for (int i = 0; i < header->numbones; ++i)
+	{
+		float local[3][4];
+		QuaternionMatrix(q[i], local);
+		local[0][3] = pos[i][0]; local[1][3] = pos[i][1]; local[2][3] = pos[i][2];
+		if (bones[i].parent == -1)
+		{
+			if (IEngineStudio.IsHardware() && mirror)
+				for (int j = 0; j < 4; ++j) local[1][j] = -local[1][j];
+			if (IEngineStudio.IsHardware())
+			{
+				ConcatTransforms(*renderer.m_protationmatrix, local, (*renderer.m_pbonetransform)[i]);
+				MatrixCopy((*renderer.m_pbonetransform)[i], (*renderer.m_plighttransform)[i]);
+			}
+			else
+			{
+				ConcatTransforms(*renderer.m_paliastransform, local, (*renderer.m_pbonetransform)[i]);
+				ConcatTransforms(*renderer.m_protationmatrix, local, (*renderer.m_plighttransform)[i]);
+			}
+		}
+		else
+		{
+			ConcatTransforms((*renderer.m_pbonetransform)[bones[i].parent], local, (*renderer.m_pbonetransform)[i]);
+			ConcatTransforms((*renderer.m_plighttransform)[bones[i].parent], local, (*renderer.m_plighttransform)[i]);
+		}
+	}
+	IEngineStudio.StudioSetupLighting(&lighting);
+	renderer.StudioRenderModel(lightdir);
+	oc2_hostage::ViewDrawn(now, sequence, frame);
+
+	*renderer.m_pCurrentEntity = savedEntity;
+	renderer.m_pStudioHeader = savedHeader;
+	renderer.m_pRenderModel = savedModel;
+	renderer.m_pBodyPart = savedPart;
+	renderer.m_pSubModel = savedSub;
+	memcpy(*renderer.m_pbonetransform, savedBones, sizeof(savedBones));
+	memcpy(*renderer.m_plighttransform, savedLights, sizeof(savedLights));
+	IEngineStudio.StudioSetHeader(savedHeader);
+	IEngineStudio.SetRenderModel(savedModel);
+	IEngineStudio.StudioSetupLighting(&lighting);
+	IEngineStudio.StudioSetRemapColors(renderer.m_nTopColor, renderer.m_nBottomColor);
+	IEngineStudio.SetForceFaceFlags(savedFaceFlags);
+}
+
 int CStudioModelRenderer::StudioDrawModel(int flags)
 {
 	m_pCurrentEntity = IEngineStudio.GetCurrentEntity();
@@ -1520,6 +1605,7 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 			OC2_BeginAccessories(*this,ViewModelReloadWeapon(m_pRenderModel,shield));
 			DrawOC2EquipmentArms(*this, lighting, dir);
 			OC2_DrawAccessories(*this,lighting,dir);
+			DrawOC2HostageArm(*this, lighting, dir);
 		}
 	}
 

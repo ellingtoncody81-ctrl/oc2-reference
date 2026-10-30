@@ -417,6 +417,7 @@ CHalfLifeMultiplay::CHalfLifeMultiplay()
 	m_bRoundTerminating = false;
 
 	g_iHostageNumber = 0;
+	g_OC2HostageEpoch = 0;
 
 	m_iMaxRounds = int(CVAR_GET_FLOAT("mp_maxrounds"));
 
@@ -1474,39 +1475,22 @@ bool CHalfLifeMultiplay::Hostage_Rescue(float tmDelay)
 
 bool CHalfLifeMultiplay::HostageRescueRoundEndCheck()
 {
-	// Check to see if 50% of the hostages have been rescued.
 	CBaseEntity *pHostage = nullptr;
 	int hostagesCount = 0;
-
-	// Assume that all hostages are either rescued or dead..
-	bool bHostageAlive = false;
+	int alive = 0;
 
 	while ((pHostage = UTIL_FindEntityByClassname(pHostage, "hostage_entity")))
 	{
 		hostagesCount++;
 
-		// We've found a live hostage. don't end the round
-		if (pHostage->IsAlive())
-		{
-			bHostageAlive = true;
-		}
+		if (pHostage->IsAlive()) ++alive;
 	}
-
-#ifdef REGAMEDLL_ADD
-	if (hostagesCount > 0 && m_iHostagesRescued >= (hostagesCount * Q_min(hostages_rescued_ratio.value, 1.0f)))
-	{
+	if (!hostagesCount) return false;
+	if (!alive && !m_iHostagesRescued)
+		return OnRoundEnd_Intercept(WINSTATUS_TERRORISTS, ROUND_HOSTAGE_NOT_RESCUED, GetRoundRestartDelay());
+	float ratio = Q_min(Q_max(hostages_rescued_ratio.value, 0.0f), 1.0f);
+	if (m_iHostagesRescued > 0 && m_iHostagesRescued >= (m_iHostagesRescued + alive) * ratio)
 		return OnRoundEnd_Intercept(WINSTATUS_CTS, ROUND_ALL_HOSTAGES_RESCUED, GetRoundRestartDelay());
-	}
-#else
-	// There are no hostages alive.. check to see if the CTs have rescued atleast 50% of them.
-	if (!bHostageAlive && hostagesCount > 0)
-	{
-		if (m_iHostagesRescued >= (hostagesCount * 0.5f))
-		{
-			return OnRoundEnd_Intercept(WINSTATUS_CTS, ROUND_ALL_HOSTAGES_RESCUED, GetRoundRestartDelay());
-		}
-	}
-#endif
 
 	return false;
 }
@@ -1969,6 +1953,7 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 	// only a real round restart, never ResetHUD/fullupdate, resets round kills.
 	MESSAGE_BEGIN(MSG_ALL, gmsgHudRound);
 	MESSAGE_END();
+	OC2_HostageRoundStart();
 
 	// Adrian - No cash for anyone at first rounds! ( well, only the default. )
 	if (m_bCompleteReset)

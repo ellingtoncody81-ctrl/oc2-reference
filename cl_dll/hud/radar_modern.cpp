@@ -18,6 +18,7 @@ Measurements taken from the decompiled binary:
 */
 
 #include "hud.h"
+#include "oc2_hostage.h"
 #include "hud_spectator.h"	// overviewInfo_t / CHudSpectator overview parser
 #include "com_model.h"		// model_t, used for the overview map sprite
 #include "cl_util.h"
@@ -410,6 +411,17 @@ void CHudRadarModern::DumpState() const
 		m_vecBombAccepted.x, m_vecBombAccepted.y, m_vecBombAccepted.z,
 		int( m_bBombDrawn ), m_flBombDrawTime, m_vecBombDrawOrigin.x,
 		m_vecBombDrawOrigin.y, m_vecBombDrawOrigin.z );
+	for( int i = 0; i < m_iObjectiveCount; ++i )
+	{
+		const Objective &site = m_Objectives[i];
+		if( site.bomb ) continue;
+		float x[64], y[64];
+		const int count = ProjectRescueRegion( site.boundsMin, site.boundsMax, x, y );
+		gEngfuncs.Con_Printf( "radar_region: slot=%d label=%c exact=%d min=%.1f,%.1f,%.1f max=%.1f,%.1f,%.1f vertices=%d\n",
+			i, site.label ? site.label : '-', int( site.exactBounds ),
+			site.boundsMin.x, site.boundsMin.y, site.boundsMin.z,
+			site.boundsMax.x, site.boundsMax.y, site.boundsMax.z, count );
+	}
 }
 
 void CHudRadarModern::Think( void )
@@ -778,12 +790,6 @@ void CHudRadarModern::LoadObjectives( const char *mapName )
 		m_iObjectiveCount = 0;
 		m_bObjectivesLoaded = false;
 		m_pObjectiveEntities = NULL;
-		// A new map invalidates the previous map's hostage positions.
-		for( int i = 1; i <= MAX_HOSTAGES; ++i )
-		{
-			g_HostageInfo[i].radarflashes = 0;
-			g_HostageInfo[i].dead = false;
-		}
 	}
 	cl_entity_t *worldEntity = gEngfuncs.GetEntityByIndex( 0 );
 	if( !worldEntity || !worldEntity->model ) return;
@@ -857,6 +863,8 @@ void CHudRadarModern::LoadObjectives( const char *mapName )
 		if( !bomb && !rescue && !ctSpawn ) continue;
 		Vector center;
 		bool haveCenter = false;
+		Vector boundsMin, boundsMax;
+		bool haveBounds = false;
 		if( model[0] == '*' && model[1] >= '0' && model[1] <= '9' )
 		{
 			const int index = atoi( model + 1 );
@@ -876,14 +884,23 @@ void CHudRadarModern::LoadObjectives( const char *mapName )
 					memcpy( mins, entry, sizeof( mins ) );
 					memcpy( maxs, entry + 12, sizeof( maxs ) );
 					for( int axis = 0; axis < 3; ++axis )
+					{
 						center[axis] = ( mins[axis] + maxs[axis] ) * 0.5f;
+						boundsMin[axis] = mins[axis]; boundsMax[axis] = maxs[axis];
+					}
+					haveBounds = true;
 					haveCenter = true;
 				}
 			}
 			if( !haveCenter && world->submodels && index > 0 && index < world->numsubmodels )
 			{
 				for( int axis = 0; axis < 3; ++axis )
-					center[axis] = ( world->submodels[index].mins[axis] + world->submodels[index].maxs[axis] ) * 0.5f;
+				{
+					boundsMin[axis] = world->submodels[index].mins[axis];
+					boundsMax[axis] = world->submodels[index].maxs[axis];
+					center[axis] = ( boundsMin[axis] + boundsMax[axis] ) * 0.5f;
+				}
+				haveBounds = true;
 				haveCenter = true;
 			}
 		}
@@ -915,6 +932,9 @@ void CHudRadarModern::LoadObjectives( const char *mapName )
 		if( m_iObjectiveCount >= 32 ) continue;
 		Objective &site = m_Objectives[m_iObjectiveCount++];
 		site.origin = center;
+		site.boundsMin = haveBounds ? boundsMin : center - Vector( 256, 256, 256 );
+		site.boundsMax = haveBounds ? boundsMax : center + Vector( 256, 256, 256 );
+		site.exactBounds = haveBounds;
 		site.bomb = bomb;
 		site.label = bomb ? RadarSiteLabel( target ) : 0;
 		strncpy( site.group, target, sizeof( site.group ) - 1 );
@@ -938,7 +958,11 @@ void CHudRadarModern::LoadObjectives( const char *mapName )
 				const Vector delta = site.origin - ctSpawns[i];
 				if( DotProduct( delta, delta ) > 512.0f * 512.0f ) continue;
 				for( int axis = 0; axis < 3; ++axis )
+				{
 					site.origin[axis] = ( site.origin[axis] * site.sources + ctSpawns[i][axis] ) / ( site.sources + 1 );
+					site.boundsMin[axis] = min( site.boundsMin[axis], ctSpawns[i][axis] - 256.0f );
+					site.boundsMax[axis] = max( site.boundsMax[axis], ctSpawns[i][axis] + 256.0f );
+				}
 				++site.sources;
 				grouped = true;
 				break;
@@ -946,12 +970,19 @@ void CHudRadarModern::LoadObjectives( const char *mapName )
 			if( grouped || m_iObjectiveCount >= 32 ) continue;
 			Objective &site = m_Objectives[m_iObjectiveCount++];
 			site.origin = ctSpawns[i];
+			site.boundsMin = ctSpawns[i] - Vector( 256, 256, 256 );
+			site.boundsMax = ctSpawns[i] + Vector( 256, 256, 256 );
+			site.exactBounds = false;
 			site.bomb = false;
 			site.label = 0;
 			strcpy( site.group, "#ctspawn" );
 			site.sources = 1;
 		}
 	}
+	int rescueIndex = 0;
+	for( int i = 0; i < m_iObjectiveCount; ++i )
+		if( !m_Objectives[i].bomb )
+			m_Objectives[i].label = rescueIndex < 2 ? (char)( 'A' + rescueIndex++ ) : 0;
 	// Letter fallback. GoldSrc maps name the plant trigger inconsistently
 	// (tgt_a, target01, empty), and the radar has to show A and B on bomb
 	// maps, so: a trailing digit 1/2 maps to A/B, and when neither site of
@@ -2057,22 +2088,100 @@ bool CHudRadarModern::ObjectivePoint( const Vector &world, int halfSize, int &x,
 
 void CHudRadarModern::DrawObjectives( int localTeam )
 {
+	if( localTeam != TEAM_CT ) return;
 	for( int i = 0; i < m_iObjectiveCount; ++i )
 	{
 		const Objective &site = m_Objectives[i];
-		if( !site.bomb && localTeam != TEAM_CT ) continue;
-
-		// Bomb sites are marked by the letter alone (DrawObjectiveLabels).
-		// The old black box + gold square read as a misplaced UI widget, so
-		// nothing is drawn here for a plant site.
-		if( site.bomb )
-			continue;
-
-		int x, y;
-		if( !ObjectivePoint( site.origin, 8, x, y ) ) continue;
-		FillRGBA( x - 7, y - 7, 14, 14, 35, 205, 195, 230 );
-		FillRGBA( x - 3, y - 3, 6, 6, 255, 255, 240, 240 );
+		if( site.bomb ) continue;
+		float x[RADAR_CLIP_MAX], y[RADAR_CLIP_MAX], u[RADAR_CLIP_MAX], v[RADAR_CLIP_MAX];
+		const int n = ProjectRescueRegion( site.boundsMin, site.boundsMax, x, y, u, v );
+		if( n < 3 ) continue;
+		float low = y[0], high = y[0];
+		for( int k = 1; k < n; ++k ) { low = min( low, y[k] ); high = max( high, y[k] ); }
+		// FillRGBABlend preserves real alpha; triAPI forces alpha to 1 on this
+		// engine and would make a translucent region an opaque block.
+		for( int row = (int)ceilf( low ); row <= (int)floorf( high ); ++row )
+		{
+			const float scan = row + 0.5f;
+			float left = 1e9f, right = -1e9f;
+			for( int k = 0; k < n; ++k )
+			{
+				const int j = ( k + 1 ) % n;
+				if( ( y[k] <= scan && y[j] > scan ) || ( y[j] <= scan && y[k] > scan ) )
+				{
+					const float cross = x[k] + ( scan - y[k] ) * ( x[j] - x[k] ) / ( y[j] - y[k] );
+					left = min( left, cross ); right = max( right, cross );
+				}
+			}
+			const int from = (int)ceilf( left ), to = (int)floorf( right );
+			if( from <= to ) FillRGBABlend( from, row, to - from + 1, 1, 25, 175, 165, 38 );
+		}
+		if( gHUD.m_WhiteTex )
+		{
+			gRenderAPI.GL_SelectTexture( 0 );
+			gRenderAPI.GL_Bind( 0, gHUD.m_WhiteTex );
+		}
+		gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
+		gEngfuncs.pTriAPI->CullFace( TRI_NONE );
+		for( int pass = 0; pass < 2; ++pass )
+		{
+			const float half = pass ? 1.0f : 2.0f;
+			gEngfuncs.pTriAPI->Color4ub( pass ? 45 : 0, pass ? 230 : 0, pass ? 215 : 0, 255 );
+			gEngfuncs.pTriAPI->Begin( TRI_QUADS );
+			for( int k = 0; k < n; ++k )
+			{
+				const int j = ( k + 1 ) % n;
+				// UVs identify the original rectangle sides. Circle-clipping
+				// edges are viewport cuts, not physical rescue-zone borders.
+				const bool originalEdge =
+					( fabsf( u[k] ) < 0.0001f && fabsf( u[j] ) < 0.0001f ) ||
+					( fabsf( u[k] - 1 ) < 0.0001f && fabsf( u[j] - 1 ) < 0.0001f ) ||
+					( fabsf( v[k] ) < 0.0001f && fabsf( v[j] ) < 0.0001f ) ||
+					( fabsf( v[k] - 1 ) < 0.0001f && fabsf( v[j] - 1 ) < 0.0001f );
+				if( !originalEdge ) continue;
+				const float dx = x[j] - x[k], dy = y[j] - y[k];
+				const float length = sqrtf( dx * dx + dy * dy );
+				if( length < 0.001f ) continue;
+				const float nx = -dy * half / length, ny = dx * half / length;
+				gEngfuncs.pTriAPI->Vertex3f( x[k] + nx, y[k] + ny, 0 );
+				gEngfuncs.pTriAPI->Vertex3f( x[j] + nx, y[j] + ny, 0 );
+				gEngfuncs.pTriAPI->Vertex3f( x[j] - nx, y[j] - ny, 0 );
+				gEngfuncs.pTriAPI->Vertex3f( x[k] - nx, y[k] - ny, 0 );
+			}
+			gEngfuncs.pTriAPI->End();
+		}
+		gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
 	}
+}
+
+int CHudRadarModern::ProjectRescueRegion( const Vector &mins, const Vector &maxs, float *x, float *y,
+	float *edgeU, float *edgeV ) const
+{
+	if( !m_bOverviewValid || m_flPixelsPerTile <= 0.0f || m_iRadius <= 8 || !x || !y ) return 0;
+	for( int axis = 0; axis < 3; ++axis )
+		if( !std::isfinite( mins[axis] ) || !std::isfinite( maxs[axis] ) || maxs[axis] < mins[axis] ) return 0;
+	if( maxs[0] <= mins[0] || maxs[1] <= mins[1] ) return 0;
+	float selfX, selfY;
+	WorldToTile( gHUD.m_vecOrigin, selfX, selfY );
+	float u[RADAR_CLIP_MAX] = {}, v[RADAR_CLIP_MAX] = {};
+	u[1] = u[2] = 1.0f; v[2] = v[3] = 1.0f;
+	for( int k = 0; k < 4; ++k )
+	{
+		const Vector corner( k == 0 || k == 3 ? mins[0] : maxs[0],
+			k < 2 ? mins[1] : maxs[1], mins[2] );
+		float tx, ty;
+		WorldToTile( corner, tx, ty );
+		const float dx = ( tx - selfX ) * m_flPixelsPerTile;
+		const float dy = ( ty - selfY ) * m_flPixelsPerTile;
+		x[k] = m_iCenterX + dx * m_flTileA - dy * m_flTileB;
+		y[k] = m_iCenterY + dx * m_flTileB + dy * m_flTileA;
+		if( !std::isfinite( x[k] ) || !std::isfinite( y[k] ) ) return 0;
+	}
+	const int n = ClipPolyToCircle( x, y, u, v, 4, x, y, u, v,
+		(float)m_iCenterX, (float)m_iCenterY, (float)m_iRadius - 5.0f );
+	if( edgeU ) memcpy( edgeU, u, n * sizeof( float ) );
+	if( edgeV ) memcpy( edgeV, v, n * sizeof( float ) );
+	return n >= 3 ? n : 0;
 }
 
 /*
@@ -2084,7 +2193,7 @@ the site letter. White halo first, dark glyph on top, so the letter stays
 legible over the gold marker and over a player blip.
 ========================
 */
-void CHudRadarModern::DrawSiteLetter( int cx, int cy, char letter, int scale )
+void CHudRadarModern::DrawSiteLetter( int cx, int cy, char letter, int scale, int red, int green, int blue )
 {
 	static const unsigned char kA[7] = { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
 	static const unsigned char kB[7] = { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E };
@@ -2108,7 +2217,7 @@ void CHudRadarModern::DrawSiteLetter( int cx, int cy, char letter, int scale )
 		for( int col = 0; col < 5; ++col )
 			if( rows[row] & ( 0x10 >> col ) )
 				FillRGBA( ox + col * scale, oy + row * scale,
-					scale, scale, 240, 170, 40, 245 );
+					scale, scale, red, green, blue, 245 );
 }
 
 void CHudRadarModern::DrawObjectiveLabels()
@@ -2116,7 +2225,23 @@ void CHudRadarModern::DrawObjectiveLabels()
 	for( int i = 0; i < m_iObjectiveCount; ++i )
 	{
 		const Objective &site = m_Objectives[i];
-		if( !site.bomb || ( site.label != 'A' && site.label != 'B' ) ) continue;
+		if( site.label != 'A' && site.label != 'B' ) continue;
+		if( !site.bomb )
+		{
+			if( RadarTeamOf( m_iPlayerNum ) != TEAM_CT ) continue;
+			float px[RADAR_CLIP_MAX], py[RADAR_CLIP_MAX];
+			const int n = ProjectRescueRegion( site.boundsMin, site.boundsMax, px, py );
+			if( n < 3 ) continue;
+			float x = 0, y = 0;
+			for( int k = 0; k < n; ++k ) { x += px[k]; y += py[k]; }
+			x /= n; y = y / n - 18.0f;
+			const float dx = x - m_iCenterX, dy = y - m_iCenterY;
+			const float distance = sqrtf( dx * dx + dy * dy );
+			const float limit = m_iRadius - 18.0f;
+			if( distance > limit ) { x = m_iCenterX + dx * limit / distance; y = m_iCenterY + dy * limit / distance; }
+			DrawSiteLetter( (int)x, (int)y, site.label, 3, 180, 255, 245 );
+			continue;
+		}
 		int x, y;
 		if( !ObjectivePoint( site.origin, 12, x, y ) ) continue;
 		DrawSiteLetter( x, y, site.label, 3 );
@@ -2231,31 +2356,45 @@ void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 void CHudRadarModern::DrawHostages( int localTeam, float flTime )
 {
 	if( localTeam != TEAM_CT ) return;
+	const float now = gEngfuncs.GetClientTime();
 	for( int i = 1; i <= MAX_HOSTAGES; ++i )
 	{
-		const hostage_info_t &hostage = g_HostageInfo[i];
-		if( !hostage.radarflashes ) continue;
-		// HostageK is sent for both death and rescue, without an outcome byte.
-		// Show a short neutral terminal state, then remove the old position.
-		if( hostage.dead && ( flTime < hostage.radarflashtime || flTime - hostage.radarflashtime > 1.5f ) ) continue;
-		CClientSprite *sprite = s_spr[SPR_HOSTAGE];
-		const int halfSize = sprite && sprite->spr ? max( sprite->rect.Width(), sprite->rect.Height() ) / 2 : 7;
+		const oc2_hostage::State &hostage = oc2_hostage::Get(i);
+		if( !hostage.valid || !hostage.hasPosition || (hostage.expires > 0 && now >= hostage.expires) ) continue;
+		const bool dead = hostage.status == oc2_hostage::Dead;
+		const bool carried = hostage.status == oc2_hostage::Carried;
+		const bool following = hostage.status == oc2_hostage::Following;
+		const bool rescued = hostage.status == oc2_hostage::Rescued;
+		const bool terminal = dead || rescued || hostage.status == oc2_hostage::LegacyTerminal;
+		const float duration = dead ? 10.0f : rescued ? 2.5f : 1.5f;
+		int alpha = terminal ? (int)(255.0f * (hostage.expires - now) / duration) : 255;
+		if( alpha < 0 ) alpha = 0; if( alpha > 255 ) alpha = 255;
+		const int dot = max( 3, BlipRadiusFor(m_iRadius) / 2 );
+		const int halfSize = dead ? 8 : dot + 3;
 		int x, y;
-		if( !ObjectivePoint( Vector( hostage.origin[0], hostage.origin[1], hostage.origin[2] ), halfSize, x, y ) ) continue;
-		const int r = hostage.dead ? 175 : 75;
-		const int g = hostage.dead ? 175 : 215;
-		const int b = hostage.dead ? 175 : 255;
-		if( sprite && sprite->spr )
+		if( !ObjectivePoint( hostage.origin, halfSize, x, y ) ) continue;
+		if( dead )
 		{
-			SPR_Set( sprite->spr, r, g, b );
-			SPR_DrawAdditive( 0, x - sprite->rect.Width() / 2,
-				y - sprite->rect.Height() / 2, &sprite->rect );
+			for( int k = -5; k <= 5; ++k )
+			{
+				FillRGBABlend( x+k-1, y+k-1, 3, 3, 255, 35, 35, alpha );
+				FillRGBABlend( x+k-1, y-k-1, 3, 3, 255, 35, 35, alpha );
+			}
 		}
 		else
 		{
-			FillRGBA( x - 6, y - 6, 12, 12, 0, 0, 0, 220 );
-			FillRGBA( x - 4, y - 4, 8, 8, r, g, b, 255 );
+			const int r = carried ? 45 : rescued ? 70 : 205;
+			const int g = carried ? 235 : rescued ? 225 : 210;
+			const int b = carried ? 255 : rescued ? 95 : 210;
+			FillDisc( x, y, dot, r, g, b, alpha );
+			if( carried || following )
+				for( int n = 0; n < 32; ++n )
+				{
+					const float a = n * (2.0f * (float)M_PI / 32.0f);
+					FillRGBABlend( x + (int)(cosf(a)*(dot+3)), y + (int)(sinf(a)*(dot+3)), 1, 1, r, g, b, alpha );
+				}
 		}
+		oc2_hostage::MarkShown(i);
 	}
 }
 
@@ -2273,6 +2412,7 @@ bool CHudRadarModern::IsEnabled() const
 
 int CHudRadarModern::Draw( float flTime )
 {
+	oc2_hostage::BeginRadarFrame(gEngfuncs.GetClientTime());
 	m_bBombDrawn = false;
 	if( !IsEnabled() )
 		return 1;
@@ -2418,6 +2558,8 @@ int CHudRadarModern::Draw( float flTime )
 	// value and falls back to the engine snapshot. The old inline copy here
 	// preferred the snapshot and disagreed with the blip colours.
 	const int localTeam = RadarTeamOf( m_iPlayerNum );
+	// Rescue footprints tint only the map; players and state markers stay on top.
+	DrawObjectives( localTeam );
 
 	// ---- the local player, pinned to the centre
 	DrawSelfMarker( m_iCenterX, m_iCenterY, m_iRadius );
@@ -2430,9 +2572,6 @@ int CHudRadarModern::Draw( float flTime )
 	for( int i = 1; i <= maxPlayers; i++ )
 		DrawPlayerBlip( m_iCenterX, m_iCenterY, m_iRadius, i, flTime );
 	DrawHostages( localTeam, flTime );
-	// Site markers and letters go last: a player standing on the site used to
-	// hide the whole marker under the self arrow at the centre.
-	DrawObjectives( localTeam );
 	// Planted icon first, site letters on top: the icon is a native 32x32 and
 	// painted last used to cover the 15x21 glyph, which is the only thing that
 	// says which site it is.

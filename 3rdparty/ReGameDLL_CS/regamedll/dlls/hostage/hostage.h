@@ -76,6 +76,13 @@ enum HostageChatterType
 
 extern CHostageManager *g_pHostages;
 extern int g_iHostageNumber;
+extern int gmsgOC2Hostage;
+extern unsigned short g_OC2HostageEpoch;
+void OC2_HostageSnapshot(CBasePlayer *player);
+void OC2_HostageRoundStart();
+void OC2_HostageDropPlayer(CBasePlayer *player);
+CHostage *OC2_HostageCarriedBy(CBasePlayer *player);
+void OC2_HostageDump();
 
 extern cvar_t cv_hostage_ai_enable;
 extern cvar_t cv_hostage_debug;
@@ -124,6 +131,12 @@ public:
 	void Wiggle();
 	void PreThink();
 	bool CanTakeDamage(entvars_t *pevAttacker);
+	bool OC2_PickUp(CBasePlayer *player);
+	bool OC2_Drop(bool forced);
+	bool OC2_FindDrop(const Vector &center, edict_t *ignore, Vector &target);
+	void OC2_SendState(CBasePlayer *player = nullptr);
+	int OC2_State();
+	Vector OC2_Position();
 
 	// queries
 	bool IsFollowingSomeone() { return IsFollowing(); }
@@ -156,6 +169,15 @@ public:
 	const Vector *GetHomePosition() const { return &m_vStart; }
 
 public:
+	EHANDLE m_hOC2Carrier;
+	string_t m_iOC2OriginalModel;
+	int m_iOC2OriginalMoveType;
+	int m_iOC2OriginalSolid;
+	int m_iOC2Terminal;
+	Vector m_vecOC2LastSafe;
+	Vector m_vecOC2OriginalVAngle;
+	bool m_bOC2PendingPlacement;
+	float m_flOC2NextPlacement;
 	BOOL m_bTouched;
 	BOOL m_bRescueMe;
 	float m_flFlinchTime;
