@@ -21,6 +21,7 @@ Measurements taken from the decompiled binary:
 #include "oc2_hostage.h"
 #include "hud_spectator.h"	// overviewInfo_t / CHudSpectator overview parser
 #include "com_model.h"		// model_t, used for the overview map sprite
+#include "r_studioint.h"		// player userid and current network state
 #include "cl_util.h"
 #include "csprite.h"
 #include "draw_util.h"
@@ -45,6 +46,7 @@ static void RadarDumpCommand() { gHUD.m_RadarModern.DumpState(); }
 // filled in by HUD_RadarInterface() in cdll_int.cpp
 extern radar_engfuncs_t gRadarAPI;
 extern int g_iRadarAPIVersion;
+extern engine_studio_api_t IEngineStudio;
 
 #define RADAR_MASK_SEGMENTS  63
 #define BLIP_SIZE            20
@@ -2229,17 +2231,11 @@ void CHudRadarModern::DrawObjectiveLabels()
 		if( !site.bomb )
 		{
 			if( RadarTeamOf( m_iPlayerNum ) != TEAM_CT ) continue;
-			float px[RADAR_CLIP_MAX], py[RADAR_CLIP_MAX];
-			const int n = ProjectRescueRegion( site.boundsMin, site.boundsMax, px, py );
-			if( n < 3 ) continue;
-			float x = 0, y = 0;
-			for( int k = 0; k < n; ++k ) { x += px[k]; y += py[k]; }
-			x /= n; y = y / n - 18.0f;
-			const float dx = x - m_iCenterX, dy = y - m_iCenterY;
-			const float distance = sqrtf( dx * dx + dy * dy );
-			const float limit = m_iRadius - 18.0f;
-			if( distance > limit ) { x = m_iCenterX + dx * limit / distance; y = m_iCenterY + dy * limit / distance; }
-			DrawSiteLetter( (int)x, (int)y, site.label, 3, 180, 255, 245 );
+			// The saved origin is the world-space centre of these bounds.
+			// Cull the whole glyph at the edge; never move it with the clipped area.
+			int x, y;
+			if( !ObjectivePoint( site.origin, 12, x, y ) ) continue;
+			DrawSiteLetter( x, y, site.label, 3, 180, 255, 245 );
 			continue;
 		}
 		int x, y;
@@ -2371,8 +2367,32 @@ void CHudRadarModern::DrawHostages( int localTeam, float flTime )
 		if( alpha < 0 ) alpha = 0; if( alpha > 255 ) alpha = 255;
 		const int dot = max( 3, BlipRadiusFor(m_iRadius) / 2 );
 		const int halfSize = dead ? 8 : dot + 3;
+		Vector drawOrigin = hostage.origin;
+		if( carried )
+		{
+			const int slot = hostage.carrier;
+			if( !hostage.extended || slot < 1 || slot > 32 || slot > gEngfuncs.GetMaxClients() ||
+				hostage.userid <= 0 || RadarTeamOf( slot ) != TEAM_CT || !IEngineStudio.PlayerInfo ) continue;
+			const player_info_t *info = IEngineStudio.PlayerInfo( slot - 1 );
+			if( !info || info->userid != hostage.userid ) continue;
+			if( slot == m_iPlayerNum )
+				drawOrigin = gHUD.m_vecOrigin; // predicted local position, same as radar centre
+			else if( IEngineStudio.GetPlayerState )
+			{
+				const cl_entity_t *local = gEngfuncs.GetLocalPlayer();
+				const cl_entity_t *carrier = gEngfuncs.GetEntityByIndex( slot );
+				const entity_state_t *current = IEngineStudio.GetPlayerState( slot - 1 );
+				const entity_state_t *localState = local && local->index > 0 && local->index <= gEngfuncs.GetMaxClients()
+					? IEngineStudio.GetPlayerState( local->index - 1 ) : NULL;
+				// Do not use a stale PVS entity after its last network frame.
+				if( carrier && carrier->player && current && localState && localState->messagenum > 0 &&
+					current->number == slot && current->messagenum == localState->messagenum &&
+					carrier->curstate.messagenum == current->messagenum )
+					drawOrigin = carrier->origin;
+			}
+		}
 		int x, y;
-		if( !ObjectivePoint( hostage.origin, halfSize, x, y ) ) continue;
+		if( !ObjectivePoint( drawOrigin, halfSize, x, y ) ) continue;
 		if( dead )
 		{
 			for( int k = -5; k <= 5; ++k )

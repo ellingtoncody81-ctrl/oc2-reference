@@ -2210,7 +2210,7 @@ int DrawModernWeaponList(const WEAPON *active, const WEAPON *selection)
 	float totalHeight = 0;
 	for (int slot = 0; slot < MAX_WEAPON_SLOTS; ++slot)
 		if (counts[slot]) totalHeight += PanelGrenade(rows[slot][0]) ? grenadeRowHeight : gunRowHeight;
-	if (hasDefuser) totalHeight += iconHeight;
+	if (hasDefuser) totalHeight += buy_menu_state::HostageRescueKitMode() ? gunRowHeight : iconHeight;
 	scale = min(scale, ScreenHeight*0.70f/(40+totalHeight));
 	float y = ScreenHeight-(40+totalHeight)*scale;
 	for (int slot = 0; slot < MAX_WEAPON_SLOTS; ++slot)
@@ -2289,6 +2289,13 @@ int DrawModernWeaponList(const WEAPON *active, const WEAPON *selection)
 		PanelItemLayout &layout=s_PanelItems[s_PanelItemCount++]; layout=PanelItemLayout();
 		layout.icon={x,y,gunWidth*scale,iconHeight*scale};
 		strlcpy(layout.path,path,sizeof(layout.path));
+		if (buy_menu_state::HostageRescueKitMode())
+		{
+			const char *name = "人质救援工具";
+			strlcpy(layout.name,name,sizeof(layout.name));
+			PanelNameText(name,ScreenWidth-30*scale,y+gunNameOffset*scale,nameHeight*scale,
+				{255,255,255},min(384*scale,ScreenWidth*0.30f));
+		}
 	}
 	return 1;
 }

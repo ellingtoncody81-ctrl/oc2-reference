@@ -82,7 +82,11 @@ void OC2_HostageSnapshot(CBasePlayer *player);
 void OC2_HostageRoundStart();
 void OC2_HostageDropPlayer(CBasePlayer *player);
 CHostage *OC2_HostageCarriedBy(CBasePlayer *player);
+CHostage *OC2_HostageGrabbingBy(CBasePlayer *player);
+bool OC2_HostageUpdatePlayer(CBasePlayer *player);
+bool OC2_HostageTryUse(CBasePlayer *player);
 void OC2_HostageDump();
+bool OC2_HostageMap();
 
 extern cvar_t cv_hostage_ai_enable;
 extern cvar_t cv_hostage_debug;
@@ -132,6 +136,9 @@ public:
 	void PreThink();
 	bool CanTakeDamage(entvars_t *pevAttacker);
 	bool OC2_PickUp(CBasePlayer *player);
+	bool OC2_CanGrab(CBasePlayer *player);
+	void OC2_CancelGrab();
+	void OC2_StartGrab(CBasePlayer *player);
 	bool OC2_Drop(bool forced);
 	bool OC2_FindDrop(const Vector &center, edict_t *ignore, Vector &target);
 	void OC2_SendState(CBasePlayer *player = nullptr);
@@ -170,6 +177,9 @@ public:
 
 public:
 	EHANDLE m_hOC2Carrier;
+	EHANDLE m_hOC2Grabber;
+	float m_flOC2GrabEnd;
+	bool m_bOC2Untied;
 	string_t m_iOC2OriginalModel;
 	int m_iOC2OriginalMoveType;
 	int m_iOC2OriginalSolid;

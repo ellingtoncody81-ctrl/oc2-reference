@@ -27,4 +27,5 @@ void BeginRadarFrame(float now);
 void MarkShown(int index);
 bool ViewPose(float now, int &sequence, float &frame);
 void ViewDrawn(float now, int sequence, float frame);
+void WorldDrawn(int entity, const char *model, const Vector &origin, float now);
 }

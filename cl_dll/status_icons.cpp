@@ -67,6 +67,8 @@ int CHudStatusIcons::Draw( float flTime )
 			// retain the icon state for all other consumers.
 			if (!stricmp(m_IconList[i].szSpriteName, "c4") ||
 				!stricmp(m_IconList[i].szSpriteName, "defuser")) continue;
+			// Keep rescue-zone state available, but suppress its legacy left H.
+			if (!stricmp(m_IconList[i].szSpriteName, "rescue")) continue;
 			if (match_ui::Enabled() && !strcmp(m_IconList[i].szSpriteName, "buyzone")) continue;
 			y -= ( m_IconList[i].rc.Height() ) + 5;
 			SPR_Set( m_IconList[i].spr, m_IconList[i].r, m_IconList[i].g, m_IconList[i].b );

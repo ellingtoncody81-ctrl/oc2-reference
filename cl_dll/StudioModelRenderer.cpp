@@ -1595,6 +1595,8 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 			OC2_InventoryGloveBodyModelScope gloveBodyModel(*this);
 			OC2_InventoryPlayerGloveScope playerGloves(*this);
 			StudioRenderModel(dir);
+			if (!bIsViewModel) oc2_hostage::WorldDrawn(m_pCurrentEntity->index,
+				m_pRenderModel->name, m_pCurrentEntity->origin, m_clTime);
 			playerGloves.Draw(lighting,dir);
 		}
 		if (!bIsViewModel)

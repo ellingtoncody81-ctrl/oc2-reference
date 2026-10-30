@@ -115,6 +115,10 @@ void CBasePlayer::SendItemStatus()
 
 	if (m_bHasDefuser)
 		itemStatus |= ITEM_STATUS_DEFUSER;
+	// Same one-byte protocol: bit 2 selects rescue-kit presentation, while
+	// bit 1 continues to report actual ownership on every ItemStatus refresh.
+	if (OC2_HostageMap())
+		itemStatus |= 4;
 
 	MESSAGE_BEGIN(MSG_ONE, gmsgItemStatus, nullptr, pev);
 		WRITE_BYTE(itemStatus);
@@ -4302,6 +4306,7 @@ bool CanSeeUseable(CBasePlayer *me, CBaseEntity *pEntity)
 
 void CBasePlayer::PlayerUse()
 {
+	if (OC2_HostageGrabbingBy(this)) return;
 	if (m_afButtonPressed & IN_USE)
 	{
 		CHostage *carried = OC2_HostageCarriedBy(this);
@@ -4361,6 +4366,7 @@ void CBasePlayer::PlayerUse()
 		}
 	}
 
+	if (OC2_HostageTryUse(this)) return;
 	bool useNewHostages = !TheNavAreaList.empty() && cv_hostage_ai_enable.value;
 	CBaseEntity *pObject = nullptr;
 	CBaseEntity *pClosest = nullptr;
@@ -7477,6 +7483,7 @@ void CBasePlayer::ItemPreFrame()
 void CBasePlayer::ItemPostFrame()
 {
 	static int fInSelect = FALSE;
+	const bool grabbingHostage = OC2_HostageUpdatePlayer(this);
 
 	// check if the player is using a tank
 	if (m_pTank)
@@ -7510,6 +7517,7 @@ void CBasePlayer::ItemPostFrame()
 
 	const float previousAimFov=pev->fov;
 	ImpulseCommands();
+	if (grabbingHostage || OC2_HostageGrabbingBy(this)) return;
 
 	if (m_pActiveItem)
 		m_pActiveItem->ItemPostFrame();
@@ -8301,6 +8309,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(ResetMaxSpeed)()
 	}
 
 	pev->maxspeed = speed;
+	if (OC2_HostageGrabbingBy(this)) pev->maxspeed = 1.0f;
 	if (OC2_HostageCarriedBy(this) && GetObserverMode() == OBS_NONE &&
 		!(g_pGameRules->IsMultiplayer() && g_pGameRules->IsFreezePeriod()))
 		pev->maxspeed *= 0.8f;
@@ -8524,12 +8533,12 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateStatusBar)()
 			else if (pEntity->Classify() == CLASS_HUMAN_PASSIVE)
 			{
 				if (playerid.value != PLAYERID_MODE_OFF || GetObserverMode() != OBS_NONE)
-					Q_strlcpy(sbuf0, "1 %c1  %h: %i3%%");
+					Q_strlcpy(sbuf0, "1 %c1");
 				else
 					Q_strlcpy(sbuf0, " ");
 
 				newSBarState[SBAR_ID_TARGETTYPE] = SBAR_TARGETTYPE_HOSTAGE;
-				newSBarState[SBAR_ID_TARGETHEALTH] = int((pEntity->pev->health / pEntity->pev->max_health) * 100);
+				newSBarState[SBAR_ID_TARGETHEALTH] = 0;
 
 				if (!(m_flDisplayHistory & DHF_HOSTAGE_SEEN_FAR) && tr.flFraction > 0.1f)
 				{
@@ -8544,7 +8553,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(UpdateStatusBar)()
 				else if (m_iTeam == CT && !(m_flDisplayHistory & DHF_HOSTAGE_SEEN_NEAR) && tr.flFraction <= 0.1f)
 				{
 					m_flDisplayHistory |= (DHF_HOSTAGE_SEEN_NEAR | DHF_HOSTAGE_SEEN_FAR);
-					HintMessage("#Hint_press_use_so_hostage_will_follow");
+					ClientPrint(pev, HUD_PRINTCENTER, "Hold E to rescue the hostage");
 				}
 
 				m_flStatusBarDisappearDelay = gpGlobals->time + 2.0f;

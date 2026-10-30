@@ -1535,7 +1535,7 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 			if (pPlayer->HasRestrictItem(ITEM_DEFUSEKIT, ITEM_TYPE_BUYING))
 				return;
 #endif
-			if (pPlayer->m_iTeam != CT || !CSGameRules()->m_bMapHasBombTarget)
+			if (pPlayer->m_iTeam != CT || (!CSGameRules()->m_bMapHasBombTarget && !OC2_HostageMap()))
 				return;
 
 			if (pPlayer->m_bHasDefuser)
@@ -1548,11 +1548,12 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 				return;
 			}
 
-			if (pPlayer->m_iAccount >= DEFUSEKIT_PRICE)
+			const int kitPrice = OC2_HostageMap() ? 400 : DEFUSEKIT_PRICE;
+			if (pPlayer->m_iAccount >= kitPrice)
 			{
 				bEnoughMoney = true;
 				pPlayer->GiveDefuser();
-				pPlayer->AddAccount(-DEFUSEKIT_PRICE, RT_PLAYER_BOUGHT_SOMETHING);
+				pPlayer->AddAccount(-kitPrice, RT_PLAYER_BOUGHT_SOMETHING);
 
 #ifdef REGAMEDLL_FIXES
 				EMIT_SOUND(ENT(pPlayer->pev), CHAN_VOICE, "items/kevlar.wav", VOL_NORM, ATTN_NORM);

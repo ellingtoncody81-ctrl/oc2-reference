@@ -16,6 +16,21 @@ namespace oc2_hostage
 {
 namespace
 {
+struct WorldSample { int entity = 0; char model[128] = {}; Vector origin; float at = -1000; };
+WorldSample worldSamples[64];
+}
+void WorldDrawn(int entity, const char *model, const Vector &origin, float now)
+{
+    if (entity <= 0 || !model || (!strstr(model, "hostage") && !strstr(model, "scientist"))) return;
+    for (auto &s : worldSamples)
+        if (!s.entity || s.entity == entity)
+        {
+            s.entity = entity; std::snprintf(s.model, sizeof(s.model), "%s", model);
+            s.origin = origin; s.at = now; return;
+        }
+}
+namespace
+{
 State states[MAX_HOSTAGES + 1];
 State staged[MAX_HOSTAGES + 1];
 bool snapshot = false, epochKnown = false, waitingRound = false;
@@ -129,6 +144,10 @@ int Message(const char *, int size, void *buffer)
 void Dump()
 {
     const float now = gEngfuncs.GetClientTime();
+    for (const auto &s : worldSamples)
+        if (s.entity && now >= s.at && now - s.at < 5.0f)
+            gEngfuncs.Con_Printf("hostage_world: entity=%d model=%s drawn_at=%.3f age=%.3f origin=%.1f,%.1f,%.1f\n",
+                s.entity, s.model, s.at, now-s.at, s.origin.x, s.origin.y, s.origin.z);
     const cl_entity_t *local = gEngfuncs.GetLocalPlayer();
     const int slot = local ? local->index : 0;
     const player_info_t *info = slot > 0 && slot <= 32 && IEngineStudio.PlayerInfo ? IEngineStudio.PlayerInfo(slot - 1) : nullptr;
@@ -163,6 +182,7 @@ void Init()
 }
 void MapReset()
 {
+    for (auto &sample : worldSamples) sample = WorldSample{};
     for (int i = 0; i <= MAX_HOSTAGES; ++i) { states[i] = State{}; staged[i] = State{}; }
     snapshot = epochKnown = waitingRound = false;
     epoch = stagingEpoch = 0; lastVersion = 0;

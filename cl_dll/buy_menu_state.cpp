@@ -138,6 +138,13 @@ bool GetItem(int index, oc2_buy::Item &item)
 	oc2_buy::State state; GetState(state);
 	item.id = entry.id; item.column = entry.column; item.name = entry.name;
 	item.image = entry.image; item.price = entry.price; item.limit = 1;
+	if (entry.kind == Defuser && buy_menu_state::HostageRescueKitMode())
+	{
+		// The server uses the same defuser inventory flag and purchase alias.
+		// Its hostage-map price is separate from the $200 bomb-map price.
+		item.name = "人质救援工具";
+		item.price = 400;
+	}
 	// One stable slot offers the team's own fire grenade. Inventory remains a
 	// physical item and may contain the other variant after a world pickup.
 	if (entry.id == WEAPON_MOLOTOV && state.team == TEAM_CT)
@@ -210,8 +217,9 @@ void Dump()
 	gEngfuncs.Con_Printf("buymenu: open=%d team=%d money=%d alive=%d zone=%d can=%d seconds=%d authoritative=%d messages=%d items=%d reason=%s\n",
 		int(opened),state.team,state.money,int(state.alive),int(state.inBuyZone),int(state.canBuy),state.seconds,
 		int(hasServerState),stateMessages,kItems,state.reason);
-	gEngfuncs.Con_Printf("buyequipment: authoritative=%d version=%d zeus_bought=%d messages=%d fire_variant=%d\n",
-		int(hasEquipmentState),equipmentVersion,zeusBought,equipmentMessages,fireVariant);
+	gEngfuncs.Con_Printf("buyequipment: authoritative=%d version=%d zeus_bought=%d messages=%d fire_variant=%d hostage_kit_mode=%d item_status=%d\n",
+		int(hasEquipmentState),equipmentVersion,zeusBought,equipmentMessages,fireVariant,
+		int(buy_menu_state::HostageRescueKitMode()),itemStatus);
 	if (gEngfuncs.Cmd_Argc() >= 2 && !strcmp(gEngfuncs.Cmd_Argv(1),"items"))
 		for (int i = 0; i < kItems; ++i)
 		{
@@ -316,6 +324,11 @@ bool HasDefuser()
 	if (hasItemStatus) return (itemStatus & 2) != 0;
 	const int local = gEngfuncs.GetLocalPlayer() ? gEngfuncs.GetLocalPlayer()->index : 0;
 	return local > 0 && local <= MAX_PLAYERS && g_PlayerExtraInfo[local].has_defuse_kit;
+}
+
+bool HostageRescueKitMode()
+{
+	return hasItemStatus && (itemStatus & 4) != 0;
 }
 
 int ItemStatusMessage(const char *name, int size, void *buffer)
