@@ -102,10 +102,115 @@ CHostage *OC2_HostageCarriedBy(CBasePlayer *player)
 	return nullptr;
 }
 
+bool OC2_HostageMap()
+{
+	return !CSGameRules()->m_bMapHasBombTarget &&
+		UTIL_FindEntityByClassname(nullptr, "hostage_entity") != nullptr;
+}
+
 void OC2_HostageDropPlayer(CBasePlayer *player)
 {
+	CHostage *grabbing = OC2_HostageGrabbingBy(player);
+	if (grabbing) grabbing->OC2_CancelGrab();
 	CHostage *hostage = OC2_HostageCarriedBy(player);
 	if (hostage) hostage->OC2_Drop(true);
+}
+
+CHostage *OC2_HostageGrabbingBy(CBasePlayer *player)
+{
+	CHostage *hostage = nullptr;
+	while ((hostage = UTIL_FindEntityByClassname(hostage, "hostage_entity")))
+		if ((CBaseEntity *)hostage->m_hOC2Grabber == player) return hostage;
+	return nullptr;
+}
+
+bool CHostage::OC2_CanGrab(CBasePlayer *player)
+{
+	if (!player || !player->IsAlive() || player->IsDormant() || player->m_iTeam != CT ||
+		!IsAlive() || m_iOC2Terminal || m_hOC2Carrier || m_bOC2PendingPlacement ||
+		OC2_HostageCarriedBy(player) || player->m_bIsDefusing ||
+		!(player->pev->flags & FL_ONGROUND) || !(player->pev->button & IN_USE) ||
+		(player->pev->origin - pev->origin).Length() > 96.0f) return false;
+	const Vector to = pev->origin + Vector(0, 0, 36) - player->EyePosition();
+	UTIL_MakeVectors(player->pev->v_angle);
+	if (DotProduct(to.Normalize(), gpGlobals->v_forward) < 0.7f) return false;
+	TraceResult tr;
+	UTIL_TraceLine(player->EyePosition(), pev->origin + Vector(0, 0, 36), dont_ignore_monsters, player->edict(), &tr);
+	return tr.flFraction >= 1.0f || tr.pHit == edict();
+}
+
+bool OC2_HostageTryUse(CBasePlayer *player)
+{
+	if (!player || !(player->m_afButtonPressed & IN_USE) || OC2_HostageGrabbingBy(player)) return false;
+	CHostage *candidate = nullptr, *best = nullptr;
+	float bestDot = -1.0f; // CanGrab already applies the inclusive 0.7 cone.
+	// Keep target selection on the same 96-unit, ground and line-of-sight
+	// contract as the held interaction. The old generic 64-unit use sphere
+	// otherwise makes some maps fail before Hostage::Use is even reached.
+	while ((candidate = UTIL_FindEntityByClassname(candidate, "hostage_entity")))
+	{
+		if (candidate->m_hOC2Grabber || !candidate->OC2_CanGrab(player)) continue;
+		const Vector to = candidate->pev->origin + Vector(0, 0, 36) - player->EyePosition();
+		const float dot = DotProduct(to.Normalize(), gpGlobals->v_forward);
+		if (dot > bestDot) { best = candidate; bestDot = dot; }
+	}
+	if (!best) return false;
+	best->OC2_StartGrab(player);
+	return (CBaseEntity *)best->m_hOC2Grabber == player;
+}
+
+void CHostage::OC2_CancelGrab()
+{
+	CBasePlayer *player = (CBasePlayer *)(CBaseEntity *)m_hOC2Grabber;
+	m_hOC2Grabber = nullptr;
+	m_flOC2GrabEnd = 0;
+	if (player)
+	{
+		// This short attack lock belongs to the grab. Clear it on cancellation
+		// so a fresh E press on the next usercmd reaches PlayerUse immediately.
+#ifdef CLIENT_WEAPONS
+		player->m_flNextAttack = 0;
+#else
+		player->m_flNextAttack = gpGlobals->time;
+#endif
+		player->SetProgressBarTime(0);
+		player->ResetMaxSpeed();
+	}
+}
+
+void CHostage::OC2_StartGrab(CBasePlayer *player)
+{
+	if (m_hOC2Grabber || OC2_HostageGrabbingBy(player) || !OC2_CanGrab(player)) return;
+	// CS:GO: cutting the restraints takes four seconds, or one with a rescue
+	// kit / previously untied hostage. Use the existing authoritative kit bit.
+	const int duration = player->m_bHasDefuser || m_bOC2Untied ? 1 : 4;
+	m_hOC2Grabber = player;
+	m_flOC2GrabEnd = gpGlobals->time + duration;
+	player->SetProgressBarTime(duration);
+	player->ResetMaxSpeed();
+}
+
+bool OC2_HostageUpdatePlayer(CBasePlayer *player)
+{
+	CHostage *hostage = OC2_HostageGrabbingBy(player);
+	if (!hostage) return false;
+	if (!hostage->OC2_CanGrab(player))
+	{
+		hostage->OC2_CancelGrab();
+		return false;
+	}
+	if (gpGlobals->time >= hostage->m_flOC2GrabEnd)
+	{
+		hostage->OC2_CancelGrab();
+		if (hostage->OC2_PickUp(player)) hostage->m_bOC2Untied = true;
+		return false;
+	}
+#ifdef CLIENT_WEAPONS
+	player->m_flNextAttack = 0.1f;
+#else
+	player->m_flNextAttack = gpGlobals->time + 0.1f;
+#endif
+	return true;
 }
 
 bool CHostage::OC2_PickUp(CBasePlayer *player)
@@ -196,6 +301,7 @@ bool CHostage::OC2_Drop(bool forced)
 
 void OC2_HostageDump()
 {
+	CBasePlayer *probePlayer = UTIL_PlayerByIndex(1);
 	int total = 0, alive = 0, dead = 0, rescued = 0;
 	CHostage *h = nullptr;
 	while ((h = UTIL_FindEntityByClassname(h, "hostage_entity")))
@@ -213,7 +319,23 @@ void OC2_HostageDump()
 		CBasePlayer *p = (CBasePlayer *)(CBaseEntity *)h->m_hOC2Carrier;
 		Vector v = h->OC2_Position();
 		ALERT(at_console, "oc2hostage_state: id=%d entity=%d state=%d carrier=%d userid=%d model=%s origin=%.1f,%.1f,%.1f speed=%.1f pending=%d solid=%d\n", h->m_iHostageIndex, h->entindex(), state, p ? p->entindex() : 0, p ? GETPLAYERUSERID(p->edict()) : 0, STRING(h->pev->model), v.x, v.y, v.z, p ? p->pev->maxspeed : 0.0f, int(h->m_bOC2PendingPlacement), int(h->pev->solid));
+		CBasePlayer *grabber = (CBasePlayer *)(CBaseEntity *)h->m_hOC2Grabber;
+		ALERT(at_console, "oc2hostage_detail: id=%d health=%.1f grabber=%d grab_end=%.3f untied=%d modelindex=%d effects=%d\n", h->m_iHostageIndex, h->pev->health, grabber ? grabber->entindex() : 0, h->m_flOC2GrabEnd, int(h->m_bOC2Untied), h->pev->modelindex, h->pev->effects);
+		if (probePlayer)
+		{
+			const Vector eye = probePlayer->EyePosition(), center = h->pev->origin + Vector(0, 0, 36);
+			UTIL_MakeVectors(probePlayer->pev->v_angle);
+			const float dot = DotProduct((center - eye).Normalize(), gpGlobals->v_forward);
+			TraceResult tr;
+			UTIL_TraceLine(eye, center, dont_ignore_monsters, probePlayer->edict(), &tr);
+			ALERT(at_console, "oc2hostage_probe: id=%d player=%.2f,%.2f,%.2f eye=%.2f,%.2f,%.2f ground=%d held=%d pressed=%d dist=%.3f dot=%.4f fraction=%.4f hit=%d target=%d ready=%d\n", h->m_iHostageIndex,
+				probePlayer->pev->origin.x, probePlayer->pev->origin.y, probePlayer->pev->origin.z, eye.x, eye.y, eye.z,
+				int((probePlayer->pev->flags & FL_ONGROUND) != 0), int((probePlayer->pev->button & IN_USE) != 0), int((probePlayer->m_afButtonPressed & IN_USE) != 0),
+				(probePlayer->pev->origin - h->pev->origin).Length(), dot, tr.flFraction, tr.pHit ? ENTINDEX(tr.pHit) : 0, h->entindex(), int(h->OC2_CanGrab(probePlayer)));
+		}
 	}
+	CBasePlayer *local = UTIL_PlayerByIndex(1);
+	if (local) ALERT(at_console, "oc2hostage_player: kit_mode=%d kit=%d money=%d speed=%.1f progress_start=%.3f progress_end=%.3f\n", int(OC2_HostageMap()), int(local->m_bHasDefuser), local->m_iAccount, local->pev->maxspeed, local->m_progressStart, local->m_progressEnd);
 }
 
 struct
@@ -379,6 +501,9 @@ LINK_ENTITY_TO_CLASS(monster_scientist, CHostage, CCSHostage)
 void CHostage::Spawn()
 {
 	m_hOC2Carrier = nullptr;
+	m_hOC2Grabber = nullptr;
+	m_flOC2GrabEnd = 0;
+	m_bOC2Untied = false;
 	m_iOC2Terminal = 0;
 	m_bOC2PendingPlacement = false;
 	m_flOC2NextPlacement = 0.0f;
@@ -494,10 +619,19 @@ void CHostage::Precache()
 		}
 	}
 
-	if (pev->model.IsNull())
+	// Several shipped hostage maps request scientist.mdl, which is absent in
+	// this asset set. Resolve the installed hostage before PRECACHE_MODEL;
+	// preserve valid authored models and normalize old /models/... paths.
+	if (!pev->model.IsNull())
+	{
+		const char *path = STRING(pev->model);
+		while (*path == '/' || *path == '\\') ++path;
+		pev->model = ALLOC_STRING(path);
+	}
+	if (pev->model.IsNull() || !g_pFileSystem->FileExists(pev->model))
 	{
 		m_whichModel = REGULAR_GUY;
-		pev->model = MAKE_STRING("models/scientist.mdl");
+		pev->model = MAKE_STRING("models/hostage.mdl");
 	}
 
 	PRECACHE_MODEL(pev->model);
@@ -538,6 +672,7 @@ void CHostage::IdleThink()
 	const float upkeepRate = 0.03f;
 	const float giveUpTime = (1 / 30.0f);
 	float const updateRate = 0.1f;
+	if (m_hOC2Grabber && !OC2_CanGrab((CBasePlayer *)(CBaseEntity *)m_hOC2Grabber)) OC2_CancelGrab();
 	CBasePlayer *oc2Carrier = (CBasePlayer *)(CBaseEntity *)m_hOC2Carrier;
 	if (!oc2Carrier && pev->movetype == MOVETYPE_FOLLOW) OC2_Drop(true);
 	if (oc2Carrier && (!oc2Carrier->IsAlive() || oc2Carrier->m_iTeam != CT || oc2Carrier->IsDormant()))
@@ -786,6 +921,8 @@ void CHostage::Remove()
 
 void CHostage::RePosition()
 {
+	OC2_CancelGrab();
+	m_bOC2Untied = false;
 	CBasePlayer *carrier = (CBasePlayer *)(CBaseEntity *)m_hOC2Carrier;
 	if (carrier || pev->movetype == MOVETYPE_FOLLOW || m_bOC2PendingPlacement)
 	{
@@ -861,117 +998,11 @@ bool CHostage::CanTakeDamage(entvars_t *pevAttacker)
 
 void CHostage::TraceAttack(entvars_t *pevAttacker, float flDamage, Vector vecDir, TraceResult *ptr, int bitsDamageType)
 {
-	if (!CanTakeDamage(pevAttacker))
-		return;
-
-	CBaseMonster::TraceAttack(pevAttacker, flDamage, vecDir, ptr, bitsDamageType);
+	// Hostages remain solid/useable but cannot lose health or spawn blood.
 }
 
 BOOL CHostage::TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType)
 {
-#ifdef REGAMEDLL_ADD
-	if (pevAttacker && !CanTakeDamage(pevAttacker))
-		return FALSE;
-#endif
-
-	float flActualDamage = GetModifiedDamage(flDamage, m_LastHitGroup);
-
-	if (flActualDamage > pev->health)
-		flActualDamage = pev->health;
-
-	pev->health -= flActualDamage;
-
-	if (m_improv)
-	{
-		m_improv->OnInjury(flActualDamage);
-	}
-
-	PlayPainSound();
-
-	CBasePlayer *pAttacker = nullptr;
-	if (pevAttacker)
-	{
-		CBaseEntity *pAttackingEnt = GetClassPtr<CCSEntity>((CBaseEntity *)pevAttacker);
-		if (pAttackingEnt->Classify() == CLASS_VEHICLE)
-		{
-			CBaseEntity *pDriver = ((CFuncVehicle *)pAttackingEnt)->m_pDriver;
-			if (pDriver)
-			{
-				pevAttacker = pDriver->pev;
-			}
-		}
-
-		if (pAttackingEnt->IsPlayer())
-		{
-			pAttacker = GetClassPtr<CCSPlayer>((CBasePlayer *)pevAttacker);
-		}
-	}
-
-	if (pev->health > 0.0f)
-	{
-		m_flFlinchTime = gpGlobals->time + 0.75f;
-		SetFlinchActivity();
-
-		if (pAttacker)
-		{
-			pAttacker->AddAccount(-20 * int(flActualDamage), RT_HOSTAGE_DAMAGED);
-
-			if (TheBots)
-			{
-				TheBots->OnEvent(EVENT_HOSTAGE_DAMAGED, this, pAttacker);
-			}
-
-			ClientPrint(pAttacker->pev, HUD_PRINTCENTER, "#Injured_Hostage");
-			if (!(pAttacker->m_flDisplayHistory & DHF_HOSTAGE_INJURED))
-			{
-				pAttacker->HintMessage("#Hint_careful_around_hostages");
-				pAttacker->m_flDisplayHistory |= DHF_HOSTAGE_INJURED;
-			}
-
-			return TRUE;
-		}
-	}
-	else
-	{
-		if (m_hOC2Carrier) OC2_Drop(true);
-		m_bOC2PendingPlacement = false;
-		pev->health = 0;
-		pev->movetype = MOVETYPE_TOSS;
-		pev->flags &= ~FL_ONGROUND;
-		SetDeathActivity();
-
-		if (pAttacker)
-		{
-			pAttacker->AddAccount(20 * (-25 - int(flActualDamage)), RT_HOSTAGE_KILLED);
-			AnnounceDeath(pAttacker);
-			ApplyHostagePenalty(pAttacker);
-		}
-
-		pev->takedamage = DAMAGE_NO;
-		pev->deadflag = DEAD_DEAD;
-		pev->solid = SOLID_NOT;
-
-		if (TheBots)
-		{
-			TheBots->OnEvent(EVENT_HOSTAGE_KILLED, this, pAttacker);
-		}
-
-		if (m_improv)
-		{
-			m_improv->Chatter(HOSTAGE_CHATTER_DEATH_CRY);
-		}
-
-		m_iOC2Terminal = 3;
-		OC2_SendState();
-		CSGameRules()->CheckWinConditions();
-
-		if (!CSGameRules()->m_flRestartRoundTime)
-			SendHostageEventMsg();
-
-		pev->nextthink = gpGlobals->time + 3.0f;
-		SetThink(&CHostage::Remove);
-	}
-
 	return FALSE;
 }
 
@@ -1125,90 +1156,13 @@ void CHostage::ApplyHostagePenalty(CBasePlayer *pAttacker)
 
 void CHostage::Use(CBaseEntity *pActivator, CBaseEntity *pCaller, USE_TYPE useType, float value)
 {
-	if (!pActivator->IsPlayer())
-		return;
-	if (useType == USE_SET && value == 0.0f)
-		return;
-
-#ifdef REGAMEDLL_FIXES
-	if (!IsAlive())
-		return;
-#else
-	if (pev->takedamage == DAMAGE_NO)
-		return;
-#endif
-
-	CBasePlayer *pPlayer = (CBasePlayer *)pActivator;
-	if (pPlayer->m_iTeam == CT && gpGlobals->time >= m_flNextChange)
-	{
-		if (OC2_PickUp(pPlayer)) m_flNextChange = gpGlobals->time + 0.25f;
-		return;
-	}
-	if (pPlayer->m_iTeam != CT)
-	{
-		if (!(pPlayer->m_flDisplayHistory & DHF_HOSTAGE_CTMOVE))
-		{
-			pPlayer->m_flDisplayHistory |= DHF_HOSTAGE_CTMOVE;
-			pPlayer->HintMessage("#Only_CT_Can_Move_Hostages", FALSE, TRUE);
-		}
-
-		return;
-	}
-
-	if (gpGlobals->time >= m_flNextChange)
-	{
-		m_flNextChange = gpGlobals->time + 1.0f;
-
-		if (m_improv)
-		{
-			if (m_improv->IsFollowing() && pActivator == m_improv->GetFollowLeader())
-			{
-				m_improv->Agree();
-				m_improv->Idle();
-				m_improv->Chatter(HOSTAGE_CHATTER_STOP_FOLLOW);
-			}
-			else
-			{
-				m_improv->Follow(pPlayer);
-
-				if (TheBots)
-				{
-					TheBots->OnEvent(EVENT_HOSTAGE_USED, pActivator);
-				}
-			}
-		}
-		else
-		{
-			m_flPathAcquired = gpGlobals->time;
-
-			if (pActivator != m_hTargetEnt)
-			{
-				m_State = FOLLOW;
-				m_hTargetEnt = pActivator;
-				m_hStoppedTargetEnt = nullptr;
-			}
-			else if (m_State == FOLLOW)
-			{
-				m_State = STAND;
-				m_hTargetEnt = nullptr;
-				m_hStoppedTargetEnt = static_cast<CBasePlayer *>(pActivator);
-			}
-			else
-				m_State = FOLLOW;
-
-			if (m_State == FOLLOW)
-			{
-				PlayFollowRescueSound();
-				if (TheBots)
-				{
-					TheBots->OnEvent(EVENT_HOSTAGE_USED, pActivator);
-				}
-			}
-		}
-
-		GiveCTTouchBonus(pPlayer);
-		pPlayer->HostageUsed();
-	}
+	if (!pActivator || !pActivator->IsPlayer() || (useType == USE_SET && value == 0.0f)) return;
+	CBasePlayer *player = (CBasePlayer *)pActivator;
+	// Starting requires a fresh press; holding E after a drop cannot pick it
+	// straight back up. Progress is owned by this hostage, so two CTs cannot
+	// untie it simultaneously.
+	if ((player->m_afButtonPressed & IN_USE) && gpGlobals->time >= m_flNextChange)
+		OC2_StartGrab(player);
 }
 
 void CHostage::PlayFollowRescueSound()
