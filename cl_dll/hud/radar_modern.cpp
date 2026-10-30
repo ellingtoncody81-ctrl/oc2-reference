@@ -34,6 +34,9 @@ Measurements taken from the decompiled binary:
 #include <cmath>
 #include <ctype.h>
 
+static int RadarTeamOf( int i );
+static void RadarDumpCommand() { gHUD.m_RadarModern.DumpState(); }
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -135,12 +138,7 @@ int CHudRadarModern::Init( void )
 	m_bSpritesLoaded    = false;
 	m_flLastCapture     = 0;
 	m_flLastBombPlanted = 0;
-	m_iDroppedBombEnt   = 0;
-	m_flDroppedBombScanStart = 0.0f;
-	m_vecDroppedBombPrevOrigin = Vector( 0, 0, 0 );
-	m_flDroppedBombPrevAt = 0.0f;
-	m_bBombDropActive = false;
-	m_flBombDropStart = 0.0f;
+	ResetRound();
 	m_flRadarVisLast    = 0;
 	m_iPlayerNum        = 0;
 	m_iObjectiveCount   = 0;
@@ -174,6 +172,7 @@ int CHudRadarModern::Init( void )
 	s_cl_radar_shifty     = CVAR_CREATE( "cl_radar_shifty", "0", FCVAR_ARCHIVE );
 	s_cl_radar_rotate     = CVAR_CREATE( "cl_radar_rotate", "1", FCVAR_ARCHIVE );
 	s_cl_radar_enemy_los  = CVAR_CREATE( "cl_radar_enemy_los", "1", FCVAR_ARCHIVE );
+	gEngfuncs.pfnAddCommand( "radar_dump", RadarDumpCommand );
 
 	m_bRadarGating = false;
 	memset( m_aRadarEnemyVisible, 0, sizeof( m_aRadarEnemyVisible ) );
@@ -289,29 +288,38 @@ void CHudRadarModern::Shutdown( void )
 void CHudRadarModern::InitHUDData( void )
 {
 	m_flLastCapture = 0;
-	// InitHUD runs without a Reset on some paths, and a stale drop start would
-	// skip the hand-off silence and draw the thrower's origin as the landing spot.
-	m_bBombDropActive = false;
-	m_flBombDropStart = 0.0f;
-	m_iDroppedBombEnt = 0;
-	m_flDroppedBombScanStart = 0.0f;
-	m_vecDroppedBombPrevOrigin = Vector( 0, 0, 0 );
-	m_flDroppedBombPrevAt = 0.0f;
+	ResetRound();
 }
 
 void CHudRadarModern::Reset( void )
 {
 	m_flLastCapture     = 0;
 	m_flLastBombPlanted = 0;
-	m_iDroppedBombEnt   = 0;
-	m_flDroppedBombScanStart = 0.0f;
-	m_vecDroppedBombPrevOrigin = Vector( 0, 0, 0 );
-	m_flDroppedBombPrevAt = 0.0f;
-	m_bBombDropActive = false;
-	m_flBombDropStart = 0.0f;
+	// ResetHUD may be a mid-round fullupdate. Preserve deaths and C4 state.
+	// A fullupdate can itself send a BombDrop sync, so do not mistake that
+	// immediate message for the weapon box's periodic broadcast.
+	if( m_bBombDropActive )
+		m_flBombLastDropMessage = gEngfuncs.GetClientTime();
+	m_bBombDrawn = false;
+}
 
-	// A new map or round invalidates every per-player radar state.
+void CHudRadarModern::ResetRound()
+{
+	m_bBombDropActive = false;
+	m_bBombDropPositionKnown = false;
+	m_flBombLastDropMessage = 0.0f;
+	m_iBombDropMessages = 0;
+	m_vecBombMessage = Vector( 0, 0, 0 );
+	m_vecBombAccepted = Vector( 0, 0, 0 );
+	m_vecBombDrawOrigin = Vector( 0, 0, 0 );
+	m_bBombDrawn = false;
+	m_flBombDrawTime = 0.0f;
+
+	// InitHUD and HudRound are map/round boundaries; ResetHUD is not.
+	m_flRadarVisNext = 0;
 	m_flRadarVisLast = 0;
+	m_iRadarTrackedLocalTeam = 0;
+	memset( m_aRadarTrackedTeam, 0, sizeof( m_aRadarTrackedTeam ) );
 	memset( m_aRadarEnemyVisible, 0, sizeof( m_aRadarEnemyVisible ) );
 	memset( m_aRadarEnemySeen, 0, sizeof( m_aRadarEnemySeen ) );
 	memset( m_aRadarEnemyConfirmed, 0, sizeof( m_aRadarEnemyConfirmed ) );
@@ -319,13 +327,89 @@ void CHudRadarModern::Reset( void )
 	memset( m_aRadarEnemyConfirm, 0, sizeof( m_aRadarEnemyConfirm ) );
 	memset( m_aRadarEnemyHold, 0, sizeof( m_aRadarEnemyHold ) );
 	memset( m_aRadarPlayerDeadAt, 0, sizeof( m_aRadarPlayerDeadAt ) );
-	for( int i = 0; i < 32; ++i )
+	memset( m_aRadarHasConfirmedOrigin, 0, sizeof( m_aRadarHasConfirmedOrigin ) );
+	memset( m_aRadarConfirmedLocalTeam, 0, sizeof( m_aRadarConfirmedLocalTeam ) );
+	memset( m_aRadarConfirmedVictimTeam, 0, sizeof( m_aRadarConfirmedVictimTeam ) );
+	for( int i = 0; i <= kRadarMaxPlayers; ++i )
 	{
 		m_aRadarEnemyLastOrigin[i] = Vector( 0, 0, 0 );
+		m_aRadarConfirmedOrigin[i] = Vector( 0, 0, 0 );
 		m_aRadarPlayerDeadOrigin[i] = Vector( 0, 0, 0 );
 		m_aRadarPlayerDeadPrevOrigin[i] = Vector( 0, 0, 0 );
 		m_aRadarPlayerDeadMoveStreak[i] = 0.0f;
 	}
+}
+
+void CHudRadarModern::NoteBombDrop( int flag, const Vector &origin, float time )
+{
+	m_vecBombMessage = origin;
+	m_bBombDrawn = false;
+	if( flag != 0 )
+	{
+		m_bBombDropActive = false;
+		m_bBombDropPositionKnown = false;
+		m_iBombDropMessages = 0;
+		return;
+	}
+	if( !m_bBombDropActive )
+	{
+		m_bBombDropActive = true;
+		m_bBombDropPositionKnown = false;
+		m_iBombDropMessages = 1;
+	}
+	else
+	{
+		++m_iBombDropMessages;
+		// The server schedules BombThink one second after the throw. A rapid
+		// sync/duplicate is not proof of a box broadcast. Wait for a later
+		// periodic message rather than drawing the thrower's first position.
+		if( time - m_flBombLastDropMessage >= 0.9f )
+		{
+			m_bBombDropPositionKnown = true;
+			m_vecBombAccepted = origin;
+		}
+	}
+	m_flBombLastDropMessage = time;
+}
+
+void CHudRadarModern::NoteBombPickup()
+{
+	m_bBombDropActive = false;
+	m_bBombDropPositionKnown = false;
+	m_flBombLastDropMessage = 0.0f;
+	m_iBombDropMessages = 0;
+	m_bBombDrawn = false;
+}
+
+void CHudRadarModern::DumpState() const
+{
+	const int local = gHUD.m_Scoreboard.m_iPlayerNum;
+	const extra_player_info_t &bomb = g_PlayerExtraInfo[33];
+	int count = gEngfuncs.GetMaxClients();
+	if( count > kRadarMaxPlayers ) count = kRadarMaxPlayers;
+	gEngfuncs.Con_Printf( "radar_dump: time=%.6f local=%d team=%d los_cvar=%.2f gating=%d sweep_time=%.6f enabled=%d hud_dead=%d hide=%d\n",
+		gEngfuncs.GetClientTime(), local, RadarTeamOf( local ),
+		s_cl_radar_enemy_los ? s_cl_radar_enemy_los->value : 0.0f,
+		int( m_bRadarGating ), m_flRadarVisLast, int( IsEnabled() ),
+		int( gHUD.m_fPlayerDead ), gHUD.m_iHideHUDDisplay );
+	for( int i = 1; i <= count; ++i )
+	{
+		gEngfuncs.Con_Printf( "radar_player: slot=%d team=%d visible=%d confirmed=%d confirm=%.3f hold=%.3f dead=%d dead_at=%.3f has_last=%d has_confirmed_last=%d last=%.1f,%.1f,%.1f dead_origin=%.1f,%.1f,%.1f\n",
+			i, RadarTeamOf( i ), int( m_aRadarEnemyVisible[i] ),
+			int( m_aRadarEnemyConfirmed[i] ), m_aRadarEnemyConfirm[i],
+			m_aRadarEnemyHold[i], int( IsPlayerDead( i ) ), m_aRadarPlayerDeadAt[i],
+			int( m_aRadarEnemySeen[i] ), int( m_aRadarHasConfirmedOrigin[i] ),
+			m_aRadarEnemyLastOrigin[i].x, m_aRadarEnemyLastOrigin[i].y,
+			m_aRadarEnemyLastOrigin[i].z, m_aRadarPlayerDeadOrigin[i].x,
+			m_aRadarPlayerDeadOrigin[i].y, m_aRadarPlayerDeadOrigin[i].z );
+	}
+	gEngfuncs.Con_Printf( "radar_bomb: flag=%d dead=%d flashes=%d drop_active=%d position_known=%d messages=%d message_time=%.6f message=%.1f,%.1f,%.1f accepted=%.1f,%.1f,%.1f last_drawn=%d draw_time=%.6f draw_origin=%.1f,%.1f,%.1f\n",
+		bomb.playerclass, int( bomb.dead ), bomb.radarflashes, int( m_bBombDropActive ),
+		int( m_bBombDropPositionKnown ), m_iBombDropMessages, m_flBombLastDropMessage,
+		m_vecBombMessage.x, m_vecBombMessage.y, m_vecBombMessage.z,
+		m_vecBombAccepted.x, m_vecBombAccepted.y, m_vecBombAccepted.z,
+		int( m_bBombDrawn ), m_flBombDrawTime, m_vecBombDrawOrigin.x,
+		m_vecBombDrawOrigin.y, m_vecBombDrawOrigin.z );
 }
 
 void CHudRadarModern::Think( void )
@@ -1539,12 +1623,22 @@ bool CHudRadarModern::IsPlayerDead( int i ) const
 
 void CHudRadarModern::NotePlayerDeath( int victim, float time )
 {
-	if( victim <= 0 || victim >= 32 )
+	if( victim <= 0 || victim > kRadarMaxPlayers )
 		return;
 	if( m_aRadarPlayerDeadAt[victim] != 0.0f )
 		return;
-	Vector origin = m_aRadarEnemySeen[victim] ? m_aRadarEnemyLastOrigin[victim] : Vector( 0, 0, 0 );
-	if( origin == Vector( 0, 0, 0 ) )
+	const int localTeam = RadarTeamOf( gHUD.m_Scoreboard.m_iPlayerNum );
+	const int victimTeam = RadarTeamOf( victim );
+	const bool teammate = localTeam > 0 && localTeam == victimTeam;
+	Vector origin( 0, 0, 0 );
+	if( teammate && m_aRadarEnemySeen[victim] )
+		origin = m_aRadarEnemyLastOrigin[victim];
+	else if( !teammate && localTeam > 0 && victimTeam > 0 &&
+		m_aRadarHasConfirmedOrigin[victim] &&
+		m_aRadarConfirmedLocalTeam[victim] == localTeam &&
+		m_aRadarConfirmedVictimTeam[victim] == victimTeam )
+		origin = m_aRadarConfirmedOrigin[victim];
+	if( teammate && origin == Vector( 0, 0, 0 ) )
 	{
 		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( victim );
 		if( pEnt && pEnt->player )
@@ -1561,48 +1655,27 @@ void CHudRadarModern::NotePlayerDeath( int victim, float time )
 	m_aRadarPlayerDeadMoveStreak[victim] = 0.0f;
 }
 
-static int RadarTeamOf( int i );   // defined next to DrawPlayerBlip
-
 void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 {
-	// Any path that turns gating off must also release the per-player state.
-	// Leaving stale visible=false values behind made every enemy fall back to
-	// a frozen last-seen position (or vanish) when the user disabled LOS.
-	if( !s_cl_radar_enemy_los || s_cl_radar_enemy_los->value == 0.0f )
-	{
-		m_bRadarGating = false;
-		m_flRadarVisLast = flTime;
-		for( int i = 0; i < 32; ++i )
-		{
-			m_aRadarEnemyVisible[i] = true;
-			m_aRadarEnemyConfirm[i] = 0.0f;
-			m_aRadarEnemyHold[i] = 0.0f;
-			m_aRadarEnemyConfirmed[i] = false;
-		}
-		return;
-	}
-
 	cl_entity_t *pLocal = gEngfuncs.GetLocalPlayer();
-	int iLocalTeam = ( m_iPlayerNum > 0 && m_iPlayerNum < 32 )
+	int iLocalTeam = ( m_iPlayerNum > 0 && m_iPlayerNum <= kRadarMaxPlayers )
 		? RadarTeamOf( m_iPlayerNum ) : -1;
 
 	// Without a known team "enemy" is undefined, and a spectator has no PVS of
 	// their own, so both cases fall back to drawing everything.
-	if( !pLocal || iLocalTeam < 0 || gEngfuncs.IsSpectateOnly() )
+	m_bRadarGating = pLocal && iLocalTeam > 0 && !gEngfuncs.IsSpectateOnly()
+		&& s_cl_radar_enemy_los && s_cl_radar_enemy_los->value != 0.0f;
+	if( m_iRadarTrackedLocalTeam != iLocalTeam )
 	{
-		m_bRadarGating = false;
-		m_flRadarVisLast = flTime;
-		for( int i = 0; i < 32; ++i )
-		{
-			m_aRadarEnemyVisible[i] = true;
-			m_aRadarEnemyConfirm[i] = 0.0f;
-			m_aRadarEnemyHold[i] = 0.0f;
-			m_aRadarEnemyConfirmed[i] = false;
-		}
-		return;
+		m_iRadarTrackedLocalTeam = iLocalTeam;
+		memset( m_aRadarTrackedTeam, 0, sizeof( m_aRadarTrackedTeam ) );
+		memset( m_aRadarEnemyVisible, 0, sizeof( m_aRadarEnemyVisible ) );
+		memset( m_aRadarEnemyConfirmed, 0, sizeof( m_aRadarEnemyConfirmed ) );
+		memset( m_aRadarEnemySeen, 0, sizeof( m_aRadarEnemySeen ) );
+		memset( m_aRadarEnemyConfirm, 0, sizeof( m_aRadarEnemyConfirm ) );
+		memset( m_aRadarEnemyHold, 0, sizeof( m_aRadarEnemyHold ) );
+		memset( m_aRadarHasConfirmedOrigin, 0, sizeof( m_aRadarHasConfirmedOrigin ) );
 	}
-
-	m_bRadarGating = true;
 
 	if( flTime < m_flRadarVisNext )
 		return;
@@ -1618,8 +1691,12 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 	// pm_shared hull table: 0 standing, 1 ducking. Eye heights are the values
 	// the player code uses; v_origin is not exported here and the view bob is
 	// a few units, which a wall is not going to care about.
-	vec3_t vecEye = pLocal->origin;
-	vecEye[2] += ( pLocal->curstate.usehull == 1 ) ? 12.0f : 8.0f;
+	vec3_t vecEye = Vector( 0, 0, 0 );
+	if( pLocal )
+	{
+		vecEye = pLocal->origin;
+		vecEye[2] += ( pLocal->curstate.usehull == 1 ) ? 12.0f : 8.0f;
+	}
 
 	vec3_t vecFwd;
 	AngleVectors( (const float *)&gHUD.m_vecAngles, vecFwd, NULL, NULL );
@@ -1639,21 +1716,35 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 
 	// The PM state has to be armed before any trace, or every trace reports
 	// startsolid and nothing is ever visible.
-	gEngfuncs.pEventAPI->EV_SetUpPlayerPrediction( FALSE, TRUE );
-	gEngfuncs.pEventAPI->EV_PushPMStates();
-	gEngfuncs.pEventAPI->EV_SetTraceHull( 2 );
+	if( m_bRadarGating )
+	{
+		gEngfuncs.pEventAPI->EV_SetUpPlayerPrediction( FALSE, TRUE );
+		gEngfuncs.pEventAPI->EV_PushPMStates();
+		gEngfuncs.pEventAPI->EV_SetTraceHull( 2 );
+	}
 
 	int iMax = gEngfuncs.GetMaxClients();
-	if( iMax > 32 )
-		iMax = 32;
+	if( iMax > kRadarMaxPlayers )
+		iMax = kRadarMaxPlayers;
 
 	for( int i = 1; i <= iMax; i++ )
 	{
-		if( i == m_iPlayerNum || i >= 32 )
+		if( i == m_iPlayerNum )
 			continue;
 
 		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
 		const bool live = ( pEnt && pEnt->player );
+		const int trackedTeam = RadarTeamOf( i );
+		if( m_aRadarTrackedTeam[i] != trackedTeam )
+		{
+			m_aRadarTrackedTeam[i] = trackedTeam;
+			m_aRadarEnemyVisible[i] = false;
+			m_aRadarEnemySeen[i] = false;
+			m_aRadarEnemyConfirmed[i] = false;
+			m_aRadarEnemyConfirm[i] = 0.0f;
+			m_aRadarEnemyHold[i] = 0.0f;
+			m_aRadarHasConfirmedOrigin[i] = false;
+		}
 
 		if( IsPlayerDead( i ) )
 		{
@@ -1697,6 +1788,7 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 					m_aRadarPlayerDeadAt[i] = 0.0f;
 					m_aRadarPlayerDeadPrevOrigin[i] = Vector( 0, 0, 0 );
 					m_aRadarPlayerDeadMoveStreak[i] = 0.0f;
+					m_aRadarHasConfirmedOrigin[i] = false;
 					continue;   // let the next sweep treat him as alive again
 				}
 			}
@@ -1705,6 +1797,14 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 			m_aRadarEnemyHold[i] = 0.0f;
 			m_aRadarEnemyConfirmed[i] = false;
 			continue;
+		}
+
+		if( !m_bRadarGating )
+		{
+			m_aRadarEnemyVisible[i] = true;
+			m_aRadarEnemyConfirm[i] = 0.0f;
+			m_aRadarEnemyHold[i] = 0.0f;
+			m_aRadarEnemyConfirmed[i] = false;
 		}
 
 		// Teammates keep the ungated behaviour, but their last position is
@@ -1719,6 +1819,8 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 			}
 			continue;
 		}
+		if( !m_bRadarGating )
+			continue;
 
 		if( !live )
 		{
@@ -1765,6 +1867,14 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 			m_aRadarEnemySeen[i] = true;
 			if( m_aRadarEnemyConfirm[i] >= 0.5f )
 				m_aRadarEnemyConfirmed[i] = true;
+			const int targetTeam = RadarTeamOf( i );
+			if( m_aRadarEnemyConfirmed[i] && targetTeam > 0 && targetTeam != iLocalTeam )
+			{
+				m_aRadarConfirmedOrigin[i] = pEnt->origin;
+				m_aRadarConfirmedLocalTeam[i] = iLocalTeam;
+				m_aRadarConfirmedVictimTeam[i] = targetTeam;
+				m_aRadarHasConfirmedOrigin[i] = true;
+			}
 		}
 		else
 		{
@@ -1780,7 +1890,8 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 			( bClear || m_aRadarEnemyHold[i] <= 0.5f );
 	}
 
-	gEngfuncs.pEventAPI->EV_PopPMStates();
+	if( m_bRadarGating )
+		gEngfuncs.pEventAPI->EV_PopPMStates();
 }
 
 // Marker discs scale with the radar, so 720p and 1080p keep the same visual
@@ -1903,7 +2014,7 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	// One colour per side, one size per marker: teammates cyan, enemies red,
 	// the bomb carrier gold, all hand drawn through the blend path.
 	const bool c4Carrier = bFriend &&
-		g_PlayerExtraInfo[m_iPlayerNum].teamnumber == TEAM_TERRORIST &&
+		iLocalTeam == TEAM_TERRORIST &&
 		g_PlayerExtraInfo[i].has_c4;
 	const int r = c4Carrier ? 255 : ( bFriend ? 0 : 255 );
 	const int g = c4Carrier ? 200 : ( bFriend ? 120 : 0 );
@@ -2012,146 +2123,17 @@ void CHudRadarModern::DrawObjectiveLabels()
 	}
 }
 
-/*
-========================
-FindDroppedBombBox
-
-The dropped C4 is a "weaponbox" whose model is models/w_backpack.mdl - the
-only place in the game that model is used, and the C4 item itself is packed
-with EF_NODRAW (regamedll weapons.cpp:2493-2495), so this match is unique.
-The box exists the frame the bomb leaves the player, so it can shorten the wait
-for the one-second BombThink re-send of the BombDrop message. It must never be
-trusted on its own: the client keeps every field of a removed entity, so a
-removed box still reports the old model and the old origin. Callers therefore
-check the box against the message that is live right now.
-========================
-*/
-static cl_entity_t *FindDroppedBombBox( int &iCached, float &flNextScan, float flTime,
-	const Vector &vecNear )
-{
-	if( iCached > 0 )
-	{
-		cl_entity_t *pCached = gEngfuncs.GetEntityByIndex( iCached );
-		if( pCached && pCached->model &&
-			!stricmp( pCached->model->name, "models/w_backpack.mdl" ) )
-			return pCached;
-		iCached = 0;
-		// A dead cache must not wait for the throttle window: the box may have
-		// been replaced by a fresh one on the very next frame.
-		flNextScan = 0.0f;
-	}
-	if( flTime < flNextScan )
-		return NULL;
-	flNextScan = flTime + 0.1f;
-
-	// A removed entity keeps its model name forever, so several slots can look
-	// like the bomb. Take the one closest to the position the message is
-	// reporting now - the box that belongs to this drop is right there, an old
-	// one is wherever it was left.
-	cl_entity_t *pBest = NULL;
-	float flBestDist = 1e9f;
-	for( int i = 1; i < MAX_EDICTS; i++ )
-	{
-		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
-		if( !pEnt || pEnt->player || !pEnt->model ) continue;
-		if( stricmp( pEnt->model->name, "models/w_backpack.mdl" ) ) continue;
-		const Vector vecBox( pEnt->origin[0], pEnt->origin[1], pEnt->origin[2] );
-		const float flDist = ( vecBox - vecNear ).Length();
-		if( flDist < flBestDist )
-		{
-			flBestDist = flDist;
-			pBest = pEnt;
-			iCached = i;
-		}
-	}
-	if( !pBest )
-		iCached = 0;
-	return pBest;
-}
-
 void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 {
 	const extra_player_info_t &bomb = g_PlayerExtraInfo[33];
-	// The drop age cannot come from radarflashtime: every BombDrop refreshes it
-	// (radar.cpp:552), including the one-second BombThink re-sends, so that age
-	// never exceeds a second and a "first 1.2 s" window would never close. Own
-	// the state transition instead - a fresh drop resets the box cache too,
-	// which is what let a removed box keep serving its old position.
-	const bool bDropState = ( !bomb.dead && bomb.radarflashes && bomb.playerclass == 0 );
-	if( !bDropState )
-	{
-		m_bBombDropActive = false;
-		m_flBombDropStart = 0.0f;
-		m_iDroppedBombEnt = 0;
-		m_flDroppedBombPrevAt = 0.0f;
-	}
-	else if( !m_bBombDropActive )
-	{
-		m_bBombDropActive = true;
-		m_flBombDropStart = flTime;
-		m_iDroppedBombEnt = 0;
-		m_flDroppedBombPrevAt = 0.0f;
-	}
-	const float flDropAge = m_bBombDropActive ? ( flTime - m_flBombDropStart ) : 0.0f;
-
 	if( bomb.dead || !bomb.radarflashes ||
-		( bomb.playerclass == 0 && localTeam != TEAM_TERRORIST ) ||
-		( bomb.origin[0] == 0 && bomb.origin[1] == 0 && bomb.origin[2] == 0 ) ) return;
+		( bomb.playerclass == 0 && localTeam != TEAM_TERRORIST ) ) return;
 	const bool planted = bomb.playerclass == 1;
-	// A voluntary drop reaches the client as two BombDrop messages: the first
-	// one still carries the thrower's own origin (regamedll player.cpp:8718,
-	// sent before the box even exists), and only the weapon box re-send about
-	// a second later carries the landing spot. The box is already in the
-	// client entity list, so it may shorten the wait - but only when it agrees
-	// with the message position and has come to rest. The message stays the
-	// source of truth; the box only decides how early the dot may appear.
-	const Vector vecMessage( bomb.origin[0], bomb.origin[1], bomb.origin[2] );
-	Vector vecBomb = vecMessage;
-	if( !planted )
-	{
-		// The message is the truth: it is the only thing that belongs to *this*
-		// drop. A box entity may only shorten the wait, and only while it agrees
-		// with the message that is live right now - the engine keeps every field
-		// of a removed entity (cl_frame.c:756-770), so a slot that once held the
-		// bomb box still reports the old model and the old origin forever.
-		const float flMsgAge = flDropAge;
-		bool bBoxUsed = false;
-		if( flMsgAge < 2.5f )
-		{
-			cl_entity_t *pBox = FindDroppedBombBox( m_iDroppedBombEnt,
-				m_flDroppedBombScanStart, flTime, vecMessage );
-			if( pBox )
-			{
-				const Vector vecBox( pBox->origin[0], pBox->origin[1], pBox->origin[2] );
-				if( ( vecBox - vecMessage ).Length() < 128.0f )
-				{
-					// Settled only: while the box is still flying it sits on the
-					// thrower, which is the "dot pops out of the player" report.
-					const bool bStale = m_flDroppedBombPrevAt <= 0.0f ||
-						( flTime - m_flDroppedBombPrevAt ) > 0.5f;
-					const float flMoved = bStale ? 0.0f
-						: ( vecBox - m_vecDroppedBombPrevOrigin ).Length();
-					const Vector vecVel( pBox->curstate.velocity[0],
-						pBox->curstate.velocity[1], pBox->curstate.velocity[2] );
-					m_vecDroppedBombPrevOrigin = vecBox;
-					m_flDroppedBombPrevAt = flTime;
-					if( !bStale && flMoved <= 2.0f && vecVel.Length() <= 30.0f )
-					{
-						vecBomb = vecBox;
-						bBoxUsed = true;
-					}
-				}
-			}
-		}
-		// The first BombDrop of a drop carries the thrower's own origin
-		// (regamedll player.cpp:8718) and the landing spot only arrives with the
-		// one-second BombThink re-send. For that first second, draw nothing at
-		// all: a proximity test against players missed as soon as the thrower
-		// ran away from his own origin, and the marker then appeared behind him.
-		// A settled box above is the only thing allowed to draw earlier.
-		if( !bBoxUsed && flDropAge < 1.0f )
-			return;
-	}
+	// A first drop message is the thrower's position. Only a later periodic
+	// message may supply the dropped-box position; time alone never draws it.
+	if( !planted && !m_bBombDropPositionKnown ) return;
+	const Vector vecBomb = planted ? bomb.origin : m_vecBombAccepted;
+	if( vecBomb == Vector( 0, 0, 0 ) ) return;
 	CClientSprite *sprite = s_spr[SPR_C4];
 	// The planted icon keeps its native 32x32 size, so its half size is the
 	// culling margin; everything else is blip sized.
@@ -2160,6 +2142,9 @@ void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 		: BlipRadiusFor( m_iRadius ) + 1;
 	int x, y;
 	if( !ObjectivePoint( vecBomb, halfSize, x, y ) ) return;
+	m_vecBombDrawOrigin = vecBomb;
+	m_bBombDrawn = true;
+	m_flBombDrawTime = flTime;
 	const bool bright = ( (int)( flTime * 2.0f ) & 1 ) == 0;
 
 	if( !planted )
@@ -2288,6 +2273,7 @@ bool CHudRadarModern::IsEnabled() const
 
 int CHudRadarModern::Draw( float flTime )
 {
+	m_bBombDrawn = false;
 	if( !IsEnabled() )
 		return 1;
 
@@ -2439,7 +2425,9 @@ int CHudRadarModern::Draw( float flTime )
 	// ---- player blips
 	UpdateEnemyVisibility( flTime );
 
-	for( int i = 1; i < 32; i++ )
+	int maxPlayers = gEngfuncs.GetMaxClients();
+	if( maxPlayers > kRadarMaxPlayers ) maxPlayers = kRadarMaxPlayers;
+	for( int i = 1; i <= maxPlayers; i++ )
 		DrawPlayerBlip( m_iCenterX, m_iCenterY, m_iRadius, i, flTime );
 	DrawHostages( localTeam, flTime );
 	// Site markers and letters go last: a player standing on the site used to

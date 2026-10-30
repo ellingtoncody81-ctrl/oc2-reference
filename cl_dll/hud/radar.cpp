@@ -197,6 +197,10 @@ void CHudRadar::InitHUDData( void )
 {
 	UserCmd_ShowRadar();
 	Reset();
+	g_PlayerExtraInfo[33].dead = true;
+	g_PlayerExtraInfo[33].radarflashes = 0;
+	g_PlayerExtraInfo[33].playerclass = 0;
+	g_PlayerExtraInfo[33].origin = Vector( 0, 0, 0 );
 }
 
 int CHudRadar::VidInit(void)
@@ -547,6 +551,7 @@ int CHudRadar::MsgFunc_BombDrop(const char *pszName, int iSize, void *pbuf)
 
 	int Flag = reader.ReadByte();
 	g_PlayerExtraInfo[33].playerclass = Flag;
+	gHUD.m_RadarModern.NoteBombDrop( Flag, g_PlayerExtraInfo[33].origin, gEngfuncs.GetClientTime() );
 
 	if( Flag ) // bomb planted
 	{
@@ -560,6 +565,7 @@ int CHudRadar::MsgFunc_BombDrop(const char *pszName, int iSize, void *pbuf)
 
 int CHudRadar::MsgFunc_BombPickup(const char *pszName, int iSize, void *pbuf)
 {
+	gHUD.m_RadarModern.NoteBombPickup();
 	g_PlayerExtraInfo[33].radarflashes = false;
 	g_PlayerExtraInfo[33].dead = true;
 	g_PlayerExtraInfo[33].playerclass = 0;

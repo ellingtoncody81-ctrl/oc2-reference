@@ -40,6 +40,10 @@ public:
 	// ScoreAttrib dead flag is compiled out in some builds, so the radar keeps
 	// its own per-player death stamp.
 	void NotePlayerDeath( int victim, float time );
+	void NoteBombDrop( int flag, const Vector &origin, float time );
+	void NoteBombPickup();
+	void ResetRound();
+	void DumpState() const;
 
 	// cl_radar_modern 0 restores the classic radar; anything else keeps the
 	// CS:GO one. Defaults to on, matching the mobile build.
@@ -162,43 +166,49 @@ public:
 	// Their version also lends the eyes of teammates the server revealed; we
 	// have no such reveal on this server, so only the local player is a viewer.
 	bool  m_bRadarGating;                       // false = draw everything
-	bool  m_aRadarEnemyVisible[32];            // engine caps maxclients at 32
+	enum { kRadarMaxPlayers = 32 };
+	bool  m_aRadarEnemyVisible[kRadarMaxPlayers + 1];
+	int m_iRadarTrackedLocalTeam;
+	int m_aRadarTrackedTeam[kRadarMaxPlayers + 1];
 	float m_flRadarVisNext;                      // throttled to 20 Hz
 	float m_flRadarVisLast;                      // previous sweep, for the step
 
 	// Last-seen tracker. The ghost blip and the death X both need a position
 	// captured while the entity still existed: a dead player's entity is gone
 	// and g_PlayerExtraInfo[i].origin is never filled in by this client.
-	bool  m_aRadarEnemySeen[32];               // a live position was recorded
-	bool  m_aRadarEnemyConfirmed[32];          // sight held long enough to show
-	Vector m_aRadarEnemyLastOrigin[32];
-	float m_aRadarEnemyLastSeen[32];            // last clear sight, seconds
-	float m_aRadarEnemyConfirm[32];             // continuous sight, seconds
-	float m_aRadarEnemyHold[32];                // seconds since sight was lost
-	float m_aRadarPlayerDeadAt[32];             // 0 = alive
-	Vector m_aRadarPlayerDeadOrigin[32];
+	bool  m_aRadarEnemySeen[kRadarMaxPlayers + 1];
+	bool  m_aRadarEnemyConfirmed[kRadarMaxPlayers + 1];
+	Vector m_aRadarEnemyLastOrigin[kRadarMaxPlayers + 1];
+	Vector m_aRadarConfirmedOrigin[kRadarMaxPlayers + 1];
+	int m_aRadarConfirmedLocalTeam[kRadarMaxPlayers + 1];
+	int m_aRadarConfirmedVictimTeam[kRadarMaxPlayers + 1];
+	bool m_aRadarHasConfirmedOrigin[kRadarMaxPlayers + 1];
+	float m_aRadarEnemyLastSeen[kRadarMaxPlayers + 1];
+	float m_aRadarEnemyConfirm[kRadarMaxPlayers + 1];
+	float m_aRadarEnemyHold[kRadarMaxPlayers + 1];
+	float m_aRadarPlayerDeadAt[kRadarMaxPlayers + 1];
+	Vector m_aRadarPlayerDeadOrigin[kRadarMaxPlayers + 1];
 	// Last corpse position seen by the 20 Hz sweep. A respawn is a
 	// discontinuous jump, a corpse sliding is not, and only the jump may
 	// clear the death stamp - drifting 64 units used to be enough, which put
 	// a living blip back on the radar a few seconds after a kill.
-	Vector m_aRadarPlayerDeadPrevOrigin[32];
+	Vector m_aRadarPlayerDeadPrevOrigin[kRadarMaxPlayers + 1];
 	// Seconds of sustained movement while dead. A corpse settles within a few
 	// samples; a player who came back keeps walking. This is the fallback for
 	// respawns that land too close to the corpse for the jump test above.
-	float m_aRadarPlayerDeadMoveStreak[32];
+	float m_aRadarPlayerDeadMoveStreak[kRadarMaxPlayers + 1];
 
-	// Dropped C4: the BombDrop message is the source of truth (its first send is
-	// the thrower's own origin, the landing spot follows one second later). The
-	// weapon box is only used to draw earlier, after it agrees with the message
-	// and has stopped moving.
-	int   m_iDroppedBombEnt;        // 0 = not resolved yet
-	float m_flDroppedBombScanStart; // throttles the 1..MAX_EDICTS sweep
-	Vector m_vecDroppedBombPrevOrigin;
-	float m_flDroppedBombPrevAt;    // 0 = the box has not been seen yet
-	// radarflashtime is refreshed by every BombDrop re-send, so the age of the
-	// drop has to be tracked from the state transition instead.
+	// First dropped message is the thrower's position; later messages are the
+	// box broadcast. Message transitions are tracked even while HUD is hidden.
 	bool  m_bBombDropActive;
-	float m_flBombDropStart;
+	bool  m_bBombDropPositionKnown;
+	float m_flBombLastDropMessage;
+	int   m_iBombDropMessages;
+	Vector m_vecBombMessage;
+	Vector m_vecBombAccepted;
+	Vector m_vecBombDrawOrigin;
+	bool m_bBombDrawn;
+	float m_flBombDrawTime;
 
 	// ---- world -> overview mapping, rebuilt every frame from the BSP world
 	//      model bounds. The overview .txt zoom/origin are the CS spectator

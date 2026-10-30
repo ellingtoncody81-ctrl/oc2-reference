@@ -335,6 +335,7 @@ int CHudDeathNotice::MsgFunc_HudRound(const char *pszName, int iSize, void *pbuf
 	// GoldSrc bridge for CS:GO CCSPlayer::RoundRespawn (cs_player.cpp:8363-8364).
 	kill_feedback::ResetRound(s_KillFeedback);
 	gHUD.m_Timer.ResetRound();
+	gHUD.m_RadarModern.ResetRound();
 	// The real round boundary: the server sends this once per round restart, so
 	// the planted C4 marker can be cleared here instead of on every ResetHUD.
 	// ResetHUD also arrives mid round for fullupdate, and clearing there used to
