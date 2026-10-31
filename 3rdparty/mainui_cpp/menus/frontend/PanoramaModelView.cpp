@@ -43,6 +43,35 @@ PreviewAPI *API()
     auto *api=static_cast<PreviewAPI *>(EngFuncs::textfuncs.pfnGetNativeObject("OC2ModelPreview002"));
     return api&&api->version==2?api:nullptr;
 }
+void RotationZ(float degrees,float matrix[3][3])
+{
+    const float s=std::sin(degrees*kRadians),c=std::cos(degrees*kRadians);
+    matrix[0][0]=c;matrix[0][1]=-s;matrix[0][2]=0;
+    matrix[1][0]=s;matrix[1][1]=c;matrix[1][2]=0;
+    matrix[2][0]=matrix[2][1]=0;matrix[2][2]=1;
+}
+void RotationAxis(float degrees,const float axis[3],float matrix[3][3])
+{
+    float n[3]={axis[0],axis[1],axis[2]};const float length=std::sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);if(length>1e-6f){n[0]/=length;n[1]/=length;n[2]/=length;}
+    const float s=std::sin(degrees*kRadians),c=std::cos(degrees*kRadians),d=1-c;
+    matrix[0][0]=c+n[0]*n[0]*d;matrix[0][1]=n[0]*n[1]*d-n[2]*s;matrix[0][2]=n[0]*n[2]*d+n[1]*s;
+    matrix[1][0]=n[1]*n[0]*d+n[2]*s;matrix[1][1]=c+n[1]*n[1]*d;matrix[1][2]=n[1]*n[2]*d-n[0]*s;
+    matrix[2][0]=n[2]*n[0]*d-n[1]*s;matrix[2][1]=n[2]*n[1]*d+n[0]*s;matrix[2][2]=c+n[2]*n[2]*d;
+}
+void BuildPairMatrix(const float center[3],float yaw,float pitch,const float pitchAxis[3],float matrix[3][4])
+{
+    float rz[3][3],rp[3][3],r[3][3];RotationZ(yaw,rz);RotationAxis(pitch,pitchAxis,rp);
+    for(int i=0;i<3;++i)for(int j=0;j<3;++j){r[i][j]=0;for(int k=0;k<3;++k)r[i][j]+=rp[i][k]*rz[k][j];}
+    for(int i=0;i<3;++i){for(int j=0;j<3;++j)matrix[i][j]=r[i][j];matrix[i][3]=center[i]-r[i][0]*center[0]-r[i][1]*center[1]-r[i][2]*center[2];}
+}
+void ConcatPairMatrix(const float pair[3][4],const float local[3][4],float out[3][4])
+{
+    for(int i=0;i<3;++i)
+    {
+        for(int j=0;j<4;++j)out[i][j]=local[i][0]*pair[0][j]+local[i][1]*pair[1][j]+local[i][2]*pair[2][j];
+        out[i][3]+=local[i][3];
+    }
+}
 class PreviewScene
 {
     PreviewAPI *api;
@@ -707,7 +736,7 @@ struct EquippedAppearance
     DrawOverride weapon,glove;
 };
 bool Attachment(const Geometry &weapon,const oc2_accessories::WeaponConfig &config,bool charm,
-    cl_entity_t &entity,Geometry *&geometry)
+    cl_entity_t &entity,Geometry *&geometry,float (*outFrame)[4]=nullptr)
 {
     geo::Mount mount;
     if(!weapon.mounts.valid||!geo::FindMount(weapon.mounts,charm?config.charmU:config.statU,charm?config.charmV:config.statV,mount))return false;
@@ -723,6 +752,7 @@ bool Attachment(const Geometry &weapon,const oc2_accessories::WeaponConfig &conf
         entity.origin[i]=entity.curstate.origin[i]=frame[i][3];
     }
     API()->SetTransform(&entity,frame);
+    if(outFrame)std::memcpy(outFrame,frame,sizeof(frame));
     if(!charm){const int index=oc2_accessories::Index(config.weapon);if(index>=0)entity.curstate.body=int(resources.counts.values[index]);}
     return true;
 }
@@ -780,7 +810,7 @@ struct CMenuPanoramaModelView::Scene
     int mode=1,team=2,weapon=28,definition=0,skin=0,glove=0,accessoryRegion=-1;
     oc2_inventory::WeaponState appearance;
     oc2_accessories::WeaponConfig accessories;
-    bool interactive=true,dragging=false,rendering=false,dualUnfold=false;
+    bool interactive=true,dragging=false,rendering=false,dualUnfold=false,dualRigid=false;
     float yaw=0,pitch=0,zoom=1;
     int x=0,y=0,width=0,height=0,lastX=0,lastY=0;
     std::string lastModel;
@@ -955,18 +985,18 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         gpGlobals&&!scene.rendering&&x>=0&&y>=0&&x+width<=gpGlobals->scrWidth&&y+height<=gpGlobals->scrHeight)
     {
         if(!m_dualView)m_dualView=new CMenuPanoramaModelView();
-        scene.dualUnfold=false;scene.accessoryRegion=0;
+        scene.dualUnfold=false;scene.dualRigid=true;scene.accessoryRegion=0;
         const int leftWidth=width/2;
         const bool left=DrawAt(x,y,leftWidth,height);
         Scene &right=*m_dualView->m_scene;
         right.mode=scene.mode;right.weapon=scene.weapon;right.skin=scene.skin;
         right.appearance=scene.appearance;right.accessories=scene.accessories;
         right.overridePreview=scene.overridePreview;right.previewPattern=scene.previewPattern;
-        right.previewCount=scene.previewCount;right.accessoryRegion=1;
-        // Opposite sticker-side cameras use mirrored orbit input so both panes turn alike.
-        right.yaw=-scene.yaw;right.pitch=-scene.pitch;right.zoom=scene.zoom;
+        right.previewCount=scene.previewCount;right.accessoryRegion=1;right.dualRigid=true;
+        // Both panes keep their original side camera; the shared model transform supplies rotation.
+        right.yaw=scene.yaw;right.pitch=scene.pitch;right.zoom=scene.zoom;
         const bool drawnRight=m_dualView->DrawAt(x+width-leftWidth,y,leftWidth,height);
-        scene.dualUnfold=true;scene.accessoryRegion=-1;
+        scene.dualUnfold=true;scene.dualRigid=false;scene.accessoryRegion=-1;
         // Mouse input for the full-size item includes both viewports.
         scene.x=x;scene.y=y;scene.width=width;scene.height=height;
         // A pair has no single projection or attachment rectangle.
@@ -1045,8 +1075,10 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
             scene.weapon==10&&mounts.regions.size()>1?mounts.regions[1].side:mounts.side;
         std::memcpy(normal,side.normal,sizeof(normal));
     }
+    const bool rigidPair=scene.dualRigid&&split;
+    const float viewYaw=rigidPair?0.f:scene.yaw,viewPitch=rigidPair?0.f:scene.pitch;
     const float baseYaw=std::atan2(normal[1],normal[0]),basePitch=std::asin(std::max(-1.f,std::min(1.f,normal[2])));
-    const float yaw=baseYaw+scene.yaw*kRadians,pitch=std::max(-1.4f,std::min(1.4f,basePitch+scene.pitch*kRadians));
+    const float yaw=baseYaw+viewYaw*kRadians,pitch=std::max(-1.4f,std::min(1.4f,basePitch+viewPitch*kRadians));
     float direction[3]={std::cos(pitch)*std::cos(yaw),std::cos(pitch)*std::sin(yaw),std::sin(pitch)};
     float right[3]={-std::sin(yaw),std::cos(yaw),0};
     float up[3]={-std::sin(pitch)*std::cos(yaw),-std::sin(pitch)*std::sin(yaw),std::cos(pitch)};
@@ -1086,9 +1118,9 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         if(RegionBounds(*geometry,body,other,otherMin,otherMax))
         {
             const auto &side=geometry->mounts.regions[other].side;
-            const float otherYaw=std::atan2(side.normal[1],side.normal[0])+scene.yaw*kRadians;
+            const float otherYaw=std::atan2(side.normal[1],side.normal[0])+viewYaw*kRadians;
             const float otherPitch=std::max(-1.4f,std::min(1.4f,
-                std::asin(std::max(-1.f,std::min(1.f,side.normal[2])))+scene.pitch*kRadians));
+                std::asin(std::max(-1.f,std::min(1.f,side.normal[2])))+viewPitch*kRadians));
             const float od[3]={std::cos(otherPitch)*std::cos(otherYaw),std::cos(otherPitch)*std::sin(otherYaw),std::sin(otherPitch)};
             const float oright[3]={-std::sin(otherYaw),std::cos(otherYaw),0};
             const float oup[3]={-std::sin(otherPitch)*std::cos(otherYaw),-std::sin(otherPitch)*std::sin(otherYaw),std::cos(otherPitch)};
@@ -1130,11 +1162,32 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     }
     oc2_accessories::WeaponConfig config=scene.accessories;
     if(scene.appearance.charm)config.charm=scene.appearance.charm>0;
+    float pairMatrix[3][4];bool pairTransformed=false;
+    if(rigidPair)
+    {
+        float pairMin[3],pairMax[3],pairCenter[3];
+        if(Bounds(*geometry,body,false,pairMin,pairMax))
+        {
+            for(int axis=0;axis<3;++axis)pairCenter[axis]=(pairMin[axis]+pairMax[axis])*.5f;
+            float pitchAxis[3]={1,0,0};
+            if(geometry->mounts.valid&&!geometry->mounts.regions.empty())
+            {
+                const auto &normal=geometry->mounts.regions[0].side.normal;
+                const float axisYaw=std::atan2(normal[1],normal[0])+scene.yaw*kRadians;
+                pitchAxis[0]=std::sin(axisYaw);pitchAxis[1]=-std::cos(axisYaw);pitchAxis[2]=0;
+            }
+            BuildPairMatrix(pairCenter,scene.yaw,scene.pitch,pitchAxis,pairMatrix);
+            pairTransformed=true;
+        }
+    }
     Geometry *statGeometry=nullptr,*charmGeometry=nullptr;
     const auto inRegion=[&](float u){return !split||std::min(int(geometry->mounts.regions.size())-1,
         int(std::max(0.f,std::min(1.f,u))*geometry->mounts.regions.size()))==scene.accessoryRegion;};
-    const bool drawStat=scene.mode==1&&config.stattrak&&inRegion(config.statU)&&Attachment(*geometry,config,false,scene.stat,statGeometry);
-    const bool drawCharm=scene.mode==1&&config.charm&&inRegion(config.charmU)&&Attachment(*geometry,config,true,scene.charm,charmGeometry);
+    float statFrame[3][4],charmFrame[3][4];
+    const bool drawStat=scene.mode==1&&config.stattrak&&inRegion(config.statU)&&Attachment(*geometry,config,false,scene.stat,statGeometry,statFrame);
+    const bool drawCharm=scene.mode==1&&config.charm&&inRegion(config.charmU)&&Attachment(*geometry,config,true,scene.charm,charmGeometry,charmFrame);
+    if(pairTransformed&&drawStat){float composed[3][4];ConcatPairMatrix(pairMatrix,statFrame,composed);API()->SetTransform(&scene.stat,composed);}
+    if(pairTransformed&&drawCharm){float composed[3][4];ConcatPairMatrix(pairMatrix,charmFrame,composed);API()->SetTransform(&scene.charm,composed);}
     if(drawStat&&scene.overridePreview)scene.stat.curstate.body=int(scene.previewCount);
     DrawOverride statOverride,charmOverride;
     if(drawStat)statOverride.Freeze(*statGeometry,scene.stat.curstate.body,false);
@@ -1159,10 +1212,12 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         {
             float local[3],world[3];Transform(attachment->bind[point.bone].m,point.p,local);
             for(int a=0;a<3;++a)world[a]=origin[a]+axisX[a]*local[0]*size+axisY[a]*local[1]*size+normal[a]*(local[2]*size+.01f);
+            if(pairTransformed){float turned[3];for(int a=0;a<3;++a)turned[a]=world[0]*pairMatrix[a][0]+world[1]*pairMatrix[a][1]+world[2]*pairMatrix[a][2]+pairMatrix[a][3];std::memcpy(world,turned,sizeof(turned));}
             float sx,sy;if(!scene.Project(world,sx,sy))continue;
             rect[0]=std::min(rect[0],sx);rect[1]=std::min(rect[1],sy);rect[2]=std::max(rect[2],sx);rect[3]=std::max(rect[3],sy);scene.attachmentValid[kind]=true;
         }
     }
+    if(pairTransformed&&API())API()->SetTransform(&scene.entity,pairMatrix);
     PreviewScene preview;
     scene.rendering=true;EngFuncs::ClearScene();
     const bool added=EngFuncs::CL_CreateVisibleEntity(ET_NORMAL,&scene.entity)!=0;
