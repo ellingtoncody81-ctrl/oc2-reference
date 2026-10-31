@@ -320,7 +320,7 @@ void CMenuPanoramaInventory::_Init()
         SET_EVENT_MULTI(m_cards[i].onReleased,{static_cast<CMenuPanoramaInventory*>(pSelf->Parent())->SelectCard(pSelf);});
     }
     m_search.SetNameAndStatus("",nullptr,"pano_search");m_search.iMaxLength=80;m_search.bAllowColorstrings=false;AddItem(m_search);
-    m_inspect.SetNameAndStatus("",nullptr,"pano_model");m_inspect.SetInteractive(true);m_inspect.SetDualUnfold(false); // One viewport: mirrored pair layout rotates as one rigid model.
+    m_inspect.SetNameAndStatus("",nullptr,"pano_model");m_inspect.SetInteractive(true);m_inspect.SetDualUnfold(false);m_inspect.SetDualSideBySide(true); // One viewport: mirrored pair rotates as one rigid model.
     AddItem(m_inspect);
     Button(m_closeInspect,u8"< \u8fd4\u56de\u76ae\u80a4\u5217\u8868","pano_close_inspect");m_closeInspect.onReleased=VoidCb(&CMenuPanoramaInventory::CloseInspect);
     Button(m_equip,u8"\u88c5\u5907","pano_equip",true);m_equip.onReleased=VoidCb(&CMenuPanoramaInventory::Equip);

@@ -20,6 +20,8 @@ public:
     void SetAccessoryRegion(int region);
     // Expand Elite into both real sticker sides in full-size detail views.
     void SetDualUnfold(bool enabled);
+    // Applies the inventory inspect-only side-by-side mirrored placement.
+    void SetDualSideBySide(bool enabled);
     // On-screen size of the drawn model relative to its viewport, 0..1 each.
     bool ContentExtent(float &widthFraction,float &heightFraction) const;
     bool ProjectAccessory(int kind,float u,float v,float &screenX,float &screenY,float &pixelsPerUnit) const;

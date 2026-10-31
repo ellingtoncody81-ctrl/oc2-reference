@@ -861,7 +861,7 @@ struct CMenuPanoramaModelView::Scene
     int mode=1,team=2,weapon=28,definition=0,skin=0,glove=0,accessoryRegion=-1;
     oc2_inventory::WeaponState appearance;
     oc2_accessories::WeaponConfig accessories;
-    bool interactive=true,dragging=false,rendering=false,dualUnfold=false,dualRigid=false,dualSingle=false;
+    bool interactive=true,dragging=false,rendering=false,dualUnfold=false,dualRigid=false,dualSingle=false,dualSideBySide=false;
     float yaw=0,pitch=0,zoom=1;
     int x=0,y=0,width=0,height=0,lastX=0,lastY=0;
     std::string lastModel;
@@ -926,6 +926,7 @@ void CMenuPanoramaModelView::SetAccessoryPreview(const std::string &pattern,unsi
 {m_scene->overridePreview=true;m_scene->previewPattern=pattern;m_scene->previewCount=count;}
 void CMenuPanoramaModelView::SetAccessoryRegion(int region){m_scene->accessoryRegion=region;}
 void CMenuPanoramaModelView::SetDualUnfold(bool enabled){m_scene->dualUnfold=enabled;}
+void CMenuPanoramaModelView::SetDualSideBySide(bool enabled){m_scene->dualSideBySide=enabled;}
 bool CMenuPanoramaModelView::ContentExtent(float &widthFraction,float &heightFraction) const
 {
     const Scene &scene=*m_scene;
@@ -1114,7 +1115,7 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     float mins[3],maxs[3];
     const bool split=scene.mode==1&&scene.weapon==10&&scene.accessoryRegion>=0&&
         RegionBounds(*geometry,body,scene.accessoryRegion,mins,maxs);
-    const bool dualSingle=scene.mode==1&&scene.weapon==10&&!split;scene.dualSingle=dualSingle;
+    const bool dualSingle=scene.mode==1&&scene.weapon==10&&!split&&scene.dualSideBySide;scene.dualSingle=dualSingle;
     if(!split&&!Bounds(*geometry,body,scene.mode==3,mins,maxs))return false;
     float center[3];for(int axis=0;axis<3;++axis)center[axis]=(mins[axis]+maxs[axis])*.5f;
     float normal[3]={0,-1,0};
@@ -1150,7 +1151,7 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         Cross(direction,right,up);
     }
     float dualRegion1Center[3]={},dualDelta0[3]={},dualDelta1[3]={};
-    float dualDistanceScale=1;bool dualArrange=false;
+    bool dualArrange=false;
     if(dualSingle&&geometry->mounts.regions.size()>1)
     {
         float pairMin[3],pairMax[3],region0Min[3],region0Max[3],region1Min[3],region1Max[3];
@@ -1161,10 +1162,9 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
             const float baseRight[3]={-std::sin(baseYaw),std::cos(baseYaw),0};
             const auto extentOn=[&](const float lo[3],const float hi[3]){return std::fabs(baseRight[0])*(hi[0]-lo[0])+std::fabs(baseRight[1])*(hi[1]-lo[1])+std::fabs(baseRight[2])*(hi[2]-lo[2]);};
             const float len0=extentOn(region0Min,region0Max),len1=extentOn(region1Min,region1Max);
-            const float originalWidth=std::max(.001f,extentOn(pairMin,pairMax)),gap=std::max(len0,len1)*.10f;
+            const float gap=std::max(len0,len1)*.10f;
             const float separation=(len0+len1)*.5f+gap;
             for(int a=0;a<3;++a){dualDelta0[a]=pairCenter[a]-baseRight[a]*separation*.5f-region0Center[a];dualDelta1[a]=pairCenter[a]+baseRight[a]*separation*.5f-region1Center[a];}
-            dualDistanceScale=std::max(1.f,(len0+len1+gap)/originalWidth);
             dualArrange=true;
         }
     }
@@ -1203,7 +1203,7 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
             }
         }
     }
-    distance=std::max(5.f,distance*1.13f*dualDistanceScale/scene.zoom);
+    distance=std::max(5.f,distance*1.13f/scene.zoom);
     scene.normalizedScale=1.f/(2*distance*tanY);
     // The visible extent of the model in screen pixels. The inventory wheel
     // fits the model with it instead of the mostly empty card rectangle.
