@@ -1181,6 +1181,51 @@ int OC2WeaponAmmoIndex(CBasePlayer *player, int weaponID)
 	const WeaponInfoStruct *info = GetWeaponInfo(weaponID);
 	return info && info->ammoName2 ? player->GetAmmoIndex(info->ammoName2) : -1;
 }
+
+// Stable names and prices of the buy-menu equipment slots, for the log only.
+const char *OC2BuySlotName(int slot)
+{
+	switch (slot)
+	{
+		case MENU_SLOT_ITEM_VEST: return "vest";
+		case MENU_SLOT_ITEM_VESTHELM: return "vesthelm";
+		case MENU_SLOT_ITEM_FLASHGREN: return "flashbang";
+		case MENU_SLOT_ITEM_HEGREN: return "hegrenade";
+		case MENU_SLOT_ITEM_SMOKEGREN: return "smokegrenade";
+		case MENU_SLOT_ITEM_DEFUSEKIT: return OC2_HostageMap() ? "rescuekit" : "defusekit";
+		default: return "unknown";
+	}
+}
+
+int OC2BuySlotCost(int slot)
+{
+	switch (slot)
+	{
+		case MENU_SLOT_ITEM_VEST: return KEVLAR_PRICE;
+		case MENU_SLOT_ITEM_VESTHELM: return HELMET_PRICE;
+		case MENU_SLOT_ITEM_FLASHGREN: return FLASHBANG_PRICE;
+		case MENU_SLOT_ITEM_HEGREN: return HEGRENADE_PRICE;
+		case MENU_SLOT_ITEM_SMOKEGREN: return SMOKEGRENADE_PRICE;
+		case MENU_SLOT_ITEM_DEFUSEKIT: return OC2_HostageMap() ? 400 : DEFUSEKIT_PRICE;
+		default: return 0;
+	}
+}
+}
+
+// Purchase cue evidence: one line per purchase attempt or emitted cue.
+// ev=buy is a confirmed purchase that plays items/gunpickup2.wav,
+// ev=pickup is a weapon taken off the floor or out of a weaponbox,
+// ev=fail is a rejected attempt that stays silent.
+void OC2_LogPurchaseSound(int playerIndex, const char *event, const char *name, int cost)
+{
+	ALERT(at_console, "oc2buysound: ev=%s t=%.3f pid=%d nm=%s cost=%d snd=items/gunpickup2.wav chan=%d\n",
+		event, gpGlobals->time, playerIndex, name, cost, (int)CHAN_ITEM);
+}
+
+void OC2_LogPurchaseFailure(int playerIndex, const char *name, int cost, const char *reason)
+{
+	ALERT(at_console, "oc2buysound: ev=fail t=%.3f pid=%d nm=%s cost=%d snd=none chan=0 reason=%s\n",
+		gpGlobals->time, playerIndex, name, cost, reason);
 }
 
 bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
@@ -1366,7 +1411,10 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 	const char *pszItem = nullptr;
 
 	if (!pPlayer->CanPlayerBuy(true))
+	{
+		OC2_LogPurchaseFailure(pPlayer->entindex(), OC2BuySlotName(iSlot), OC2BuySlotCost(iSlot), "buy_closed");
 		return;
+	}
 
 	if ((pPlayer->m_iTeam != CT && pPlayer->m_iTeam != TERRORIST) || iSlot < 1 || iSlot > 8)
 		return;
@@ -1556,6 +1604,7 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 					ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Already_Have_One");
 				}
 
+				OC2_LogPurchaseFailure(pPlayer->entindex(), OC2BuySlotName(iSlot), OC2BuySlotCost(iSlot), "already_owned");
 				return;
 			}
 
@@ -1565,12 +1614,10 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 				bEnoughMoney = true;
 				pPlayer->GiveDefuser();
 				pPlayer->AddAccount(-kitPrice, RT_PLAYER_BOUGHT_SOMETHING);
-
-#ifdef REGAMEDLL_FIXES
-				EMIT_SOUND(ENT(pPlayer->pev), CHAN_VOICE, "items/kevlar.wav", VOL_NORM, ATTN_NORM);
-#else
-				EMIT_SOUND(ENT(pPlayer->pev), CHAN_ITEM, "items/kevlar.wav", VOL_NORM, ATTN_NORM);
-#endif
+				// The defuse kit is a purchase, so it plays the same cue as a bought
+				// weapon instead of the armour cue.
+				EMIT_SOUND(ENT(pPlayer->pev), CHAN_ITEM, "items/gunpickup2.wav", VOL_NORM, ATTN_NORM);
+				OC2_LogPurchaseSound(pPlayer->entindex(), "buy", OC2BuySlotName(iSlot), kitPrice);
 			}
 			break;
 		}
@@ -1578,6 +1625,7 @@ void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 
 	if (!bEnoughMoney)
 	{
+		OC2_LogPurchaseFailure(pPlayer->entindex(), OC2BuySlotName(iSlot), OC2BuySlotCost(iSlot), "no_money");
 		if (g_bClientPrintEnable)
 		{
 			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Not_Enough_Money");
@@ -1617,8 +1665,16 @@ LINK_HOOK_CHAIN(CBaseEntity *, BuyWeaponByWeaponID, (CBasePlayer *pPlayer, Weapo
 
 CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, WeaponIdType weaponID)
 {
+	// The weapon table is a pure lookup, so read it first: a rejected purchase
+	// still names the item and the price in the purchase log.
+	WeaponInfoStruct *info = GetWeaponInfo(weaponID);
+	const char *logName = (info && info->entityName) ? info->entityName : "weapon_unknown";
+	const int logCost = info ? info->cost : 0;
 	if (!pPlayer->CanPlayerBuy(true))
+	{
+		OC2_LogPurchaseFailure(pPlayer->entindex(), logName, logCost, "buy_closed");
 		return nullptr;
+	}
 
 #ifdef REGAMEDLL_ADD
 	// New IDs have no corresponding legacy ItemID: 31 used to mean NVG.
@@ -1628,10 +1684,15 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
 		return nullptr;
 #endif
 	if (!CanBuyThis(pPlayer, weaponID))
+	{
+		OC2_LogPurchaseFailure(pPlayer->entindex(), logName, logCost, "already_owned");
 		return nullptr;
-	WeaponInfoStruct *info = GetWeaponInfo(weaponID);
+	}
 	if (!info || !info->entityName)
+	{
+		OC2_LogPurchaseFailure(pPlayer->entindex(), logName, logCost, "not_allowed");
 		return nullptr;
+	}
 	const bool fireGrenade = weaponID == WEAPON_MOLOTOV;
 	if (fireGrenade && pPlayer->m_iTeam != CT && pPlayer->m_iTeam != TERRORIST) return nullptr;
 	const bool incendiary = fireGrenade && pPlayer->m_iTeam == CT;
@@ -1639,6 +1700,7 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
 	const char *entityName = incendiary ? "weapon_incendiary" : info->entityName;
 	if (pPlayer->m_iAccount < cost)
 	{
+		OC2_LogPurchaseFailure(pPlayer->entindex(), logName, cost, "no_money");
 		if (g_bClientPrintEnable)
 		{
 			ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Not_Enough_Money");
@@ -1667,7 +1729,12 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
 	pPlayer->AddAccount(-cost, RT_PLAYER_BOUGHT_SOMETHING);
 	pPlayer->RecordBuyPresentation(weaponID);
 	if (weaponID == WEAPON_TASER)
+	{
+		// The Zeus keeps the normal Touch purchase cue; report it here, once
+		// the sale is confirmed, so exactly one event matches the cue.
+		OC2_LogPurchaseSound(pPlayer->entindex(), "buy", entityName, cost);
 		++pPlayer->m_iOc2ZeusPurchases; // Source default: one successful purchase per real round.
+	}
 
 	// Gun purchases include reserve ammo. Exhaustible equipment such as Zeus
 	// has no reserve and must never gain a second charge through this path.

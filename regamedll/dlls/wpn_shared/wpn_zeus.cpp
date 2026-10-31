@@ -125,7 +125,10 @@ BOOL CZeus::Deploy()
 	m_pPlayer->m_flNextAttack = UTIL_WeaponTimeBase() + 1.0f;
 	m_flNextPrimaryAttack = m_flNextSecondaryAttack = UTIL_WeaponTimeBase() + 1.0f;
 	m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 1.0f;
-	EMIT_SOUND(m_pPlayer->edict(), CHAN_ITEM, kDrawSound, 0.3f, ATTN_NORM);
+	// The draw cue must not share CHAN_ITEM with the purchase cue: the same
+	// entity and channel would replace items/gunpickup2.wav as soon as the
+	// Zeus is bought, and the purchase cue would never be heard.
+	EMIT_SOUND(m_pPlayer->edict(), CHAN_WEAPON, kDrawSound, 0.3f, ATTN_NORM);
 	UpdateAccuracy();
 	return TRUE;
 }

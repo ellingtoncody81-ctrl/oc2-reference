@@ -662,6 +662,10 @@ void CBasePlayerItem::DefaultTouch(CBaseEntity *pOther)
 		SetThink(nullptr);
 #endif
 		EMIT_SOUND(ENT(pPlayer->pev), CHAN_ITEM, "items/gunpickup2.wav", VOL_NORM, ATTN_NORM);
+		// Purchase cue evidence: a bought item reports ev=buy, a floor pickup ev=pickup.
+		// The Zeus is reported by BuyWeaponByWeaponID once its sale is confirmed.
+		if (!FClassnameIs(pev, "weapon_zeus"))
+			OC2_LogPurchaseSound(pPlayer->entindex(), g_bItemCreatedByBuying ? "buy" : "pickup", STRING(pev->classname), 0);
 	}
 
 	SUB_UseTargets(pOther, USE_TOGGLE, 0);
@@ -2427,6 +2431,8 @@ void CWeaponBox::Touch(CBaseEntity *pOther)
 	if (givenItem)
 	{
 		EMIT_SOUND(ENT(pPlayer->pev), CHAN_ITEM, "items/gunpickup2.wav", VOL_NORM, ATTN_NORM);
+		// Purchase cue evidence: a weapon taken from a weaponbox is a pickup.
+		OC2_LogPurchaseSound(pPlayer->entindex(), "pickup", STRING(pev->classname), 0);
 
 #ifdef REGAMEDLL_FIXES
 		// BUGBUG: weaponbox links gun to player, then ammo is given
