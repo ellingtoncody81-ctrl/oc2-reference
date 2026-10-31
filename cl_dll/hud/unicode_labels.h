@@ -41,6 +41,30 @@ inline float FixedLabelWidth(const char *text,float height)
     const HFont font=LabelFont(height);if(font<=0||!text)return 0;
     int wide=0;g_pMenu->GetTextSize(font,text,&wide);return wide/LabelScale();
 }
+inline int GlyphCount(const char *text)
+{
+    int count=0;if(text)for(const unsigned char *p=(const unsigned char *)text;*p;++p)if((*p&0xc0)!=0x80)++count;
+    return count;
+}
+inline float SpacedLabelWidth(const char *text,float height,float spacing)
+{
+    return FixedLabelWidth(text,height)+(std::max)(0,GlyphCount(text)-1)*spacing;
+}
+inline void SpacedLabel(const char *text,float x,float y,float height,match_ui::Color color,float spacing)
+{
+    const HFont font=LabelFont(height);if(font<=0||!text||color.a<=0)return;
+    const float scale=LabelScale();int drawX=int(std::floor(x*scale+0.5f));
+    const int drawY=int(std::floor(y*scale+0.5f)),tall=g_pMenu->GetFontTall(font);
+    const auto channel=[](int v){return unsigned(v<0?0:v>255?255:v);};
+    const unsigned rgba=(channel(color.a)<<24)|(channel(color.r)<<16)|(channel(color.g)<<8)|channel(color.b);
+    const int gap=(std::max)(1,int(std::floor(spacing*scale+0.5f)));
+    utfstate_t state={0};
+    for(const unsigned char *p=(const unsigned char*)text;*p;++p)
+    {
+        const uint32_t ch=Q_DecodeUTF8(&state,*p);
+        if(ch)drawX+=g_pMenu->DrawCharacter(font,int(ch),drawX,drawY,tall,rgba)+gap;
+    }
+}
 inline float LineHeight(float height)
 {
     const HFont font=LabelFont(height);if(font<=0)return height;

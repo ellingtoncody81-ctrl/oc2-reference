@@ -29,6 +29,7 @@
 #include "match_ui.h"
 #include "match_status.h"
 #include "buy_menu_state.h"
+#include "oc2_spectator_data.h"
 #include "cl_util.h"
 #include <string.h>
 #include <stdio.h>
@@ -43,6 +44,72 @@
 #include "camera.h"
 
 #include "draw_util.h"
+
+namespace oc2_spec {
+static Target target = {};
+static Radar radar[33] = {};
+static Round round = {};
+static PlayerRow rows[33] = {};
+static float targetTime = -1.0f, radarTime[33] = {}, roundTime = -1.0f;
+static float rowTime[33] = {};
+static int shortAt(const unsigned char *p) { int n = p[0] | (p[1] << 8); return n >= 32768 ? n - 65536 : n; }
+static unsigned int longAt(const unsigned char *p) { return unsigned(p[0]) | (unsigned(p[1]) << 8) | (unsigned(p[2]) << 16) | (unsigned(p[3]) << 24); }
+static bool fresh(float time) { float now = gEngfuncs.GetClientTime(); return time >= 0 && now >= time && now - time < 1.0f; }
+const Target *GetTarget(int index) { return index > 0 && target.playerIndex == index && fresh(targetTime) ? &target : nullptr; }
+const Radar *GetRadar(int index) { return index > 0 && index <= 32 && radar[index].playerIndex == index && fresh(radarTime[index]) ? &radar[index] : nullptr; }
+const Round *GetRound() { return fresh(roundTime) ? &round : nullptr; }
+const PlayerRow *GetPlayerRow(int index) { return index > 0 && index <= 32 && rows[index].playerIndex == index && fresh(rowTime[index]) ? &rows[index] : nullptr; }
+static int MsgTarget(const char *, int size, void *buffer)
+{
+	if (size != 23 || !buffer) return 1;
+	const unsigned char *p = static_cast<const unsigned char *>(buffer);
+	if (p[0] != 1 || p[1] < 1 || p[1] > 32) return 1;
+	Target t = {};
+	t.playerIndex = p[1]; t.health = shortAt(p+2); t.armor = shortAt(p+4); t.weaponId = p[6];
+	t.clip = shortAt(p+7); t.reserve = shortAt(p+9);
+	t.weapons = unsigned(p[11]) | (unsigned(p[12]) << 8) | (unsigned(p[13]) << 16) | (unsigned(p[14]) << 24);
+	t.money = shortAt(p+15); t.score = shortAt(p+17); t.deaths = shortAt(p+19); t.armorType = p[21]; t.equipment = p[22];
+	target = t; targetTime = gEngfuncs.GetClientTime(); return 1;
+}
+static int MsgRadar(const char *, int size, void *buffer)
+{
+	if (size != 9 || !buffer) return 1;
+	const unsigned char *p = static_cast<const unsigned char *>(buffer);
+	int i = p[1]; if (p[0] != 1 || i < 1 || i > 32 || (p[2] != 1 && p[2] != 2)) return 1;
+	Radar r = { i, p[2], shortAt(p+3)/8.0f, shortAt(p+5)/8.0f, shortAt(p+7)/8.0f };
+	radar[i] = r; radarTime[i] = gEngfuncs.GetClientTime(); return 1;
+}
+static int MsgRound(const char *, int size, void *buffer)
+{
+	if (size != 7 || !buffer) return 1;
+	const unsigned char *p = static_cast<const unsigned char *>(buffer);
+	if (p[0] != 1) return 1;
+	Round r = { shortAt(p+1), shortAt(p+3), p[5], p[6] };
+	round = r; roundTime = gEngfuncs.GetClientTime(); return 1;
+}
+static int MsgRow(const char *, int size, void *buffer)
+{
+	if (size != 37 || !buffer) return 1;
+	const unsigned char *p = static_cast<const unsigned char *>(buffer);
+	const int i = p[1]; if (p[0] != 1 || i < 1 || i > 32 || (p[6] != 1 && p[6] != 2)) return 1;
+	PlayerRow r = {};
+	r.playerIndex = i; r.userId = int(longAt(p+2)); r.team = p[6]; r.alive = p[7];
+	r.health = shortAt(p+8); r.armor = shortAt(p+10); r.weaponId = p[12]; r.armorType = p[13]; r.equipment = p[14];
+	r.money = shortAt(p+15); r.weapons = longAt(p+17); r.kills = shortAt(p+21); r.assists = shortAt(p+23); r.deaths = shortAt(p+25);
+	r.damage = longAt(p+27) / 10.0f; r.rounds = shortAt(p+31); r.adr = r.rounds > 0 ? r.damage / r.rounds : 0.0f;
+	r.he = p[33]; r.flash = p[34]; r.smoke = p[35]; r.fire = p[36];
+	rows[i] = r; rowTime[i] = gEngfuncs.GetClientTime(); return 1;
+}
+static void Init()
+{
+	target = {}; round = {}; targetTime = roundTime = -1.0f;
+	for (int i = 0; i <= 32; ++i) { radar[i] = {}; radarTime[i] = -1.0f; rows[i] = {}; rowTime[i] = -1.0f; }
+	gEngfuncs.pfnHookUserMsg("OC2Spec", MsgTarget);
+	gEngfuncs.pfnHookUserMsg("OC2Radar", MsgRadar);
+	gEngfuncs.pfnHookUserMsg("OC2Round", MsgRound);
+	gEngfuncs.pfnHookUserMsg("OC2SpecRow", MsgRow);
+}
+}
 
 #if _WIN32
 #define strncasecmp _strnicmp
@@ -315,6 +382,7 @@ void CHud :: Init( void )
 	HOOK_MESSAGE( gHUD, ShadowIdx );
 
 	gEngfuncs.pfnHookUserMsg( "ADStop", __MsgFunc_ADStop );
+	oc2_spec::Init();
 	gEngfuncs.pfnHookUserMsg( "ItemStatus", __MsgFunc_ItemStatus );
 	// gEngfuncs.pfnHookUserMsg( "ReqState", __MsgFunc_ReqState );
 	gEngfuncs.pfnHookUserMsg( "ForceCam", __MsgFunc_ForceCam );

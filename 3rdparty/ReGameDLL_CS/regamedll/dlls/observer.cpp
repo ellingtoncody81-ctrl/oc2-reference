@@ -1,4 +1,54 @@
 #include "precompiled.h"
+#include "oc2_spec_stats.h"
+#include "wpn_shared/wpn_molotov.h"
+
+static oc2_stats::Accumulator g_oc2Stats;
+void OC2_SpecStatsReset() { g_oc2Stats.Reset(); }
+void OC2_SpecStatsClear(int slot) { g_oc2Stats.ClearPlayer(slot); }
+void OC2_SpecStatsRound(bool full) { g_oc2Stats.NextRound(full); }
+void OC2_SpecStatsParticipate(CBasePlayer *p)
+{
+	if (p && !p->has_disconnected && p->m_iJoiningState == JOINED && (p->m_iTeam == TERRORIST || p->m_iTeam == CT))
+		g_oc2Stats.Participate(p->entindex());
+}
+void OC2_SpecStatsDamage(CBaseEntity *entity, CBasePlayer *victim, float damage)
+{
+	if (!entity) return;
+	CBasePlayer *attacker = nullptr;
+	if (entity->Classify() == CLASS_PLAYER) attacker = static_cast<CBasePlayer *>(entity);
+	else if (entity->Classify() == CLASS_VEHICLE)
+		attacker = static_cast<CBasePlayer *>(static_cast<CFuncVehicle *>(entity)->m_pDriver);
+	if (!attacker || !victim || attacker == victim || attacker->has_disconnected || victim->has_disconnected ||
+		(attacker->m_iTeam != TERRORIST && attacker->m_iTeam != CT) ||
+		(victim->m_iTeam != TERRORIST && victim->m_iTeam != CT) || attacker->m_iTeam == victim->m_iTeam ||
+		victim->pev->takedamage == DAMAGE_NO || !victim->IsAlive()) return;
+	const float applied = damage < victim->pev->health ? damage : victim->pev->health;
+	g_oc2Stats.Damage(attacker->entindex(), victim->entindex(), applied);
+}
+void OC2_SpecStatsDeath(CBasePlayer *victim, CBasePlayer *killer)
+{
+	if (!victim) return;
+	int killerIndex = 0; unsigned int eligible = 0;
+	if (killer && !killer->has_disconnected && killer != victim &&
+		(killer->m_iTeam == TERRORIST || killer->m_iTeam == CT) &&
+		(victim->m_iTeam == TERRORIST || victim->m_iTeam == CT) && killer->m_iTeam != victim->m_iTeam)
+	{
+		killerIndex = killer->entindex();
+		for (int i = 1; i <= gpGlobals->maxClients && i <= 32; ++i) {
+			CBasePlayer *p = UTIL_PlayerByIndex(i);
+			if (p && !p->has_disconnected && p->m_iTeam == killer->m_iTeam) eligible |= 1u << (i - 1);
+		}
+	}
+	g_oc2Stats.Death(killerIndex, victim->entindex(), eligible);
+}
+
+static int OC2_SpecGrenadeCount(CBasePlayer *p, WeaponIdType id)
+{
+	CBasePlayerItem *item = p->GetItemById(id);
+	if (!item) return 0;
+	const int ammo = item->PrimaryAmmoIndex();
+	return ammo >= 0 && ammo < MAX_AMMO_SLOTS ? clamp(p->m_rgAmmo[ammo], 0, 255) : 0;
+}
 
 LINK_HOOK_CHAIN(int, GetForceCamera, (CBasePlayer *pObserver), pObserver)
 
@@ -548,4 +598,125 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Observer_Think)()
 	Observer_HandleButtons();
 	Observer_CheckTarget();
 	Observer_CheckProperties();
+
+	// A private, target-tagged snapshot. Limit updates per observer to 10 Hz.
+	static float nextUpdate[33] = {};
+	static int lastTarget[33] = {};
+	const int observer = entindex();
+	if (observer < 1 || observer > 32)
+		return;
+	// Do not expose positions to dead team members subject to force-camera rules.
+	// Unrestricted spectators, including normal offline play, get both teams.
+	static float nextRadar[33] = {};
+	if (nextRadar[observer] <= gpGlobals->time || nextRadar[observer] > gpGlobals->time + 0.5f)
+	{
+		nextRadar[observer] = gpGlobals->time + 0.25f;
+		int aliveT = 0, aliveCT = 0;
+		const bool allTeams = GetForceCamera(this) == CAMERA_MODE_SPEC_ANYONE;
+		for (int i = 1; i <= gpGlobals->maxClients; ++i)
+		{
+			CBasePlayer *player = UTIL_PlayerByIndex(i);
+			if (!player || player->has_disconnected || !player->IsAlive())
+				continue;
+			if (player->m_iTeam == TERRORIST) ++aliveT;
+			else if (player->m_iTeam == CT) ++aliveCT;
+			else continue;
+			if (!allTeams && m_iTeam != SPECTATOR && player->m_iTeam != m_iTeam)
+				continue;
+			MESSAGE_BEGIN(MSG_ONE_UNRELIABLE, gmsgOC2Radar, nullptr, pev);
+				WRITE_BYTE(1);
+				WRITE_BYTE(i);
+				WRITE_BYTE(player->m_iTeam);
+				WRITE_COORD(player->pev->origin.x);
+				WRITE_COORD(player->pev->origin.y);
+				WRITE_COORD(player->pev->origin.z);
+			MESSAGE_END();
+		}
+		CHalfLifeMultiplay *rules = CSGameRules();
+		if (rules)
+		{
+			MESSAGE_BEGIN(MSG_ONE_UNRELIABLE, gmsgOC2Round, nullptr, pev);
+				WRITE_BYTE(1);
+				WRITE_SHORT(clamp(rules->m_iTotalRoundsPlayed, 0, 32767));
+				WRITE_SHORT(clamp(rules->m_iMaxRounds, 0, 32767));
+				WRITE_BYTE(aliveT);
+				WRITE_BYTE(aliveCT);
+			MESSAGE_END();
+		}
+	}
+	// Stagger player rows to keep each observer's unreliable datagram bounded.
+	static float nextRows[33] = {};
+	static int nextSlot[33] = {};
+	if (nextRows[observer] <= gpGlobals->time || nextRows[observer] > gpGlobals->time + 0.3f)
+	{
+		nextRows[observer] = gpGlobals->time + 0.1f;
+		const bool allTeams = GetForceCamera(this) == CAMERA_MODE_SPEC_ANYONE || m_iTeam == SPECTATOR;
+		for (int n = 0; n < 8 && n < gpGlobals->maxClients; ++n)
+		{
+			if (++nextSlot[observer] > gpGlobals->maxClients || nextSlot[observer] > 32) nextSlot[observer] = 1;
+			const int i = nextSlot[observer];
+			CBasePlayer *p = UTIL_PlayerByIndex(i);
+			if (!p || p->has_disconnected || (p->m_iTeam != TERRORIST && p->m_iTeam != CT) ||
+				(!allTeams && p->m_iTeam != m_iTeam)) continue;
+			const bool alive = p->IsAlive();
+			CBasePlayerItem *fire = alive ? p->GetItemById(WEAPON_MOLOTOV) : nullptr;
+			int equip = alive ? ((p->m_bHasDefuser ? 1 : 0) | (p->m_bHasC4 ? 2 : 0) |
+				(p->m_bHasNightVision ? 4 : 0) | (p->GetItemById(WEAPON_KNIFE) ? 8 : 0) |
+				(p->GetItemById(WEAPON_TASER) ? 16 : 0) | (p->HasShield() ? 64 : 0)) : 0;
+			if (fire && OC2_SpecGrenadeCount(p, WEAPON_MOLOTOV) > 0 &&
+				(static_cast<CBasePlayerWeapon *>(fire)->m_iWeaponState & CMolotovGrenade::INCENDIARY_STATE)) equip |= 32;
+			const oc2_stats::Player &stats = g_oc2Stats.Get(i);
+			const int damage10 = int(clamp(stats.damage * 10.0f, 0.0f, 2147483000.0f));
+			MESSAGE_BEGIN(MSG_ONE_UNRELIABLE, gmsgOC2Row, nullptr, pev);
+				WRITE_BYTE(1); WRITE_BYTE(i); WRITE_LONG(GETPLAYERUSERID(p->edict()));
+				WRITE_BYTE(p->m_iTeam); WRITE_BYTE(alive ? 1 : 0);
+				WRITE_SHORT(clamp(int(p->pev->health), 0, 32767)); WRITE_SHORT(clamp(int(p->pev->armorvalue), 0, 32767));
+				WRITE_BYTE(alive && p->m_pActiveItem ? p->m_pActiveItem->m_iId : 0);
+				WRITE_BYTE(alive ? p->m_iKevlar : ARMOR_NONE); WRITE_BYTE(equip);
+				WRITE_SHORT(clamp(p->m_iAccount, 0, 32767)); WRITE_LONG(alive ? p->pev->weapons : 0);
+				WRITE_SHORT(clamp(stats.kills, 0, 32767)); WRITE_SHORT(clamp(stats.assists, 0, 32767));
+				WRITE_SHORT(clamp(stats.deaths, 0, 32767)); WRITE_LONG(damage10);
+				WRITE_SHORT(clamp(stats.rounds, 0, 32767));
+				WRITE_BYTE(alive ? OC2_SpecGrenadeCount(p, WEAPON_HEGRENADE) : 0);
+				WRITE_BYTE(alive ? OC2_SpecGrenadeCount(p, WEAPON_FLASHBANG) : 0);
+				WRITE_BYTE(alive ? OC2_SpecGrenadeCount(p, WEAPON_SMOKEGRENADE) : 0);
+				WRITE_BYTE(alive ? OC2_SpecGrenadeCount(p, WEAPON_MOLOTOV) : 0);
+			MESSAGE_END();
+		}
+	}
+	CBasePlayer *target = m_hObserverTarget ? UTIL_PlayerByIndex(m_hObserverTarget->entindex()) : nullptr;
+	if (!target || pev->iuser2 != target->entindex())
+	{
+		lastTarget[observer] = 0;
+		return;
+	}
+	if (lastTarget[observer] == target->entindex() && nextUpdate[observer] > gpGlobals->time && nextUpdate[observer] <= gpGlobals->time + 0.2f)
+		return;
+	lastTarget[observer] = target->entindex();
+	nextUpdate[observer] = gpGlobals->time + 0.1f;
+
+	CBasePlayerWeapon *weapon = static_cast<CBasePlayerWeapon *>(target->m_pActiveItem);
+	int clip = -1, reserve = -1;
+	if (weapon)
+	{
+		clip = weapon->m_iClip;
+		if (weapon->m_iPrimaryAmmoType >= 0 && weapon->m_iPrimaryAmmoType < MAX_AMMO_SLOTS)
+			reserve = target->m_rgAmmo[weapon->m_iPrimaryAmmoType];
+	}
+	const int flags = (target->m_bHasDefuser ? 1 : 0) | (target->m_bHasC4 ? 2 : 0) | (target->m_bHasNightVision ? 4 : 0);
+	MESSAGE_BEGIN(MSG_ONE_UNRELIABLE, gmsgOC2Spec, nullptr, pev);
+		WRITE_BYTE(1); // protocol version
+		WRITE_BYTE(target->entindex());
+		WRITE_SHORT(clamp(int(target->pev->health), 0, 32767));
+		WRITE_SHORT(clamp(int(target->pev->armorvalue), 0, 32767));
+		WRITE_BYTE(weapon ? weapon->m_iId : 0);
+		WRITE_SHORT(clamp(clip, -1, 32767));
+		WRITE_SHORT(clamp(reserve, -1, 32767));
+		WRITE_LONG(target->pev->weapons);
+		WRITE_SHORT(clamp(target->m_iAccount, 0, 32767));
+		WRITE_SHORT(clamp(int(target->pev->frags), -32768, 32767));
+		WRITE_SHORT(clamp(target->m_iDeaths, 0, 32767));
+		WRITE_BYTE(target->m_iKevlar);
+		WRITE_BYTE(flags);
+	MESSAGE_END();
 }

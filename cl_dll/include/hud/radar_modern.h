@@ -140,6 +140,9 @@ public:
 	int   m_iCenterX;
 	int   m_iCenterY;
 	int   m_iRadius;
+	bool  m_bFullMap;
+	float m_flLayoutDrawTime;
+	int m_iSelfDrawX, m_iSelfDrawY;
 
 	// ---- overview -> radar transform, refreshed every frame by
 	//      UpdateRadarTransform(). m_flPixelsPerWorld is the single number

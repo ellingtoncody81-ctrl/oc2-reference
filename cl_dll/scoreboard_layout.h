@@ -42,4 +42,12 @@ inline bool Before(int scoreA,int deathsA,int slotA,int scoreB,int deathsB,int s
 {
 	return scoreA!=scoreB?scoreA>scoreB:deathsA!=deathsB?deathsA<deathsB:slotA<slotB;
 }
+inline void ReserveRadar(Layout &layout, float radarRight)
+{
+	if(layout.x >= radarRight) return;
+	const float right = layout.x + layout.width;
+	layout.x = radarRight;
+	layout.width = Max(1.0f, right - layout.x);
+	layout.teamWidth = layout.sideBySide ? (layout.width-layout.gap)*0.5f : layout.width;
+}
 }

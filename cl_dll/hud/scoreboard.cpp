@@ -31,6 +31,7 @@
 #include "eventscripts.h"
 #include "match_ui.h"
 #include "scoreboard_layout.h"
+#include "radar_fullmap_layout.h"
 #include "unicode_labels.h"
 #include <algorithm>
 #include <vector>
@@ -111,7 +112,12 @@ int DrawModernScoreboard()
 		const auto &pa=g_PlayerExtraInfo[a],&pb=g_PlayerExtraInfo[b];
 		return scoreboard_layout::Before(pa.frags,pa.deaths,a,pb.frags,pb.deaths,b);
 	});
-	const auto layout=scoreboard_layout::Make(ScreenWidth,ScreenHeight,match_ui::Scale(),int(teams[0].size()),int(teams[1].size()));
+	auto layout=scoreboard_layout::Make(ScreenWidth,ScreenHeight,match_ui::Scale(),int(teams[0].size()),int(teams[1].size()));
+	if(gHUD.m_RadarModern.IsEnabled())
+	{
+		const auto radar=radar_fullmap_layout::Make(ScreenWidth,ScreenHeight);
+		scoreboard_layout::ReserveRadar(layout,float(radar.x+radar.size+8*layout.scale));
+	}
 	s_modernScoreLayout=layout;s_modernScoreRows.clear();s_modernSpectators=int(spectators.size());
 	const float s=layout.scale;
 	ModernScoreFill(layout.x-2*s,layout.y-2*s,layout.width+4*s,layout.height+4*s,{8,10,13,225});
@@ -336,6 +342,7 @@ void CHudScoreboard :: InitHUDData( void )
 	memset( g_TeamInfo, 0, sizeof g_TeamInfo );
 	memset(m_teamScores, 0, sizeof(m_teamScores));
 	memset(m_teamScoreKnown, 0, sizeof(m_teamScoreKnown));
+	memset(m_scoreInfoKnown, 0, sizeof(m_scoreInfoKnown));
 
 	for ( int i = 1; i <= MAX_PLAYERS; i++ )
 	{
@@ -790,6 +797,7 @@ int CHudScoreboard :: MsgFunc_ScoreInfo( const char *pszName, int iSize, void *p
 
 	if ( cl > 0 && cl <= MAX_PLAYERS )
 	{
+		m_scoreInfoKnown[cl] = true;
 		g_PlayerExtraInfo[cl].frags = frags;
 		g_PlayerExtraInfo[cl].deaths = deaths;
 		g_PlayerExtraInfo[cl].playerclass = playerclass;

@@ -160,6 +160,7 @@ inline const Entry *Entries(size_t &count) {
         {"Hint_prevent_hostage_rescue", "阻止反恐精英营救人质。", "Prevent the Counter-Terrorists from\nrescuing the hostages!"},
         {"Hint_rescue_the_hostages", "营救人质可获得金钱奖励！", "Rescue the hostages for money!"},
         {"Hint_press_use_so_hostage_will_follow", "对人质按使用键即可让其跟随。", "Press USE to get the hostage to follow you."},
+        {"Hold_E_to_rescue_hostage", "按住使用键解救人质", "Hold E to rescue the hostage"},
         {"Friend", "友军", "Friend"},
         {"Enemy", "敌军", "Enemy"},
         {"Hostage", "人质", "Hostage"},

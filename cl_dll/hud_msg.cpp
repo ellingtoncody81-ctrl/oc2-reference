@@ -133,6 +133,11 @@ int CHud :: MsgFunc_InitHUD( const char *pszName, int iSize, void *pbuf )
 		gEngfuncs.Cvar_SetValue( cl_fog_b->name, g_FogParameters.color[2] );
 
 	memset( g_PlayerExtraInfo, 0, sizeof(g_PlayerExtraInfo) );
+	for( int i = 1; i <= MAX_PLAYERS; ++i )
+	{
+		g_PlayerExtraInfo[i].sb_health = -1;
+		g_PlayerExtraInfo[i].sb_account = -1;
+	}
 
 	g_Environment.Initialize();
 

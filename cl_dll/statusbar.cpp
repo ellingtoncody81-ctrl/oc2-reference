@@ -26,8 +26,24 @@
 #include <string.h>
 #include <stdio.h>
 #include "draw_util.h"
+#include "hud/message_zh.h"
+#include "hud/unicode_labels.h"
+
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
 
 #define STATUSBAR_ID_LINE		0
+
+// Offsets into the legacy text allow the original text to remain available
+// when the Unicode font or menu renderer is unavailable.
+static std::map<int, std::vector<std::pair<size_t, size_t>>> s_hostageSpans;
+static float s_hostageLabelDrawTime = -1.0f;
+static void StatusBarDump()
+{
+	gEngfuncs.Con_Printf("statusbar_localization: hostage_draw_time=%.3f\n", s_hostageLabelDrawTime);
+}
 
 inline void InsertTextMsg( char *szDst, size_t sLen, const char *szMsgName)
 {
@@ -46,6 +62,7 @@ int CHudStatusBar :: Init( void )
 
 	HOOK_MESSAGE( gHUD.m_StatusBar, StatusText );
 	HOOK_MESSAGE( gHUD.m_StatusBar, StatusValue );
+	gEngfuncs.pfnAddCommand("statusbar_dump", StatusBarDump);
 
 	Reset();
 
@@ -64,6 +81,8 @@ int CHudStatusBar :: VidInit( void )
 void CHudStatusBar :: Reset( void )
 {
 	int i = 0;
+	s_hostageSpans.clear();
+	s_hostageLabelDrawTime = -1.0f;
 
 	m_iFlags &= ~HUD_DRAW;  // start out inactive
 	for ( i = 0; i < MAX_STATUSBAR_LINES; i++ )
@@ -82,6 +101,7 @@ void CHudStatusBar :: Reset( void )
 
 void CHudStatusBar :: ParseStatusString( int line_num )
 {
+	s_hostageSpans.erase(line_num);
 	// localise string first
 	char szBuffer[MAX_STATUSTEXT_LENGTH];
 	memset( szBuffer, 0, sizeof szBuffer );
@@ -99,7 +119,7 @@ void CHudStatusBar :: ParseStatusString( int line_num )
 		while ( *src == '\n' )
 			src++;  // skip over any newlines
 
-		if ( ((src - src_start) >= MAX_STATUSTEXT_LENGTH) || ((dst - dst_start) >= MAX_STATUSTEXT_LENGTH) )
+		if ( ((src - src_start) >= MAX_STATUSTEXT_LENGTH) || ((dst - dst_start) >= MAX_STATUSTEXT_LENGTH - 1) )
 			break;
 
 		int index = atoi( src );
@@ -113,7 +133,7 @@ void CHudStatusBar :: ParseStatusString( int line_num )
 				continue; // no more left in this text line
 
 			// copy the text, char by char, until we hit a % or a \n
-			while ( *src != '\n' && *src != 0 )
+			while ( *src != '\n' && *src != 0 && (dst - dst_start) < MAX_STATUSTEXT_LENGTH - 1 )
 			{
 				if ( *src != '%' )
 				{  // just copy the character
@@ -124,6 +144,8 @@ void CHudStatusBar :: ParseStatusString( int line_num )
 				{
 					// get the descriptor
 					char valtype = *(++src); // move over %
+					if ( !valtype )
+						break;
 
 					// if it's a %, draw a % sign
 					if ( valtype == '%' )
@@ -155,6 +177,7 @@ void CHudStatusBar :: ParseStatusString( int line_num )
 								if ( g_PlayerInfoList[indexval].name != NULL )
 								{
 									strncpy( szRepString, g_PlayerInfoList[indexval].name, MAX_PLAYER_NAME_LENGTH );
+									szRepString[MAX_PLAYER_NAME_LENGTH-1] = 0;
 									gHUD.m_Health.m_iPlayerLastPointedAt = indexval;
 									m_pflNameColors[line_num] = GetClientColor( indexval );
 								}
@@ -191,8 +214,12 @@ void CHudStatusBar :: ParseStatusString( int line_num )
 							szRepString[0] = 0;
 						}
 
-						for ( char *cp = szRepString; *cp != 0 && ((dst - dst_start) < MAX_STATUSTEXT_LENGTH); cp++, dst++ )
+						const size_t start = size_t(dst - dst_start);
+						for ( char *cp = szRepString; *cp != 0 && ((dst - dst_start) < MAX_STATUSTEXT_LENGTH - 1); cp++, dst++ )
 							*dst = *cp;
+						const size_t length = size_t(dst - dst_start) - start;
+						if ( valtype == 'c' && indexval == 3 && length == strlen(szRepString) && length )
+							s_hostageSpans[line_num].push_back(std::make_pair(start, length));
 					}
 				}
 			}
@@ -238,20 +265,48 @@ int CHudStatusBar :: Draw( float fTime )
 		int TextHeight, TextWidth;
 		DrawUtils::ConsoleStringSize( m_szStatusBar[i], &TextWidth, &TextHeight );
 
+		std::string unicodeText;
+		const auto spans = s_hostageSpans.find(i);
+		const char *hostage = hud_message_zh::Find("Hostage");
+		const float fontHeight = float(max(1, TextHeight));
+		if ( spans != s_hostageSpans.end() && hostage && hud_unicode::LabelFont(fontHeight) > 0 )
+		{
+			unicodeText = m_szStatusBar[i];
+			for ( auto span = spans->second.rbegin(); span != spans->second.rend(); ++span )
+				unicodeText.replace(span->first, span->second, hostage);
+		}
+
 		int x = 4;
 		int y = Y_START - ( 4 + TextHeight * i ); // draw along bottom of screen
 
 		// let user set status ID bar centering
 		if ( i == STATUSBAR_ID_LINE && hud_centerid->value != 0.0f )
 		{
-			x = max( 0, max(2, (ScreenWidth - TextWidth)) / 2 );
-			y = (ScreenHeight / 2) + (TextHeight * hud_centerid->value );
+			if ( !unicodeText.empty() )
+			{
+				const float width = hud_unicode::FixedLabelWidth(unicodeText.c_str(), fontHeight);
+				x = max(1, int((ScreenWidth - width) * 0.5f));
+				y = (ScreenHeight / 2) + (hud_unicode::LineHeight(fontHeight) * hud_centerid->value);
+			}
+			else
+			{
+				x = max( 0, max(2, (ScreenWidth - TextWidth)) / 2 );
+				y = (ScreenHeight / 2) + (TextHeight * hud_centerid->value );
+			}
 		}
 
 		if ( m_pflNameColors[i] )
 			DrawUtils::SetConsoleTextColor( m_pflNameColors[i][0], m_pflNameColors[i][1], m_pflNameColors[i][2] );
 
-		DrawUtils::DrawConsoleString( x, y, m_szStatusBar[i] );
+		if ( !unicodeText.empty() )
+		{
+			s_hostageLabelDrawTime = gEngfuncs.GetClientTime();
+			const float *color = m_pflNameColors[i] ? m_pflNameColors[i] : g_ColorYellow;
+			hud_unicode::FixedLabel(unicodeText.c_str(), float(x), float(y), fontHeight,
+				match_ui::Color(int(color[0] * 255), int(color[1] * 255), int(color[2] * 255)));
+		}
+		else
+			DrawUtils::DrawConsoleString( x, y, m_szStatusBar[i] );
 	}
 
 	if( empty )

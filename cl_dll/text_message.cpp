@@ -31,8 +31,11 @@
 #include "hud/message_zh.h"
 #include "hud/unicode_labels.h"
 #include "hud/presentation_contract.h"
+#include "hostage_hint.h"
 #include <string>
 #include <vector>
+
+static bool s_centerHostageHint = false;
 
 int CHudTextMessage::Init(void)
 {
@@ -52,6 +55,7 @@ void CHudTextMessage::InitHUDData()
 	m_received=m_suppressed=m_drawn=0;
 	m_lastDestination=0;
 	m_centerDrawTime=-1;m_centerDrawY=m_centerDrawExpansion=0;
+	s_centerHostageHint=false;
 	m_iFlags=HUD_DRAW | HUD_INTERMISSION;
 }
 void CHudTextMessage::Reset()
@@ -60,6 +64,7 @@ void CHudTextMessage::Reset()
 }
 void CHudTextMessage::ShowCenter(const char *text)
 {
+	s_centerHostageHint=false;
 	hud_text_layout::Copy(m_centerText,sizeof(m_centerText),text);
 	m_centerStart=gHUD.m_flTime;
 	const float hold=gEngfuncs.pfnGetCvarFloat("scr_centertime");
@@ -70,13 +75,16 @@ int CHudTextMessage::Draw(float time)
 	if (!m_centerText[0] || time<m_centerStart || time>=m_centerEnd || (gHUD.m_iHideHUDDisplay&HIDEHUD_ALL)) return 1;
 	if (!g_pMenu) return 1;
 	// Keep the original upper-screen anchor and the animated backdrop.
-	const float height=max(12,gHUD.GetCharHeight()),available=ScreenWidth*.9f;
-	const auto lines=hud_unicode::WrapLines(m_centerText,height,available);
+	const float height=s_centerHostageHint ? max(20.0f,ScreenHeight*.024f) : float(max(12,gHUD.GetCharHeight()));
+	const float available=ScreenWidth*.9f, spacing=s_centerHostageHint ? 2.0f : 0.0f;
+	const auto lines=hud_text_layout::Wrap(m_centerText,available,[height,spacing](const char *line){
+		return hud_unicode::SpacedLabelWidth(line,height,spacing);
+	});
 	const float lineHeight=hud_unicode::LineHeight(height);
 	float y=hud_presentation::CenterY(float(ScreenHeight));
 	const float expansion=hud_presentation::CenterExpansion(time-m_centerStart,m_centerEnd-time);
 	float widest=0;
-	for (const auto &line:lines) widest=max(widest,hud_unicode::FixedLabelWidth(line.c_str(),height));
+	for (const auto &line:lines) widest=max(widest,hud_unicode::SpacedLabelWidth(line.c_str(),height,spacing));
 	const float padding=20.0f/hud_unicode::LabelScale();
 	// Preserve the anchor unless a translated multiline block reaches the
 	// lower screen edge, as HudText's existing YPosition already does.
@@ -101,8 +109,9 @@ int CHudTextMessage::Draw(float time)
 	if (time < textEnd)
 		for (const auto &line:lines)
 		{
-			const float width=hud_unicode::FixedLabelWidth(line.c_str(),height);
-			hud_unicode::FixedLabel(line.c_str(),(ScreenWidth-width)*.5f,y,height,{255,255,255});
+			const float width=hud_unicode::SpacedLabelWidth(line.c_str(),height,spacing);
+			if(s_centerHostageHint) hud_unicode::SpacedLabel(line.c_str(),(ScreenWidth-width)*.5f,y,height,{255,255,255},spacing);
+			else hud_unicode::FixedLabel(line.c_str(),(ScreenWidth-width)*.5f,y,height,{255,255,255});
 			y+=lineHeight;
 		}
 	++m_drawn;
@@ -291,10 +300,18 @@ int CHudTextMessage::MsgFunc_TextMsg( const char *pszName, int iSize, void *pbuf
 	case HUD_PRINTCENTER:
 	{
 		Localize_Format( psz, MAX_TEXTMSG_STRING, msg_text, args, 4 );
+		const bool hostageHint = !strcmp(token,"Hold E to rescue the hostage");
+		if(hostageHint)
+		{
+			const char *binding=gEngfuncs.Key_LookupBinding ? gEngfuncs.Key_LookupBinding("use") : nullptr;
+			if(!binding && gEngfuncs.Key_LookupBinding) binding=gEngfuncs.Key_LookupBinding("+use");
+			hostage_hint::Format(psz,MAX_TEXTMSG_STRING,binding);
+		}
 
 		ConvertCRtoNL( psz );
 
 		ShowCenter( psz );
+		s_centerHostageHint=hostageHint;
 		break;
 	}
 	case HUD_PRINTNOTIFY:

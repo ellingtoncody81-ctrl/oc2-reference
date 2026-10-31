@@ -407,6 +407,7 @@ public:
 	bool ShouldDrawScoreboard() const;
 	int RoundScore(int team) const { return team >= 1 && team <= 2 ? m_teamScores[team] : 0; }
 	bool RoundScoreKnown(int team) const { return team >= 1 && team <= 2 && m_teamScoreKnown[team]; }
+	bool ScoreInfoKnown(int slot) const { return slot >= 1 && slot <= MAX_PLAYERS && m_scoreInfoKnown[slot]; }
 
 	CHudUserCmd(ShowScores);
 	CHudUserCmd(HideScores);
@@ -434,6 +435,7 @@ private:
 	cvar_t *cl_show_scoreboard_on_death;
 	int m_teamScores[3]{};
 	bool m_teamScoreKnown[3]{};
+	bool m_scoreInfoKnown[MAX_PLAYERS + 1]{};
 };
 
 //

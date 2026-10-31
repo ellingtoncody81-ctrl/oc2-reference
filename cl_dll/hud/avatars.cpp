@@ -176,7 +176,7 @@ void CHudAvatars::DrawPlayerAvatar(int slot, int x, int y, int size)
 
 int CHudAvatars::Draw(float time)
 {
-	if (!Enabled() || (gHUD.m_iHideHUDDisplay & HIDEHUD_ALL)) return 1;
+	if (!Enabled() || g_iUser1 || (gHUD.m_iHideHUDDisplay & HIDEHUD_ALL)) return 1;
 	Refresh(time);
 	const auto& ct = m_state.counter_terrorists;
 	const auto& t = m_state.terrorists;

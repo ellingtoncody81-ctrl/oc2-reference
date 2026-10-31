@@ -31,6 +31,8 @@ Measurements taken from the decompiled binary:
 #include "radar_int.h"
 #include "hud/radar_modern.h"
 #include "view_ads.h"		// V_CurrentADSWorldFOV: the cone must follow the scope
+#include "radar_fullmap_layout.h"
+#include "oc2_spectator_data.h"
 
 #include <math.h>
 #include <cmath>
@@ -144,6 +146,9 @@ int CHudRadarModern::Init( void )
 	ResetRound();
 	m_flRadarVisLast    = 0;
 	m_iPlayerNum        = 0;
+	m_bFullMap          = false;
+	m_flLayoutDrawTime  = -1.0f;
+	m_iSelfDrawX = m_iSelfDrawY = -1;
 	m_iObjectiveCount   = 0;
 	m_szObjectiveMap[0] = 0;
 	m_bObjectivesLoaded = false;
@@ -395,6 +400,10 @@ void CHudRadarModern::DumpState() const
 		s_cl_radar_enemy_los ? s_cl_radar_enemy_los->value : 0.0f,
 		int( m_bRadarGating ), m_flRadarVisLast, int( IsEnabled() ),
 		int( gHUD.m_fPlayerDead ), gHUD.m_iHideHUDDisplay );
+	gEngfuncs.Con_Printf( "radar_layout: full=%d x=%d y=%d size=%d tiles=%d,%d px_per_tile=%.3f draw_time=%.3f scoreboard=%d observer=%d self_x=%d self_y=%d\n",
+		int(m_bFullMap),m_iCenterX-m_iRadius,m_iCenterY-m_iRadius,m_iRadius*2,
+		m_iOverviewTilesX,m_iOverviewTilesY,m_flPixelsPerTile,m_flLayoutDrawTime,
+		int(gHUD.m_Scoreboard.ShouldDrawScoreboard()),g_iUser1,m_iSelfDrawX,m_iSelfDrawY );
 	for( int i = 1; i <= count; ++i )
 	{
 		gEngfuncs.Con_Printf( "radar_player: slot=%d team=%d visible=%d confirmed=%d confirm=%.3f hold=%.3f dead=%d dead_at=%.3f has_last=%d has_confirmed_last=%d last=%.1f,%.1f,%.1f dead_origin=%.1f,%.1f,%.1f\n",
@@ -562,6 +571,11 @@ void CHudRadarModern::UpdateRadarTransform( int cx, int cy, int radius )
 		flFraction = RADAR_MAP_FRACTION;
 
 	m_flPixelsPerTile = ( (float)radius * 2.0f ) / ( (float)m_iOverviewTilesX * flFraction );
+	if( m_bFullMap )
+	{
+		m_flTileA = 1.0f; m_flTileB = 0.0f;
+		m_flPixelsPerTile = radar_fullmap_layout::TileScale(radius * 2, m_iOverviewTilesX, m_iOverviewTilesY);
+	}
 }
 
 /*
@@ -687,6 +701,13 @@ bool CHudRadarModern::CalcPoint( const Vector &vecWorld, int &x, int &y, int &ra
 
 	float tx, ty, selfX, selfY;
 	WorldToTile( vecWorld, tx, ty );
+	if( m_bFullMap )
+	{
+		float fx, fy;
+		radar_fullmap_layout::Project(tx,ty,m_iOverviewTilesX,m_iOverviewTilesY,m_iCenterX,m_iCenterY,m_flPixelsPerTile,fx,fy);
+		x = (int)fx; y = (int)fy;
+		return fabsf(fx-m_iCenterX) > m_iRadius || fabsf(fy-m_iCenterY) > m_iRadius;
+	}
 	WorldToTile( gHUD.m_vecOrigin, selfX, selfY );
 
 	float flDX = ( tx - selfX ) * m_flPixelsPerTile;
@@ -1178,6 +1199,31 @@ static int ClipPolyToCircle( const float *inX, const float *inY,
 	return cur;
 }
 
+// Attribute-preserving rectangular clipping for full-map tiles and zones.
+static int ClipPolyToSquare(float *x, float *y, float *u, float *v, int n, float cx, float cy, float radius)
+{
+	float ax[RADAR_CLIP_MAX], ay[RADAR_CLIP_MAX], au[RADAR_CLIP_MAX], av[RADAR_CLIP_MAX];
+	for(int edge = 0; edge < 4 && n > 0; ++edge)
+	{
+		int count = 0;
+		for(int i = 0; i < n; ++i)
+		{
+			const int j = (i + 1) % n;
+			const float d0 = edge == 0 ? x[i]-(cx-radius) : edge == 1 ? (cx+radius)-x[i] : edge == 2 ? y[i]-(cy-radius) : (cy+radius)-y[i];
+			const float d1 = edge == 0 ? x[j]-(cx-radius) : edge == 1 ? (cx+radius)-x[j] : edge == 2 ? y[j]-(cy-radius) : (cy+radius)-y[j];
+			if(d0 >= 0 && count < RADAR_CLIP_MAX) { ax[count]=x[i]; ay[count]=y[i]; au[count]=u[i]; av[count++]=v[i]; }
+			if((d0 >= 0) != (d1 >= 0) && count < RADAR_CLIP_MAX)
+			{
+				const float t = d0 / (d0-d1);
+				ax[count]=x[i]+(x[j]-x[i])*t; ay[count]=y[i]+(y[j]-y[i])*t;
+				au[count]=u[i]+(u[j]-u[i])*t; av[count++]=v[i]+(v[j]-v[i])*t;
+			}
+		}
+		n=count; for(int i=0;i<n;++i) { x[i]=ax[i]; y[i]=ay[i]; u[i]=au[i]; v[i]=av[i]; }
+	}
+	return n;
+}
+
 /*
 ========================
 DrawOverviewLayer
@@ -1240,7 +1286,8 @@ void CHudRadarModern::DrawOverviewLayer( int cx, int cy, int radius )
 
 	// grid origin: the player's own tile, pulled back from the centre
 	float selfX, selfY;
-	WorldToTile( gHUD.m_vecOrigin, selfX, selfY );
+	if( m_bFullMap ) { selfX = xTiles * 0.5f; selfY = yTiles * 0.5f; }
+	else WorldToTile( gHUD.m_vecOrigin, selfX, selfY );
 
 	float flGridX = flCX - selfX * flTile;
 	float flGridY = flCY - selfY * flTile;
@@ -1300,8 +1347,8 @@ void CHudRadarModern::DrawOverviewLayer( int cx, int cy, int radius )
 
 			// clip to the round window; the texcoord travels along as a
 			// per-vertex attribute so the cut corners keep the right pixel
-			int n = ClipPolyToCircle( cX, cY, cU, cV, 4, cX, cY, cU, cV,
-				flCX, flCY, flR );
+			int n = m_bFullMap ? ClipPolyToSquare(cX,cY,cU,cV,4,flCX,flCY,flR)
+				: ClipPolyToCircle( cX, cY, cU, cV, 4, cX, cY, cU, cV, flCX, flCY, flR );
 			if( n < 3 )
 				continue;
 
@@ -1696,7 +1743,7 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 
 	// Without a known team "enemy" is undefined, and a spectator has no PVS of
 	// their own, so both cases fall back to drawing everything.
-	m_bRadarGating = pLocal && iLocalTeam > 0 && !gEngfuncs.IsSpectateOnly()
+	m_bRadarGating = pLocal && iLocalTeam > 0 && !g_iUser1 && !gEngfuncs.IsSpectateOnly()
 		&& s_cl_radar_enemy_los && s_cl_radar_enemy_los->value != 0.0f;
 	if( m_iRadarTrackedLocalTeam != iLocalTeam )
 	{
@@ -1981,6 +2028,22 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 {
 	if( i == m_iPlayerNum )
 		return;
+	// Observer snapshots are server positions and remain valid outside the PVS.
+	if( g_iUser1 )
+	{
+		const oc2_spec::Radar *snapshot = oc2_spec::GetRadar(i);
+		if( snapshot )
+		{
+			const Vector origin(snapshot->x, snapshot->y, snapshot->z);
+			int x, y, pointRadius;
+			if( CalcPoint(origin, x, y, pointRadius) ) return;
+			const int size = BlipRadiusFor(radius);
+			FillDisc(x, y, size + 1, 0, 0, 0, 180);
+			FillDisc(x, y, size, snapshot->team == TEAM_CT ? 60 : 200,
+				snapshot->team == TEAM_CT ? 124 : 145, snapshot->team == TEAM_CT ? 168 : 60, 255);
+			return;
+		}
+	}
 
 	const int iLocalTeam = RadarTeamOf( m_iPlayerNum );
 	const int iTheirTeam = RadarTeamOf( i );
@@ -2085,6 +2148,7 @@ bool CHudRadarModern::ObjectivePoint( const Vector &world, int halfSize, int &x,
 	if( CalcPoint( world, x, y, radius ) ) return false;
 	const int dx = x - m_iCenterX, dy = y - m_iCenterY;
 	const int inset = radius - halfSize;
+	if( m_bFullMap ) return abs(dx) <= inset && abs(dy) <= inset;
 	return dx * dx + dy * dy <= inset * inset;
 }
 
@@ -2164,7 +2228,8 @@ int CHudRadarModern::ProjectRescueRegion( const Vector &mins, const Vector &maxs
 		if( !std::isfinite( mins[axis] ) || !std::isfinite( maxs[axis] ) || maxs[axis] < mins[axis] ) return 0;
 	if( maxs[0] <= mins[0] || maxs[1] <= mins[1] ) return 0;
 	float selfX, selfY;
-	WorldToTile( gHUD.m_vecOrigin, selfX, selfY );
+	if( m_bFullMap ) { selfX = m_iOverviewTilesX * 0.5f; selfY = m_iOverviewTilesY * 0.5f; }
+	else WorldToTile( gHUD.m_vecOrigin, selfX, selfY );
 	float u[RADAR_CLIP_MAX] = {}, v[RADAR_CLIP_MAX] = {};
 	u[1] = u[2] = 1.0f; v[2] = v[3] = 1.0f;
 	for( int k = 0; k < 4; ++k )
@@ -2179,8 +2244,8 @@ int CHudRadarModern::ProjectRescueRegion( const Vector &mins, const Vector &maxs
 		y[k] = m_iCenterY + dx * m_flTileB + dy * m_flTileA;
 		if( !std::isfinite( x[k] ) || !std::isfinite( y[k] ) ) return 0;
 	}
-	const int n = ClipPolyToCircle( x, y, u, v, 4, x, y, u, v,
-		(float)m_iCenterX, (float)m_iCenterY, (float)m_iRadius - 5.0f );
+	const int n = m_bFullMap ? ClipPolyToSquare(x,y,u,v,4,(float)m_iCenterX,(float)m_iCenterY,(float)m_iRadius-5.0f)
+		: ClipPolyToCircle( x, y, u, v, 4, x, y, u, v, (float)m_iCenterX, (float)m_iCenterY, (float)m_iRadius - 5.0f );
 	if( edgeU ) memcpy( edgeU, u, n * sizeof( float ) );
 	if( edgeV ) memcpy( edgeV, v, n * sizeof( float ) );
 	return n >= 3 ? n : 0;
@@ -2437,10 +2502,9 @@ int CHudRadarModern::Draw( float flTime )
 	if( !IsEnabled() )
 		return 1;
 
-	if( ( gHUD.m_iHideHUDDisplay & HIDEHUD_HEALTH )
-		|| gEngfuncs.IsSpectateOnly()
-		|| !( gHUD.m_iWeaponBits & (1<<WEAPON_SUIT) )
-		|| gHUD.m_fPlayerDead )
+	const bool observing = g_iUser1 != 0 || gEngfuncs.IsSpectateOnly();
+	if( !observing && ( ( gHUD.m_iHideHUDDisplay & HIDEHUD_HEALTH )
+		|| !( gHUD.m_iWeaponBits & (1<<WEAPON_SUIT) ) || gHUD.m_fPlayerDead ) )
 		return 1;
 
 	if( !m_bSpritesLoaded || !m_pNewRadarSize )
@@ -2457,6 +2521,8 @@ int CHudRadarModern::Draw( float flTime )
 		return 1;
 
 	m_iPlayerNum = gHUD.m_Scoreboard.m_iPlayerNum;
+	// Source's spectator modes use the square overview even with Tab released.
+	m_bFullMap = observing || gHUD.m_Scoreboard.ShouldDrawScoreboard();
 
 	// The mobile build computes the centre as
 	//     centre = (cl_radar_pos_x + radius) - layoutBase
@@ -2466,6 +2532,13 @@ int CHudRadarModern::Draw( float flTime )
 	m_iRadius   = (int)( ScreenHeight * m_pNewRadarSize->value );
 	m_iCenterX  = m_iRadius + (int)m_pRadarPosX->value;
 	m_iCenterY  = m_iRadius + (int)m_pRadarPosY->value;
+	if( m_bFullMap )
+	{
+		const auto layout = radar_fullmap_layout::Make(ScreenWidth, ScreenHeight);
+		m_iRadius = layout.size / 2;
+		m_iCenterX = layout.x + m_iRadius;
+		m_iCenterY = layout.y + m_iRadius;
+	}
 
 	// ---- overview background: re-read only when the map changes,
 	//        exactly like the mobile build's Reset()
@@ -2482,6 +2555,7 @@ int CHudRadarModern::Draw( float flTime )
 
 	// everything below shares this one transform
 	UpdateRadarTransform( m_iCenterX, m_iCenterY, m_iRadius );
+	m_flLayoutDrawTime = gEngfuncs.GetClientTime();
 
 	// ---- background: the blurred copy of the screen behind the radar, or a
 	// flat plate when blur is unavailable. Exactly one of the two, and the
@@ -2500,7 +2574,7 @@ int CHudRadarModern::Draw( float flTime )
 	// switch itself on. DrawBlurredBackground reports whether it had
 	// anything to show, which is the only thing that should fall back to the
 	// flat plate.
-	if( g_iRadarAPIVersion >= 4
+	if( !m_bFullMap && g_iRadarAPIVersion >= 4
 		&& gRadarAPI.pfnSetRadarCaptureParams
 		&& s_cl_blur_radar_bg->value == 0.0f )
 	{
@@ -2516,7 +2590,9 @@ int CHudRadarModern::Draw( float flTime )
 
 	// flat disc first, so map-less areas read as background instead of
 	// showing the game through the HUD
-	if( !bHasBackground )
+	if( m_bFullMap )
+		FillRGBABlend(m_iCenterX-m_iRadius,m_iCenterY-m_iRadius,m_iRadius*2,m_iRadius*2,12,18,24,225);
+	else if( !bHasBackground )
 		DrawRadarDisc( m_iCenterX, m_iCenterY, m_iRadius );
 
 	// ---- map tiles, anchored on the player
@@ -2557,12 +2633,18 @@ int CHudRadarModern::Draw( float flTime )
 		const bool bWarning = !bombInfo.dead && bombInfo.radarflashes &&
 			bombInfo.playerclass == 1 &&
 			!( bombInfo.origin[0] == 0 && bombInfo.origin[1] == 0 && bombInfo.origin[2] == 0 );
-		if( !bWarning )
+		if( m_bFullMap )
+		{
+			const int left=m_iCenterX-m_iRadius, top=m_iCenterY-m_iRadius, size=m_iRadius*2;
+			FillRGBABlend(left,top,size,2,r,g,b,a); FillRGBABlend(left,top+size-2,size,2,r,g,b,a);
+			FillRGBABlend(left,top,2,size,r,g,b,a); FillRGBABlend(left+size-2,top,2,size,r,g,b,a);
+		}
+		else if( !bWarning )
 			DrawRadarFrame( m_iCenterX, m_iCenterY, m_iRadius, r, g, b, a, true );
 	}
 
 	// ---- circular mask
-	DrawRadarMask( m_iCenterX, m_iCenterY, m_iRadius );
+	if( !m_bFullMap ) DrawRadarMask( m_iCenterX, m_iCenterY, m_iRadius );
 	// One source for the local team as well: RadarTeamOf prefers the TeamInfo
 	// value and falls back to the engine snapshot. The old inline copy here
 	// preferred the snapshot and disagreed with the blip colours.
@@ -2571,7 +2653,16 @@ int CHudRadarModern::Draw( float flTime )
 	DrawObjectives( localTeam );
 
 	// ---- the local player, pinned to the centre
-	DrawSelfMarker( m_iCenterX, m_iCenterY, m_iRadius );
+	m_iSelfDrawX = m_iSelfDrawY = -1;
+	if( !observing )
+	{
+		int x=m_iCenterX, y=m_iCenterY, radius=m_iRadius;
+		if( !m_bFullMap || !CalcPoint(gHUD.m_vecOrigin,x,y,radius) )
+		{
+			m_iSelfDrawX=x; m_iSelfDrawY=y;
+			DrawSelfMarker(x,y,radius);
+		}
+	}
 
 	// ---- player blips
 	UpdateEnemyVisibility( flTime );
@@ -2586,9 +2677,21 @@ int CHudRadarModern::Draw( float flTime )
 	// says which site it is.
 	DrawBomb( localTeam, flTime );
 	DrawObjectiveLabels();
+	if( observing && m_bFullMap && m_szMapName[0] )
+	{
+		const char *name = strrchr(m_szMapName, '/');
+		name = name ? name + 1 : m_szMapName;
+		char mapLabel[64];
+		snprintf(mapLabel, sizeof(mapLabel), "%s", name);
+		char *extension = strrchr(mapLabel, '.');
+		if( extension ) *extension = '\0';
+		const int x = m_iCenterX - m_iRadius + 5, y = m_iCenterY + m_iRadius - gHUD.GetCharHeight() - 4;
+		FillRGBABlend(x - 3, y - 1, m_iRadius * 2 - 4, gHUD.GetCharHeight() + 2, 14, 16, 18, 185);
+		DrawUtils::DrawConsoleString(x, y, mapLabel);
+	}
 
 	// ---- warning frame while alive with a bomb in hand
-	DrawWarningFrame( m_iCenterX, m_iCenterY, m_iRadius, flTime );
+	if( !m_bFullMap ) DrawWarningFrame( m_iCenterX, m_iCenterY, m_iRadius, flTime );
 
 	return 1;
 }
