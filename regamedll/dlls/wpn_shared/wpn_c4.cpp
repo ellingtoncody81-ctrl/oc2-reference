@@ -4,7 +4,7 @@ LINK_ENTITY_TO_CLASS(weapon_c4, CC4, CCSC4)
 
 void CC4::Spawn()
 {
-	SET_MODEL(edict(), "models/w_backpack.mdl");
+	SET_MODEL(edict(), C4_CARRIED_MODEL);
 
 	pev->frame = 0;
 	pev->body = 3;
@@ -35,7 +35,8 @@ void CC4::Spawn()
 void CC4::Precache()
 {
 	PRECACHE_MODEL("models/v_c4.mdl");
-	PRECACHE_MODEL("models/w_backpack.mdl");
+	PRECACHE_MODEL(C4_CARRIED_MODEL);
+	PRECACHE_MODEL(C4_DROPPED_MODEL);
 
 	PRECACHE_SOUND("weapons/c4_click.wav");
 }

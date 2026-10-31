@@ -186,7 +186,7 @@ const char *GetCSModelName(int item_id)
 	case WEAPON_SCOUT:        modelName = "models/w_scout.mdl"; break;
 	case WEAPON_HEGRENADE:    modelName = "models/w_hegrenade.mdl"; break;
 	case WEAPON_XM1014:       modelName = "models/w_xm1014.mdl"; break;
-	case WEAPON_C4:           modelName = "models/w_backpack.mdl"; break;
+	case WEAPON_C4:           modelName = C4_DROPPED_MODEL; break;
 	case WEAPON_MAC10:        modelName = "models/w_mac10.mdl"; break;
 	case WEAPON_AUG:          modelName = "models/w_aug.mdl"; break;
 	case WEAPON_SMOKEGRENADE: modelName = "models/w_smokegrenade.mdl"; break;
