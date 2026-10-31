@@ -40,7 +40,7 @@ Point CMenuPanoramaWheel::SlotCenter(int slot) const
     return p+Point(z.w/2+int(std::cos(angle)*radius),z.h/2+int(std::sin(angle)*radius));
 }
 
-void CMenuPanoramaWheel::SlotBounds(int slot,Point &position,Size &size) const
+void CMenuPanoramaWheel::SlotBounds(int slot,Point &position,Size &size,Size *modelSize) const
 {
     // Keep existing card-sized previews unless this category needs more room.
     const Point p=GetRenderPosition(),center=SlotCenter(slot);
@@ -48,10 +48,12 @@ void CMenuPanoramaWheel::SlotBounds(int slot,Point &position,Size &size) const
     const int fullWidth=Q_max(1,previewWidth),fullHeight=Q_max(1,previewHeight+int(28*uiStatic.scaleY));
     size=Size(fullWidth,fullHeight);
     position=center-Point(size.w/2,size.h/2);
+    if(modelSize)modelSize->w=modelSize->h=0;
     // These long weapons extend past the outer wheel in their card-sized
     // previews. Fit only their slots; other categories keep their old sizes.
     const int key=entries[slot].key;
-    if(!fitToSector&&key!=15&&key!=20&&key!=27)return;
+    const bool longGun=!fitToSector&&(key==15||key==20||key==27);
+    if(!fitToSector&&!longGun)return;
     const double cx=p.x+z.w/2,cy=p.y+z.h/2,r=Q_min(z.w,z.h)/2;
     const double angle=-kPi*.5+2*kPi*slot/Q_max(1,int(entries.size()));
     const double halfAngle=kPi*.98/Q_max(1,int(entries.size()));
@@ -74,6 +76,42 @@ void CMenuPanoramaWheel::SlotBounds(int slot,Point &position,Size &size) const
         }
         return true;
     };
+    if(longGun)
+    {
+        // The long guns keep the card cell and its normal label, and only the
+        // drawn model is fitted so that the visible gun stays inside the
+        // wheel. The card rectangle is mostly empty around a gun, so fitting
+        // the rectangle shrank these three far below their neighbours.
+        Size model=Size(Q_max(1,previewWidth),Q_max(1,previewHeight));
+        float widthFraction=1,heightFraction=1;
+        if(entries[slot].model)entries[slot].model->ContentExtent(widthFraction,heightFraction);
+            widthFraction=std::min(1.f,std::max(.05f,widthFraction));
+            heightFraction=std::min(1.f,std::max(.05f,heightFraction));
+            const auto contentFits=[&](int width,int height)
+            {
+                const double cw=width*widthFraction,ch=height*heightFraction;
+                const double modelCenterX=position.x+fullWidth*.5,modelCenterY=position.y+previewHeight*.5;
+                const int left=int(modelCenterX-cw/2),top=int(modelCenterY-ch/2);
+                const double x0=left-cx,x1=left+cw-cx,y0=top-cy,y1=top+ch-cy;
+                const double limit=Q_max(1.0,r-1.0);
+                for(double x:{x0,x1})for(double y:{y0,y1})
+                    if(x*x+y*y>limit*limit)return false;
+                return true;
+            };
+            if(!contentFits(model.w,model.h))
+            {
+                double low=0,high=1;
+                for(int i=0;i<24;++i)
+                {
+                    const double scale=(low+high)*.5;
+                    if(contentFits(Q_max(1,int(model.w*scale)),Q_max(1,int(model.h*scale))))low=scale;
+                    else high=scale;
+                }
+                model=Size(Q_max(1,int(model.w*low)),Q_max(1,int(model.h*low)));
+            }
+        if(modelSize)*modelSize=model;
+        return;
+    }
     if(fits(fullWidth,fullHeight))return;
     double low=0,high=1;
     for(int i=0;i<24;++i)
@@ -148,11 +186,13 @@ void CMenuPanoramaWheel::Draw()
     const unsigned ink=PackRGBA(237,240,243,255),muted=PackRGBA(172,183,191,255);
     for(int i=0;i<int(entries.size());++i)
     {
-        Point item;Size box;SlotBounds(i,item,box);
+        Point item;Size box;Size model;SlotBounds(i,item,box,&model);
         const bool fitted=box.w!=previewWidth||box.h!=previewHeight+int(28*uiStatic.scaleY);
         const int labelHeight=fitted?Q_max(1,g_FontMgr->GetFontTall(uiStatic.hTinyFont)):Q_max(1,box.h-previewHeight);
         const int modelHeight=fitted?Q_max(1,box.h-labelHeight):Q_max(1,previewHeight);
-        int modelWidth=box.w,drawHeight=modelHeight;
+        // A fitted long gun keeps the card cell and its normal label, and
+        // only the drawn model is smaller.
+        int modelWidth=model.w>0?model.w:box.w,drawHeight=model.h>0?model.h:modelHeight;
         if(pistolLayout&&entries[i].key==1&&entries.size()==6)
         {
             // The top slot is wider than the four diagonal pistol slots. P250
@@ -260,7 +300,8 @@ void CMenuPanoramaInventory::_Init()
         SET_EVENT_MULTI(m_cards[i].onReleased,{static_cast<CMenuPanoramaInventory*>(pSelf->Parent())->SelectCard(pSelf);});
     }
     m_search.SetNameAndStatus("",nullptr,"pano_search");m_search.iMaxLength=80;m_search.bAllowColorstrings=false;AddItem(m_search);
-    m_inspect.SetNameAndStatus("",nullptr,"pano_model");m_inspect.SetInteractive(true);m_inspect.SetDualUnfold(true);AddItem(m_inspect);
+    m_inspect.SetNameAndStatus("",nullptr,"pano_model");m_inspect.SetInteractive(true);m_inspect.SetDualUnfold(false); // Rotate both dual pistols as one whole model.
+    AddItem(m_inspect);
     Button(m_closeInspect,u8"< \u8fd4\u56de\u76ae\u80a4\u5217\u8868","pano_close_inspect");m_closeInspect.onReleased=VoidCb(&CMenuPanoramaInventory::CloseInspect);
     Button(m_equip,u8"\u88c5\u5907","pano_equip",true);m_equip.onReleased=VoidCb(&CMenuPanoramaInventory::Equip);
     Button(m_accessories,u8"\u6302\u4ef6\u4e0e\u8ba1\u6570\u5668","pano_attachments");m_accessories.onReleased=VoidCb(&CMenuPanoramaInventory::OpenAccessories);
@@ -635,8 +676,8 @@ void CMenuPanoramaInventory::Dump()
     {
         const Point center=m_wheel.SlotCenter(i);Con_Printf("panorama_wheel: slot=%d key=%d name=%s x=%d y=%d selected=%d units=screen_pixels\n",
             i,m_wheel.entries[i].key,m_wheel.entries[i].name.c_str(),center.x,center.y,int(m_wheel.selected==i));
-        Point item;Size box;m_wheel.SlotBounds(i,item,box);
-        Con_Printf("panorama_wheel_content: slot=%d x=%d y=%d w=%d h=%d fitting=card_viewport units=screen_pixels\n",i,item.x,item.y,box.w,box.h);
+        Point item;Size box;Size model;m_wheel.SlotBounds(i,item,box,&model);
+        Con_Printf("panorama_wheel_content: slot=%d x=%d y=%d w=%d h=%d model=%dx%d units=screen_pixels\n",i,item.x,item.y,box.w,box.h,model.w>0?model.w:box.w,model.h>0?model.h:Q_max(1,box.h-m_wheel.previewHeight));
     }
     for(int i=0;i<CardCount;++i)if(m_cardIds[i]>=0)Con_Printf("panorama_finish: card=%d id=%d name=%s equipped=%d preview=studio_model\n",
         i,m_cardIds[i],m_cards[i].title.c_str(),int(m_cards[i].equipped));

@@ -27,7 +27,7 @@ public:
     bool KeyUp(int key) override;
     bool MouseMove(int x,int y) override;
     Point SlotCenter(int slot) const;
-    void SlotBounds(int slot,Point &position,Size &size) const;
+    void SlotBounds(int slot,Point &position,Size &size,Size *modelSize=nullptr) const;
 private:
     int Hit(int x,int y) const;
     float InnerRadiusSquared() const { return pagedLayout?.0784f:.19f; }
