@@ -103,6 +103,12 @@ C_DLLEXPORT int CountTeamPlayers(int iTeam);
 
 extern bool g_bServerActive;
 extern bool g_bItemCreatedByBuying;
+// Purchase cue evidence: one log line per purchase attempt or emitted cue.
+// ev=buy is a confirmed purchase that plays items/gunpickup2.wav,
+// ev=pickup is a weapon taken off the floor or out of a weaponbox,
+// ev=fail is a rejected attempt that stays silent.
+void OC2_LogPurchaseSound(int playerIndex, const char *event, const char *name, int cost);
+void OC2_LogPurchaseFailure(int playerIndex, const char *name, int cost, const char *reason);
 extern bool g_skipCareerInitialSpawn;
 
 extern unsigned short m_usResetDecals;
