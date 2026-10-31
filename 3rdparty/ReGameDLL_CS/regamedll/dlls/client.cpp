@@ -1232,7 +1232,9 @@ bool CanBuyThis(CBasePlayer *pPlayer, int iWeapon)
 {
 	if (iWeapon == WEAPON_SHIELDGUN)
 		return false;
-	if (iWeapon == WEAPON_TASER && (pPlayer->m_iOc2ZeusPurchases >= 1 || OC2OwnedWeapon(pPlayer, iWeapon)))
+	// One Zeus at a time: only an unspent Zeus in the inventory blocks a new one.
+	// A spent Zeus leaves the inventory, so it can be bought again this round.
+	if (iWeapon == WEAPON_TASER && OC2OwnedWeapon(pPlayer, iWeapon))
 	{
 		if (g_bClientPrintEnable) ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Cannot_Carry_Anymore");
 		return false;
@@ -1733,7 +1735,9 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
 		// The Zeus keeps the normal Touch purchase cue; report it here, once
 		// the sale is confirmed, so exactly one event matches the cue.
 		OC2_LogPurchaseSound(pPlayer->entindex(), "buy", entityName, cost);
-		++pPlayer->m_iOc2ZeusPurchases; // Source default: one successful purchase per real round.
+		// Purchase counter for the client HUD and statistics. It is not a
+		// limit: a spent Zeus can be bought again in the same round.
+		++pPlayer->m_iOc2ZeusPurchases;
 	}
 
 	// Gun purchases include reserve ammo. Exhaustible equipment such as Zeus

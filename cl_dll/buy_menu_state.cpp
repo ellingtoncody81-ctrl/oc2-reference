@@ -178,11 +178,12 @@ bool GetItem(int index, oc2_buy::Item &item)
 		item.count = item.owned ? 1 : 0; break;
 	}
 
+	// The Zeus has no per-round purchase cap: only a held, unspent Zeus blocks
+	// another one, through the generic owned check below.
 	if (!item.visible) item.reason = entry.kind == Defuser ? "仅供反恐精英使用" : "请先选择阵营";
 	else if (!state.canBuy) item.reason = state.reason;
 	else if (entry.id == WEAPON_ELITE && g_bHoldingShield)
 		item.reason = "与当前携带装备冲突";
-	else if (entry.kind == Zeus && zeusBought >= 1) item.reason = "已达本回合购买上限";
 	else if (entry.kind == Grenade && item.count >= item.limit) item.reason = "已达携带数量上限";
 	else if (entry.kind != Grenade && item.owned) item.reason = "已拥有此装备";
 	else if (state.money < item.price) item.reason = "资金不足";
