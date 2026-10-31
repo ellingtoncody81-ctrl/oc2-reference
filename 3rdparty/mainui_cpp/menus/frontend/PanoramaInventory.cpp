@@ -22,6 +22,7 @@ void DrawLabel(Point p,Size z,const char *text,int height,unsigned color,bool bo
     oc2_panorama::DrawText(p,z,text,height,color,bold,align);
 }
 // Nudge long-gun previews away from the hub; the slot side sets the sign.
+const float kDualWheelScale=1.15f;
 int LongGunPreviewShiftX(int key,int previewWidth)
 {
     const int amount=Q_max(1,previewWidth/8);
@@ -228,6 +229,11 @@ void CMenuPanoramaWheel::Draw()
                 modelWidth=Q_max(1,int(modelWidth*scale));drawHeight=Q_max(1,int(drawHeight*scale));
             }
         }
+        if(entries[i].key==10)
+        {
+            modelWidth=Q_max(1,int(modelWidth*kDualWheelScale+.5f));
+            drawHeight=Q_max(1,int(drawHeight*kDualWheelScale+.5f));
+        }
         if(entries[i].model)entries[i].model->DrawAt(item.x+(box.w-modelWidth)/2+LongGunPreviewShiftX(entries[i].key,previewWidth),item.y+(modelHeight-drawHeight)/2,modelWidth,drawHeight);
         if(box.h>labelHeight)
             DrawLabel(item+Point(0,modelHeight),Size(box.w,labelHeight),entries[i].name.c_str(),fitted?12:entries.size()>7?12:14,ink,true);
@@ -368,6 +374,11 @@ void CMenuPanoramaInventory::Reload()
     if(m_gloveCatalogValid&&m_gloveConfigValid)m_gloveConfigValid=oc2_gloves::ValidateConfig(m_gloveConfig,m_gloveCatalog,gloveConfigError);
     m_error=m_category==Glove?(!m_gloveCatalogValid||!m_gloveConfigValid):(!m_catalogValid||!m_configValid);
     m_message=m_error?u8"库存目录或存档无法读取，请检查资源。":"";
+}
+void CMenuPanoramaInventory::ShowInitial()
+{
+    m_category=Pistol;m_weapon=1;m_wheelPage=0;m_page=0;
+    Show();
 }
 void CMenuPanoramaInventory::Show()
 {

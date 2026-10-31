@@ -144,8 +144,10 @@ void CMenuPanoramaPlay::ReloadMaps()
 
 void CMenuPanoramaPlay::Show()
 {
-    CMenuFramework::Show();ReloadMaps();Refresh();
-    SetCursorToItem(m_selected>=0?static_cast<CMenuBaseItem&>(m_cards[m_selected%8]):static_cast<CMenuBaseItem&>(m_back));
+    CMenuFramework::Show();ReloadMaps();
+    m_page=0;m_selected=m_maps.empty()?-1:0;
+    Refresh();
+    SetCursorToItem(m_selected>=0?static_cast<CMenuBaseItem&>(m_cards[0]):static_cast<CMenuBaseItem&>(m_back));
 }
 
 void CMenuPanoramaPlay::Refresh()

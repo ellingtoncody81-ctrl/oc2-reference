@@ -66,7 +66,7 @@ public:
         if(!IsVisible()||m_ingame!=bool(CL_IsActive()))Show();
         HidePages();m_page=page;
         if(page==0){if(m_ingame){UI_CloseMenu();return;}m_play.Show();}
-        else if(page==1)m_inventory.Show();
+        else if(page==1)m_inventory.ShowInitial();
         else if(page==2)m_settings.Show();
         else if(page==3){m_page=-1;m_pending=m_ingame?1:0;m_confirm.SetMessage(m_ingame?"离开当前对局，返回大厅？":"退出游戏？");m_confirm.Show();}
         else if(!m_ingame){RefreshLobby();SetCursorToItem(m_playButton);}
