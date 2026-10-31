@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_spec_stats.h"
 #include "oc2_inferno.h"
 #include "oc2_item_server.h"
 
@@ -88,6 +89,10 @@ int gmsgHealthInfo = 0;
 int gmsgHudRound = 0;
 int gmsgBuyState = 0;
 int gmsgEquipment = 0;
+int gmsgOC2Spec = 0;
+int gmsgOC2Radar = 0;
+int gmsgOC2Round = 0;
+int gmsgOC2Row = 0;
 int gmsgFireVariant = 0;
 bool g_bClientPrintEnable = true;
 
@@ -241,6 +246,10 @@ void LinkUserMessages()
 	gmsgHudRound      = REG_USER_MSG("HudRound", 0);
 	gmsgBuyState      = REG_USER_MSG("BuyState", 3);
 	gmsgEquipment     = REG_USER_MSG("Equipment", 2); // version byte + Zeus purchases this round
+	gmsgOC2Spec       = REG_USER_MSG("OC2Spec", 23);
+	gmsgOC2Radar      = REG_USER_MSG("OC2Radar", 9);
+	gmsgOC2Round      = REG_USER_MSG("OC2Round", 7);
+	gmsgOC2Row        = REG_USER_MSG("OC2SpecRow", 37);
 	gmsgFireVariant   = REG_USER_MSG("FireVariant", 1); // Physical fire-grenade variant, independent of team.
 	OC2_ItemsRegisterMessage();
 }
@@ -328,6 +337,7 @@ BOOL EXT_FUNC ClientConnect(edict_t *pEntity, const char *pszName, const char *p
 
 void EXT_FUNC ClientDisconnect(edict_t *pEntity)
 {
+	OC2_SpecStatsClear(ENTINDEX(pEntity));
 	CBasePlayer *pPlayer = CBasePlayer::Instance(pEntity);
 	if (pPlayer) OC2_HostageDropPlayer(pPlayer);
 	OC2_ItemsClientDisconnected(pPlayer);
@@ -630,6 +640,7 @@ void CheckStartMoney()
 
 void EXT_FUNC ClientPutInServer(edict_t *pEntity)
 {
+	OC2_SpecStatsClear(ENTINDEX(pEntity));
 	entvars_t *pev = &pEntity->v;
 	CBasePlayer *pPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pev);
 	OC2_ItemsClientConnected(pPlayer);
@@ -3561,6 +3572,7 @@ void EXT_FUNC ServerDeactivate()
 
 void EXT_FUNC ServerActivate(edict_t *pEdictList, int edictCount, int clientMax)
 {
+	OC2_SpecStatsReset();
 	g_pEdicts = pEdictList;
 
 #ifdef REGAMEDLL_ADD

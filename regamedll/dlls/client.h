@@ -297,3 +297,7 @@ extern int gmsgHealthInfo;
 extern int gmsgHudRound;
 extern int gmsgBuyState;
 extern int gmsgEquipment;
+extern int gmsgOC2Spec;
+extern int gmsgOC2Radar;
+extern int gmsgOC2Round;
+extern int gmsgOC2Row;

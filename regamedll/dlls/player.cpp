@@ -27,6 +27,7 @@
 */
 
 #include "precompiled.h"
+#include "oc2_spec_stats.h"
 #include "oc2_inferno.h"
 #include "wpn_shared/wpn_molotov.h"
 #include <limits.h>
@@ -1012,6 +1013,8 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
 		}
 
 		LogAttack(pAttack, this, bTeamAttack, int(flDamage), armorHit, pev->health - flDamage, pev->armorvalue, GetKillerWeaponName(pevInflictor, pevAttacker));
+		if (!(bitsDamageType & DMG_BLAST)) // Objective bomb damage is excluded from ADR.
+			OC2_SpecStatsDamage(pevAttacker ? CBaseEntity::Instance(pevAttacker) : nullptr, this, float(int(flDamage)));
 		bTookDamage = CBaseMonster::TakeDamage(pevInflictor, pevAttacker, int(flDamage), bitsDamageType);
 
 		if (bTookDamage)
@@ -1241,6 +1244,7 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(TakeDamage)(entvars_t *pevInflictor, entva
 
 	// this cast to INT is critical!!! If a player ends up with 0.5 health, the engine will get that
 	// as an int (zero) and think the player is dead! (this will incite a clientside screentilt, etc)
+	OC2_SpecStatsDamage(pevAttacker ? CBaseEntity::Instance(pevAttacker) : nullptr, this, oc2Elemental ? float(flDamage) : float(int(flDamage)));
 	bTookDamage = CBaseMonster::TakeDamage(pevInflictor, pevAttacker, oc2Elemental ? float(flDamage) : float(int(flDamage)), bitsDamageType);
 
 	if (bTookDamage)
@@ -2262,6 +2266,15 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Killed)(entvars_t *pevAttacker, int iGib)
 		m_bHeadshotKilled = true;
 
 	CBaseEntity *pAttackerEntity = CBaseEntity::Instance(pevAttacker);
+	if (pev->deadflag == DEAD_NO)
+	{
+		CBasePlayer *killer = nullptr;
+		if (!m_bKilledByBomb && pAttackerEntity && pAttackerEntity->Classify() == CLASS_PLAYER)
+			killer = static_cast<CBasePlayer *>(pAttackerEntity);
+		else if (!m_bKilledByBomb && pAttackerEntity && pAttackerEntity->Classify() == CLASS_VEHICLE)
+			killer = static_cast<CBasePlayer *>(static_cast<CFuncVehicle *>(pAttackerEntity)->m_pDriver);
+		OC2_SpecStatsDeath(this, killer);
+	}
 
 	if (TheBots)
 	{
@@ -4756,6 +4769,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, PreThink)
 
 void EXT_FUNC CBasePlayer::__API_HOOK(PreThink)()
 {
+	OC2_SpecStatsParticipate(this);
 	// These buttons have changed this frame
 	int buttonsChanged = (m_afButtonLast ^ pev->button);
 

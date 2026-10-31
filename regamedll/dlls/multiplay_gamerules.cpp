@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_spec_stats.h"
 #include "oc2_inferno.h"
 #include "../../../../common/oc2_knife_icons.h"
 
@@ -1660,6 +1661,7 @@ LINK_HOOK_CLASS_VOID_CUSTOM_CHAIN2(CHalfLifeMultiplay, CSGameRules, RestartRound
 
 void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 {
+	OC2_SpecStatsRound(m_bCompleteReset);
 	OC2_InfernoRoundReset();
 	// tell bots that the round is restarting
 	if (TheBots)
