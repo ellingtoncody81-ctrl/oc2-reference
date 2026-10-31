@@ -54,6 +54,7 @@ public:
     CMenuPanoramaInventory();
     void SetEditors(CMenuSkinEditor *skins,CMenuAccessoriesEditor *accessories,CMenuGloveEditor *gloves);
     void Show() override;
+    void ShowInitial();
     void OpenWeapon(int weapon);
     void OpenKnife(int definition);
     void OpenGloves();
@@ -109,7 +110,7 @@ private:
     void Back();
     void Refresh();
     bool Gun() const { return m_category<Knife; }
-    int m_category=Rifle,m_weapon=28,m_definition=0,m_family=0,m_page=0,m_wheelPage=0,m_selection=0;
+    int m_category=Pistol,m_weapon=1,m_definition=0,m_family=0,m_page=0,m_wheelPage=0,m_selection=0;
     bool m_catalogValid=false,m_configValid=false,m_gloveCatalogValid=false,m_gloveConfigValid=false;
     bool m_inspecting=false,m_returnEditor=false,m_error=false;
     std::string m_query,m_message;
