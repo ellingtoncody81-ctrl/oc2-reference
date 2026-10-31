@@ -868,6 +868,8 @@ private:
 
 const float C4_MAX_SPEED      = 250.0f;
 const float C4_ARMING_ON_TIME = 3.0f;
+constexpr const char *C4_CARRIED_MODEL = "models/w_backpack.mdl";
+constexpr const char *C4_DROPPED_MODEL = "models/w_backpack1.mdl";
 
 enum c4_e
 {

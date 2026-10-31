@@ -1672,7 +1672,8 @@ bool CHudSpectator::AddOverviewEntity( int type, struct cl_entity_s *ent, const 
 
 	if( !stricmp( modelname, "models/w_c4.mdl" ))
 		hSprite = m_hsprBomb;
-	else if( !stricmp( modelname, "models/w_backpack.mdl" ))
+	else if( !stricmp( modelname, "models/w_backpack.mdl" ) ||
+		!stricmp( modelname, "models/w_backpack1.mdl" ) )
 		hSprite = m_hsprBackpack;
 	else if( strstr( modelname, "models/hostage") || strstr( modelname, "models/scientist"))
 		hSprite = m_hsprHostage;
