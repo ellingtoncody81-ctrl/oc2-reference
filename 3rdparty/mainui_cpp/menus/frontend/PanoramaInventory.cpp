@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <map>
+#include <tuple>
 
 namespace
 {
@@ -91,8 +93,17 @@ void CMenuPanoramaWheel::SlotBounds(int slot,Point &position,Size &size,Size *mo
         // wheel. The card rectangle is mostly empty around a gun, so fitting
         // the rectangle shrank these three far below their neighbours.
         Size model=Size(Q_max(1,previewWidth),Q_max(1,previewHeight));
-        float widthFraction=1,heightFraction=1;
-        if(entries[slot].model)entries[slot].model->ContentExtent(widthFraction,heightFraction);
+        static std::map<std::tuple<int,int,int>,Size> measuredSizes;
+        const auto cacheKey=std::make_tuple(key,previewWidth,previewHeight);
+        const auto cached=measuredSizes.find(cacheKey);
+        if(cached!=measuredSizes.end())
+        {
+            if(modelSize)*modelSize=cached->second;
+            return;
+        }
+        // Typical long-gun fractions avoid a one-frame flash before measurement.
+        float widthFraction=.73f,heightFraction=.72f;
+        const bool measured=entries[slot].model&&entries[slot].model->ContentExtent(widthFraction,heightFraction);
         widthFraction=std::min(1.f,std::max(.05f,widthFraction));
         heightFraction=std::min(1.f,std::max(.05f,heightFraction));
         const auto contentFits=[&](int width,int height)
@@ -117,6 +128,7 @@ void CMenuPanoramaWheel::SlotBounds(int slot,Point &position,Size &size,Size *mo
             }
             model=Size(Q_max(1,int(model.w*low)),Q_max(1,int(model.h*low)));
         }
+        if(measured)measuredSizes[cacheKey]=model;
         if(modelSize)*modelSize=model;
         return;
     }
@@ -308,7 +320,7 @@ void CMenuPanoramaInventory::_Init()
         SET_EVENT_MULTI(m_cards[i].onReleased,{static_cast<CMenuPanoramaInventory*>(pSelf->Parent())->SelectCard(pSelf);});
     }
     m_search.SetNameAndStatus("",nullptr,"pano_search");m_search.iMaxLength=80;m_search.bAllowColorstrings=false;AddItem(m_search);
-    m_inspect.SetNameAndStatus("",nullptr,"pano_model");m_inspect.SetInteractive(true);m_inspect.SetDualUnfold(true);
+    m_inspect.SetNameAndStatus("",nullptr,"pano_model");m_inspect.SetInteractive(true);m_inspect.SetDualUnfold(false); // One viewport: mirrored pair layout rotates as one rigid model.
     AddItem(m_inspect);
     Button(m_closeInspect,u8"< \u8fd4\u56de\u76ae\u80a4\u5217\u8868","pano_close_inspect");m_closeInspect.onReleased=VoidCb(&CMenuPanoramaInventory::CloseInspect);
     Button(m_equip,u8"\u88c5\u5907","pano_equip",true);m_equip.onReleased=VoidCb(&CMenuPanoramaInventory::Equip);

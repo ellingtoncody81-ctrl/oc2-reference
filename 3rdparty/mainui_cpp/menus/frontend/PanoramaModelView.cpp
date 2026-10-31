@@ -656,6 +656,36 @@ public:
             }
         }
     }
+    void RotateRegion(Geometry &geometry,int body,int region,const float center[3])
+    {
+        if(!header||region<0||std::size_t(region)>=geometry.mounts.regions.size())return;
+        const auto &bones=geometry.mounts.regions[region].weaponBones;
+        const auto *parts=reinterpret_cast<const mstudiobodyparts_t *>(reinterpret_cast<const byte *>(header)+header->bodypartindex);
+        for(int p=0;p<header->numbodyparts;++p)
+        {
+            if(parts[p].base<=0||parts[p].nummodels<=0)continue;
+            const auto *models=reinterpret_cast<const mstudiomodel_t *>(reinterpret_cast<const byte *>(header)+parts[p].modelindex);
+            const auto &model=models[(body/parts[p].base)%parts[p].nummodels];
+            auto *vertices=reinterpret_cast<float (*)[3]>(reinterpret_cast<byte *>(header)+model.vertindex);
+            const auto *vertexBones=reinterpret_cast<const byte *>(header)+model.vertinfoindex;
+            for(int v=0;v<model.numverts;++v)
+            {
+                const int bone=vertexBones[v];if(std::find(bones.begin(),bones.end(),bone)==bones.end())continue;
+                const auto &bind=geometry.bind[bone];float world[3];Transform(bind.m,vertices[v],world);
+                const float turned[3]={center[0]*2-world[0],center[1]*2-world[1],world[2]};
+                for(int a=0;a<3;++a){SavedFloat entry;entry.address=&vertices[v][a];entry.value=vertices[v][a];savedVertices.push_back(entry);vertices[v][a]=0;for(int k=0;k<3;++k)vertices[v][a]+=bind.m[k][a]*(turned[k]-bind.m[k][3]);}
+            }
+            auto *normals=reinterpret_cast<float (*)[3]>(reinterpret_cast<byte *>(header)+model.normindex);
+            const auto *normalBones=reinterpret_cast<const byte *>(header)+model.norminfoindex;
+            for(int n=0;n<model.numnorms;++n)
+            {
+                const int bone=normalBones[n];if(std::find(bones.begin(),bones.end(),bone)==bones.end())continue;
+                const auto &bind=geometry.bind[bone];float world[3];Transform(bind.m,normals[n],world,false);
+                const float turned[3]={-world[0],-world[1],world[2]};
+                for(int a=0;a<3;++a){SavedFloat entry;entry.address=&normals[n][a];entry.value=normals[n][a];savedVertices.push_back(entry);normals[n][a]=0;for(int k=0;k<3;++k)normals[n][a]+=bind.m[k][a]*turned[k];}
+            }
+        }
+    }
     void PresentGloves(const Geometry &geometry,int body,const Geometry::CachedBounds &frame)
     {
         if(!header)return;
@@ -810,7 +840,7 @@ struct CMenuPanoramaModelView::Scene
     int mode=1,team=2,weapon=28,definition=0,skin=0,glove=0,accessoryRegion=-1;
     oc2_inventory::WeaponState appearance;
     oc2_accessories::WeaponConfig accessories;
-    bool interactive=true,dragging=false,rendering=false,dualUnfold=false,dualRigid=false;
+    bool interactive=true,dragging=false,rendering=false,dualUnfold=false,dualRigid=false,dualSingle=false;
     float yaw=0,pitch=0,zoom=1;
     int x=0,y=0,width=0,height=0,lastX=0,lastY=0;
     std::string lastModel;
@@ -885,7 +915,7 @@ bool CMenuPanoramaModelView::ContentExtent(float &widthFraction,float &heightFra
 }
 bool CMenuPanoramaModelView::ProjectAccessory(int,float u,float v,float &x,float &y,float &scale) const
 {
-    const Scene &scene=*m_scene;if(!scene.projectionValid||!scene.geometry)return false;
+    const Scene &scene=*m_scene;if(scene.dualSingle||!scene.projectionValid||!scene.geometry)return false;
     const int n=int(scene.geometry->mounts.regions.size());
     if(scene.accessoryRegion>=0&&n>0&&std::min(n-1,int(std::max(0.f,std::min(1.f,u))*n))!=scene.accessoryRegion)return false;
     geo::Mount mount;if(!geo::FindMount(scene.geometry->mounts,u,v,mount))return false;
@@ -894,7 +924,7 @@ bool CMenuPanoramaModelView::ProjectAccessory(int,float u,float v,float &x,float
 }
 bool CMenuPanoramaModelView::UnprojectAccessory(float x,float y,float &u,float &v) const
 {
-    const Scene &scene=*m_scene;if(!scene.projectionValid||!scene.geometry)return false;
+    const Scene &scene=*m_scene;if(scene.dualSingle||!scene.projectionValid||!scene.geometry)return false;
     const auto &cache=scene.geometry->mounts;if(!cache.valid)return false;
     float ray[3];for(int a=0;a<3;++a)ray[a]=-scene.direction[a]+scene.right[a]*((x-scene.x)/scene.width*2-1)*scene.tanX+scene.up[a]*(1-(y-scene.y)/scene.height*2)*scene.tanY;
     const int count=cache.regions.empty()?1:int(cache.regions.size());float best=1e30f;bool found=false;
@@ -947,7 +977,7 @@ bool CMenuPanoramaModelView::UnprojectAccessory(float x,float y,float &u,float &
 }
 bool CMenuPanoramaModelView::AttachmentBounds(int kind,float &left,float &top,float &right,float &bottom) const
 {
-    if(kind<0||kind>1||!m_scene->attachmentValid[kind])return false;
+    if(m_scene->dualSingle||kind<0||kind>1||!m_scene->attachmentValid[kind])return false;
     const float *rect=m_scene->attachmentRect[kind];left=rect[0];top=rect[1];right=rect[2];bottom=rect[3];return true;
 }
 void CMenuPanoramaModelView::SetInteractive(bool interactive)
@@ -980,7 +1010,7 @@ void CMenuPanoramaModelView::VidInit(){CMenuBaseItem::VidInit();m_scene->draggin
 void CMenuPanoramaModelView::Draw(){DrawAt(m_scPos.x,m_scPos.y,m_scSize.w,m_scSize.h);}
 bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
 {
-    Scene &scene=*m_scene;scene.x=x;scene.y=y;scene.width=width;scene.height=height;
+    Scene &scene=*m_scene;scene.x=x;scene.y=y;scene.width=width;scene.height=height;scene.dualSingle=false;
     if(scene.dualUnfold&&scene.mode==1&&scene.weapon==10&&width>=2&&height>0&&
         gpGlobals&&!scene.rendering&&x>=0&&y>=0&&x+width<=gpGlobals->scrWidth&&y+height<=gpGlobals->scrHeight)
     {
@@ -1063,6 +1093,7 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     float mins[3],maxs[3];
     const bool split=scene.mode==1&&scene.weapon==10&&scene.accessoryRegion>=0&&
         RegionBounds(*geometry,body,scene.accessoryRegion,mins,maxs);
+    const bool dualSingle=scene.mode==1&&scene.weapon==10&&!split;scene.dualSingle=dualSingle;
     if(!split&&!Bounds(*geometry,body,scene.mode==3,mins,maxs))return false;
     float center[3];for(int axis=0;axis<3;++axis)center[axis]=(mins[axis]+maxs[axis])*.5f;
     float normal[3]={0,-1,0};
@@ -1072,6 +1103,7 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         // pistol's real side so its muzzle faces left like the other pistols.
         const auto &mounts=geometry->mounts;
         const auto &side=split?mounts.regions[scene.accessoryRegion].side:
+            dualSingle&&mounts.regions.size()>1?mounts.regions[0].side:
             scene.weapon==10&&mounts.regions.size()>1?mounts.regions[1].side:mounts.side;
         std::memcpy(normal,side.normal,sizeof(normal));
     }
@@ -1147,6 +1179,15 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     view.viewangles[2]=std::atan2(-Dot(right,levelUp),Dot(right,levelRight))*kDegrees;
     DrawOverride weaponOverride;
     if(!weaponOverride.Freeze(*geometry,body,scene.mode==3))return false;
+    if(dualSingle&&geometry->mounts.regions.size()>1)
+    {
+        float regionMin[3],regionMax[3],regionCenter[3];
+        if(RegionBounds(*geometry,body,1,regionMin,regionMax))
+        {
+            for(int axis=0;axis<3;++axis)regionCenter[axis]=(regionMin[axis]+regionMax[axis])*.5f;
+            weaponOverride.RotateRegion(*geometry,body,1,regionCenter);
+        }
+    }
     if(split)weaponOverride.HideOtherRegion(*geometry,body,scene.accessoryRegion);
     if(scene.mode==3&&frame)weaponOverride.PresentGloves(*geometry,body,*frame);
     if(skin)weaponOverride.Replace(skin->material,Texture(skin->file));
@@ -1184,8 +1225,8 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     const auto inRegion=[&](float u){return !split||std::min(int(geometry->mounts.regions.size())-1,
         int(std::max(0.f,std::min(1.f,u))*geometry->mounts.regions.size()))==scene.accessoryRegion;};
     float statFrame[3][4],charmFrame[3][4];
-    const bool drawStat=scene.mode==1&&config.stattrak&&inRegion(config.statU)&&Attachment(*geometry,config,false,scene.stat,statGeometry,statFrame);
-    const bool drawCharm=scene.mode==1&&config.charm&&inRegion(config.charmU)&&Attachment(*geometry,config,true,scene.charm,charmGeometry,charmFrame);
+    const bool drawStat=!dualSingle&&scene.mode==1&&config.stattrak&&inRegion(config.statU)&&Attachment(*geometry,config,false,scene.stat,statGeometry,statFrame);
+    const bool drawCharm=!dualSingle&&scene.mode==1&&config.charm&&inRegion(config.charmU)&&Attachment(*geometry,config,true,scene.charm,charmGeometry,charmFrame);
     if(pairTransformed&&drawStat){float composed[3][4];ConcatPairMatrix(pairMatrix,statFrame,composed);API()->SetTransform(&scene.stat,composed);}
     if(pairTransformed&&drawCharm){float composed[3][4];ConcatPairMatrix(pairMatrix,charmFrame,composed);API()->SetTransform(&scene.charm,composed);}
     if(drawStat&&scene.overridePreview)scene.stat.curstate.body=int(scene.previewCount);
