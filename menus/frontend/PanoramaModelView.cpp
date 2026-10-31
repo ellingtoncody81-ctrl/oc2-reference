@@ -686,6 +686,27 @@ public:
             }
         }
     }
+    void MoveRegion(Geometry &geometry,int body,int region,const float delta[3])
+    {
+        if(!header||region<0||std::size_t(region)>=geometry.mounts.regions.size())return;
+        const auto &bones=geometry.mounts.regions[region].weaponBones;
+        const auto *parts=reinterpret_cast<const mstudiobodyparts_t *>(reinterpret_cast<const byte *>(header)+header->bodypartindex);
+        for(int p=0;p<header->numbodyparts;++p)
+        {
+            if(parts[p].base<=0||parts[p].nummodels<=0)continue;
+            const auto *models=reinterpret_cast<const mstudiomodel_t *>(reinterpret_cast<const byte *>(header)+parts[p].modelindex);
+            const auto &model=models[(body/parts[p].base)%parts[p].nummodels];
+            auto *vertices=reinterpret_cast<float (*)[3]>(reinterpret_cast<byte *>(header)+model.vertindex);
+            const auto *vertexBones=reinterpret_cast<const byte *>(header)+model.vertinfoindex;
+            for(int v=0;v<model.numverts;++v)
+            {
+                const int bone=vertexBones[v];if(std::find(bones.begin(),bones.end(),bone)==bones.end())continue;
+                const auto &bind=geometry.bind[bone];float world[3];Transform(bind.m,vertices[v],world);
+                for(int a=0;a<3;++a)world[a]+=delta[a];
+                for(int a=0;a<3;++a){SavedFloat entry;entry.address=&vertices[v][a];entry.value=vertices[v][a];savedVertices.push_back(entry);vertices[v][a]=0;for(int k=0;k<3;++k)vertices[v][a]+=bind.m[k][a]*(world[k]-bind.m[k][3]);}
+            }
+        }
+    }
     void PresentGloves(const Geometry &geometry,int body,const Geometry::CachedBounds &frame)
     {
         if(!header)return;
@@ -1128,6 +1149,25 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         }
         Cross(direction,right,up);
     }
+    float dualRegion1Center[3]={},dualDelta0[3]={},dualDelta1[3]={};
+    float dualDistanceScale=1;bool dualArrange=false;
+    if(dualSingle&&geometry->mounts.regions.size()>1)
+    {
+        float pairMin[3],pairMax[3],region0Min[3],region0Max[3],region1Min[3],region1Max[3];
+        if(Bounds(*geometry,body,false,pairMin,pairMax)&&RegionBounds(*geometry,body,0,region0Min,region0Max)&&RegionBounds(*geometry,body,1,region1Min,region1Max))
+        {
+            float pairCenter[3],region0Center[3],region1Center[3];
+            for(int a=0;a<3;++a){pairCenter[a]=(pairMin[a]+pairMax[a])*.5f;region0Center[a]=(region0Min[a]+region0Max[a])*.5f;region1Center[a]=(region1Min[a]+region1Max[a])*.5f;dualRegion1Center[a]=region1Center[a];}
+            const float baseRight[3]={-std::sin(baseYaw),std::cos(baseYaw),0};
+            const auto extentOn=[&](const float lo[3],const float hi[3]){return std::fabs(baseRight[0])*(hi[0]-lo[0])+std::fabs(baseRight[1])*(hi[1]-lo[1])+std::fabs(baseRight[2])*(hi[2]-lo[2]);};
+            const float len0=extentOn(region0Min,region0Max),len1=extentOn(region1Min,region1Max);
+            const float originalWidth=std::max(.001f,extentOn(pairMin,pairMax)),gap=std::max(len0,len1)*.10f;
+            const float separation=(len0+len1)*.5f+gap;
+            for(int a=0;a<3;++a){dualDelta0[a]=pairCenter[a]-baseRight[a]*separation*.5f-region0Center[a];dualDelta1[a]=pairCenter[a]+baseRight[a]*separation*.5f-region1Center[a];}
+            dualDistanceScale=std::max(1.f,(len0+len1+gap)/originalWidth);
+            dualArrange=true;
+        }
+    }
     ref_viewpass_t view={};view.viewport[0]=x;view.viewport[1]=y;view.viewport[2]=width;view.viewport[3]=height;
     view.fov_y=30;const float tanY=std::tan(15*kRadians),tanX=tanY*float(width)/float(height);
     view.fov_x=2*std::atan(tanX)*kDegrees;
@@ -1163,7 +1203,7 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
             }
         }
     }
-    distance=std::max(5.f,distance*1.13f/scene.zoom);
+    distance=std::max(5.f,distance*1.13f*dualDistanceScale/scene.zoom);
     scene.normalizedScale=1.f/(2*distance*tanY);
     // The visible extent of the model in screen pixels. The inventory wheel
     // fits the model with it instead of the mostly empty card rectangle.
@@ -1179,14 +1219,12 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     view.viewangles[2]=std::atan2(-Dot(right,levelUp),Dot(right,levelRight))*kDegrees;
     DrawOverride weaponOverride;
     if(!weaponOverride.Freeze(*geometry,body,scene.mode==3))return false;
-    if(dualSingle&&geometry->mounts.regions.size()>1)
+    if(dualSingle&&dualArrange)
     {
-        float regionMin[3],regionMax[3],regionCenter[3];
-        if(RegionBounds(*geometry,body,1,regionMin,regionMax))
-        {
-            for(int axis=0;axis<3;++axis)regionCenter[axis]=(regionMin[axis]+regionMax[axis])*.5f;
-            weaponOverride.RotateRegion(*geometry,body,1,regionCenter);
-        }
+        // Put the pair on opposite sides of one invisible vertical axis.
+        weaponOverride.RotateRegion(*geometry,body,1,dualRegion1Center);
+        weaponOverride.MoveRegion(*geometry,body,0,dualDelta0);
+        weaponOverride.MoveRegion(*geometry,body,1,dualDelta1);
     }
     if(split)weaponOverride.HideOtherRegion(*geometry,body,scene.accessoryRegion);
     if(scene.mode==3&&frame)weaponOverride.PresentGloves(*geometry,body,*frame);
