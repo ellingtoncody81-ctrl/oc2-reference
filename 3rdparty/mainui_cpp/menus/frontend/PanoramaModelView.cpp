@@ -789,6 +789,7 @@ struct CMenuPanoramaModelView::Scene
     Geometry *geometry=nullptr;
     float camera[3]{},direction[3]{},right[3]{},up[3]{},tanX=1,tanY=1;
     float normalizedScale=0;
+    float contentWidth=0,contentHeight=0;
     bool projectionValid=false,overridePreview=false;
     std::string previewPattern;
     unsigned previewCount=0;
@@ -844,6 +845,14 @@ void CMenuPanoramaModelView::SetAccessoryPreview(const std::string &pattern,unsi
 {m_scene->overridePreview=true;m_scene->previewPattern=pattern;m_scene->previewCount=count;}
 void CMenuPanoramaModelView::SetAccessoryRegion(int region){m_scene->accessoryRegion=region;}
 void CMenuPanoramaModelView::SetDualUnfold(bool enabled){m_scene->dualUnfold=enabled;}
+bool CMenuPanoramaModelView::ContentExtent(float &widthFraction,float &heightFraction) const
+{
+    const Scene &scene=*m_scene;
+    if(scene.width<=0||scene.height<=0||scene.contentWidth<=0||scene.contentHeight<=0)return false;
+    widthFraction=scene.contentWidth/float(scene.width);
+    heightFraction=scene.contentHeight/float(scene.height);
+    return true;
+}
 bool CMenuPanoramaModelView::ProjectAccessory(int,float u,float v,float &x,float &y,float &scale) const
 {
     const Scene &scene=*m_scene;if(!scene.projectionValid||!scene.geometry)return false;
@@ -1057,13 +1066,15 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     ref_viewpass_t view={};view.viewport[0]=x;view.viewport[1]=y;view.viewport[2]=width;view.viewport[3]=height;
     view.fov_y=30;const float tanY=std::tan(15*kRadians),tanX=tanY*float(width)/float(height);
     view.fov_x=2*std::atan(tanX)*kDegrees;
-    float distance=1;
+    float distance=1,extentRight=0,extentUp=0;
     for(int corner=0;corner<8;++corner)
     {
         float delta[3]{};
         if(frame)
         {for(int a=0;a<3;++a)for(int b=0;b<3;++b)delta[b]+=frame->axes[a][b]*frame->half[a]*((corner&(1<<a))?1.f:-1.f);}
         else for(int axis=0;axis<3;++axis)delta[axis]=((corner&(1<<axis))?maxs[axis]:mins[axis])-center[axis];
+        extentRight=std::max(extentRight,std::fabs(Dot(delta,right)));
+        extentUp=std::max(extentUp,std::fabs(Dot(delta,up)));
         distance=std::max(distance,std::max(std::fabs(Dot(delta,right))/tanX,std::fabs(Dot(delta,up))/tanY)+Dot(delta,direction));
     }
     if(split&&geometry->mounts.regions.size()==2)
@@ -1089,6 +1100,10 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     }
     distance=std::max(5.f,distance*1.13f/scene.zoom);
     scene.normalizedScale=1.f/(2*distance*tanY);
+    // The visible extent of the model in screen pixels. The inventory wheel
+    // fits the model with it instead of the mostly empty card rectangle.
+    scene.contentWidth=extentRight*2*scene.height*scene.normalizedScale;
+    scene.contentHeight=extentUp*2*scene.height*scene.normalizedScale;
     for(int axis=0;axis<3;++axis)view.vieworigin[axis]=center[axis]+direction[axis]*distance;
     std::memcpy(scene.camera,view.vieworigin,sizeof(scene.camera));std::memcpy(scene.direction,direction,sizeof(direction));
     std::memcpy(scene.right,right,sizeof(right));std::memcpy(scene.up,up,sizeof(up));scene.tanX=tanX;scene.tanY=tanY;scene.projectionValid=scene.mode==1;
