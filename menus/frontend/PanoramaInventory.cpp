@@ -19,6 +19,14 @@ void DrawLabel(Point p,Size z,const char *text,int height,unsigned color,bool bo
 {
     oc2_panorama::DrawText(p,z,text,height,color,bold,align);
 }
+// Nudge long-gun previews away from the hub; the slot side sets the sign.
+int LongGunPreviewShiftX(int key,int previewWidth)
+{
+    const int amount=Q_max(1,previewWidth/8);
+    if(key==27)return -amount;
+    if(key==15||key==20)return amount;
+    return 0;
+}
 }
 
 int CMenuPanoramaWheel::Hit(int x,int y) const
@@ -85,30 +93,30 @@ void CMenuPanoramaWheel::SlotBounds(int slot,Point &position,Size &size,Size *mo
         Size model=Size(Q_max(1,previewWidth),Q_max(1,previewHeight));
         float widthFraction=1,heightFraction=1;
         if(entries[slot].model)entries[slot].model->ContentExtent(widthFraction,heightFraction);
-            widthFraction=std::min(1.f,std::max(.05f,widthFraction));
-            heightFraction=std::min(1.f,std::max(.05f,heightFraction));
-            const auto contentFits=[&](int width,int height)
+        widthFraction=std::min(1.f,std::max(.05f,widthFraction));
+        heightFraction=std::min(1.f,std::max(.05f,heightFraction));
+        const auto contentFits=[&](int width,int height)
+        {
+            const double cw=width*widthFraction,ch=height*heightFraction;
+            const double modelCenterX=position.x+fullWidth*.5+LongGunPreviewShiftX(key,previewWidth),modelCenterY=position.y+previewHeight*.5;
+            const int left=int(modelCenterX-cw/2),top=int(modelCenterY-ch/2);
+            const double x0=left-cx,x1=left+cw-cx,y0=top-cy,y1=top+ch-cy;
+            const double limit=Q_max(1.0,r-1.0);
+            for(double x:{x0,x1})for(double y:{y0,y1})
+                if(x*x+y*y>limit*limit)return false;
+            return true;
+        };
+        if(!contentFits(model.w,model.h))
+        {
+            double low=0,high=1;
+            for(int i=0;i<24;++i)
             {
-                const double cw=width*widthFraction,ch=height*heightFraction;
-                const double modelCenterX=position.x+fullWidth*.5,modelCenterY=position.y+previewHeight*.5;
-                const int left=int(modelCenterX-cw/2),top=int(modelCenterY-ch/2);
-                const double x0=left-cx,x1=left+cw-cx,y0=top-cy,y1=top+ch-cy;
-                const double limit=Q_max(1.0,r-1.0);
-                for(double x:{x0,x1})for(double y:{y0,y1})
-                    if(x*x+y*y>limit*limit)return false;
-                return true;
-            };
-            if(!contentFits(model.w,model.h))
-            {
-                double low=0,high=1;
-                for(int i=0;i<24;++i)
-                {
-                    const double scale=(low+high)*.5;
-                    if(contentFits(Q_max(1,int(model.w*scale)),Q_max(1,int(model.h*scale))))low=scale;
-                    else high=scale;
-                }
-                model=Size(Q_max(1,int(model.w*low)),Q_max(1,int(model.h*low)));
+                const double scale=(low+high)*.5;
+                if(contentFits(Q_max(1,int(model.w*scale)),Q_max(1,int(model.h*scale))))low=scale;
+                else high=scale;
             }
+            model=Size(Q_max(1,int(model.w*low)),Q_max(1,int(model.h*low)));
+        }
         if(modelSize)*modelSize=model;
         return;
     }
@@ -208,7 +216,7 @@ void CMenuPanoramaWheel::Draw()
                 modelWidth=Q_max(1,int(modelWidth*scale));drawHeight=Q_max(1,int(drawHeight*scale));
             }
         }
-        if(entries[i].model)entries[i].model->DrawAt(item.x+(box.w-modelWidth)/2,item.y+(modelHeight-drawHeight)/2,modelWidth,drawHeight);
+        if(entries[i].model)entries[i].model->DrawAt(item.x+(box.w-modelWidth)/2+LongGunPreviewShiftX(entries[i].key,previewWidth),item.y+(modelHeight-drawHeight)/2,modelWidth,drawHeight);
         if(box.h>labelHeight)
             DrawLabel(item+Point(0,modelHeight),Size(box.w,labelHeight),entries[i].name.c_str(),fitted?12:entries.size()>7?12:14,ink,true);
     }
@@ -300,7 +308,7 @@ void CMenuPanoramaInventory::_Init()
         SET_EVENT_MULTI(m_cards[i].onReleased,{static_cast<CMenuPanoramaInventory*>(pSelf->Parent())->SelectCard(pSelf);});
     }
     m_search.SetNameAndStatus("",nullptr,"pano_search");m_search.iMaxLength=80;m_search.bAllowColorstrings=false;AddItem(m_search);
-    m_inspect.SetNameAndStatus("",nullptr,"pano_model");m_inspect.SetInteractive(true);m_inspect.SetDualUnfold(false); // Rotate both dual pistols as one whole model.
+    m_inspect.SetNameAndStatus("",nullptr,"pano_model");m_inspect.SetInteractive(true);m_inspect.SetDualUnfold(true);
     AddItem(m_inspect);
     Button(m_closeInspect,u8"< \u8fd4\u56de\u76ae\u80a4\u5217\u8868","pano_close_inspect");m_closeInspect.onReleased=VoidCb(&CMenuPanoramaInventory::CloseInspect);
     Button(m_equip,u8"\u88c5\u5907","pano_equip",true);m_equip.onReleased=VoidCb(&CMenuPanoramaInventory::Equip);

@@ -963,7 +963,8 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         right.appearance=scene.appearance;right.accessories=scene.accessories;
         right.overridePreview=scene.overridePreview;right.previewPattern=scene.previewPattern;
         right.previewCount=scene.previewCount;right.accessoryRegion=1;
-        right.yaw=scene.yaw;right.pitch=scene.pitch;right.zoom=scene.zoom;
+        // Opposite sticker-side cameras use mirrored orbit input so both panes turn alike.
+        right.yaw=-scene.yaw;right.pitch=-scene.pitch;right.zoom=scene.zoom;
         const bool drawnRight=m_dualView->DrawAt(x+width-leftWidth,y,leftWidth,height);
         scene.dualUnfold=true;scene.accessoryRegion=-1;
         // Mouse input for the full-size item includes both viewports.
