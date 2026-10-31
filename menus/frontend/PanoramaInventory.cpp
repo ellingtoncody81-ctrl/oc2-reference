@@ -27,7 +27,8 @@ int LongGunPreviewShiftX(int key,int previewWidth)
 {
     const int amount=Q_max(1,previewWidth/8);
     if(key==27)return -amount;
-    if(key==15||key==20)return amount;
+    if(key==15)return amount;
+    if(key==20)return amount/2; // M249: half the previous right nudge.
     return 0;
 }
 }
