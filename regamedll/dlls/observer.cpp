@@ -1,5 +1,7 @@
 #include "precompiled.h"
+#include "oc2_bot_control.h"
 #include "oc2_spec_stats.h"
+#include "oc2_item_server.h"
 #include "wpn_shared/wpn_molotov.h"
 #include "hostage/hostage.h"
 
@@ -35,6 +37,7 @@ void OC2_SpecStatsDeath(CBasePlayer *victim, CBasePlayer *killer)
 		(victim->m_iTeam == TERRORIST || victim->m_iTeam == CT) && killer->m_iTeam != victim->m_iTeam)
 	{
 		killerIndex = killer->entindex();
+		if(!victim->m_bKilledByGrenade&&!victim->m_bKilledByBomb)OC2_ItemsKill(killer);
 		for (int i = 1; i <= gpGlobals->maxClients && i <= 32; ++i) {
 			CBasePlayer *p = UTIL_PlayerByIndex(i);
 			if (p && !p->has_disconnected && p->m_iTeam == killer->m_iTeam) eligible |= 1u << (i - 1);
@@ -212,30 +215,22 @@ void CBasePlayer::__API_HOOK(Observer_FindNextPlayer)(bool bReverse, const char 
 
 	bForceSameTeam = (GetForceCamera(this) != CAMERA_MODE_SPEC_ANYONE && m_iTeam != SPECTATOR);
 
-	do
-	{
-		iCurrent += iDir;
+ int roster[32],count=0,start=-1;
+ for(int side=0;side<2;++side)for(int slot=1;slot<=gpGlobals->maxClients&&slot<=32;++slot){
+  auto *candidate=UTIL_PlayerByIndex(slot);
+  if(!candidate||candidate->has_disconnected||candidate->m_iTeam!=(side==0?CT:TERRORIST))continue;
+  if(slot==iStart)start=count;
+  roster[count++]=slot;
+ }
+ if(start<0)start=bReverse?0:count-1;
+ for(int step=1;step<=count;++step){
+  const int at=(start+iDir*step+count*2)%count;iCurrent=roster[at];
+  auto *candidate=Observer_IsValidTarget(iCurrent,bForceSameTeam);
+  if(!candidate)continue;
+  if(name&&Q_strcmp(name,STRING(candidate->pev->netname)))continue;
+  m_hObserverTarget=candidate;break;
+ }
 
-		// Loop through the clients
-		if (iCurrent > gpGlobals->maxClients)
-			iCurrent = 1;
-
-		else if (iCurrent < 1)
-			iCurrent = gpGlobals->maxClients;
-
-		m_hObserverTarget = Observer_IsValidTarget(iCurrent, bForceSameTeam);
-
-		if (m_hObserverTarget)
-		{
-			if (!name)
-				break;
-
-			CBasePlayer *pPlayer = UTIL_PlayerByIndex(m_hObserverTarget->entindex());
-			if (!Q_strcmp(name, STRING(pPlayer->pev->netname)))
-				break;
-		}
-	}
-	while (iCurrent != iStart);
 
 	// Did we find a target?
 	if (m_hObserverTarget)
@@ -266,30 +261,12 @@ void CBasePlayer::Observer_HandleButtons()
 	if (m_flNextObserverInput > gpGlobals->time)
 		return;
 
+	if((m_afButtonPressed&IN_USE)&&OC2_BotTakeover(this))return;
+	// CS:GO order, explicitly mapped to the GoldSrc ABI.
 	// Jump changes from modes: Chase to Roaming
 	if (m_afButtonPressed & IN_JUMP)
 	{
-		switch (pev->iuser1)
-		{
-		case OBS_CHASE_LOCKED:
-			Observer_SetMode(OBS_IN_EYE);
-			break;
-		case OBS_CHASE_FREE:
-			Observer_SetMode(OBS_IN_EYE);
-			break;
-		case OBS_IN_EYE:
-			Observer_SetMode(OBS_ROAMING);
-			break;
-		case OBS_ROAMING:
-			Observer_SetMode(OBS_MAP_FREE);
-			break;
-		case OBS_MAP_FREE:
-			Observer_SetMode(OBS_MAP_CHASE);
-			break;
-		default:
-			Observer_SetMode(m_bObserverAutoDirector ? OBS_CHASE_LOCKED : OBS_CHASE_FREE);
-			break;
-		}
+		Observer_SetMode(pev->iuser1==OBS_IN_EYE?OBS_CHASE_FREE:pev->iuser1==OBS_CHASE_FREE?OBS_ROAMING:OBS_IN_EYE);
 
 		m_flNextObserverInput = gpGlobals->time + 0.2f;
 	}
@@ -509,6 +486,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Observer_SetMode)(int iMode)
 
 	forcecamera = GetForceCamera(this);
 
+	if(iMode!=OBS_IN_EYE&&iMode!=OBS_CHASE_FREE&&iMode!=OBS_ROAMING)iMode=OBS_IN_EYE;
 	// is valid mode ?
 	if (iMode < OBS_CHASE_LOCKED || iMode > OBS_MAP_CHASE)
 		iMode = OBS_IN_EYE;
@@ -519,8 +497,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Observer_SetMode)(int iMode)
 	{
 		if (forcecamera == CAMERA_MODE_SPEC_ONLY_TEAM)
 		{
-			if (iMode == OBS_ROAMING)
-				iMode = OBS_MAP_FREE;
+			iMode = OBS_IN_EYE;
 		}
 		else if (forcecamera == CAMERA_MODE_SPEC_ONLY_FIRST_PERSON)
 			iMode = OBS_IN_EYE;
@@ -584,9 +561,7 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Observer_SetMode)(int iMode)
 
 	// print spepctaor mode on client screen
 
-	char modemsg[16];
-	Q_snprintf(modemsg, sizeof(modemsg), "#Spec_Mode%i", pev->iuser1);
-	ClientPrint(pev, HUD_PRINTCENTER, modemsg);
+	ClientPrint(pev,HUD_PRINTCENTER,pev->iuser1==OBS_IN_EYE?u8"\u7b2c\u4e00\u4eba\u79f0":pev->iuser1==OBS_CHASE_FREE?u8"\u7b2c\u4e09\u4eba\u79f0":u8"\u81ea\u7531\u89c2\u5bdf");
 
 	m_iObserverLastMode = iMode;
 	m_bWasFollowing = false;
@@ -597,6 +572,8 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, Observer_Think)
 void EXT_FUNC CBasePlayer::__API_HOOK(Observer_Think)()
 {
 	Observer_HandleButtons();
+	if(GetObserverMode()==OBS_NONE)return;
+	OC2_BotControlStatus(this);
 	Observer_CheckTarget();
 	Observer_CheckProperties();
 

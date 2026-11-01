@@ -38,6 +38,7 @@ struct PlayerLoadout
  int glove=0;
  unsigned gloveRevision=0;
  bool botGloveAssigned=false;
+ int controlGlove=-1;
 };
 PlayerLoadout players[33];
 
@@ -206,6 +207,10 @@ void Send(int operation,const Appearance *a,CBasePlayer *target=nullptr)
   WRITE_SHORT(a->definition);WRITE_LONG(a->skin);
   for(int s:a->stickers)WRITE_LONG(s);
   WRITE_LONG(a->originUserid);WRITE_BYTE(a->flags);
+  const auto &w=a->accessory;
+  WRITE_BYTE((a->accessoryReady?4:0)|(w.stattrak?1:0)|(w.charm?2:0));
+  for(float v:{w.statU,w.statV,w.charmU,w.charmV,w.amplitude,w.length,w.stiffness,w.damping})WRITE_LONG(oc2_item::FloatBits(v));
+  WRITE_LONG(w.sticker);WRITE_LONG(a->count);WRITE_LONG(a->charm);
  }
  MESSAGE_END();
 }
@@ -247,7 +252,7 @@ void EquipBotGlove(CBasePlayer *player)
  // Keep it across deaths/rounds; a new userid receives a new random choice.
  state.botGloveAssigned=true;
  state.glove=gloveCatalog.empty()?0:gloveCatalog[RANDOM_LONG(0,int(gloveCatalog.size())-1)].id;
- SendGlove(oc2_gloves::Upsert,player->entindex(),state.glove);
+ SendGlove(oc2_gloves::Upsert,player->entindex(),state.controlGlove>=0?state.controlGlove:state.glove);
  ALERT(at_console,"oc2gloveserver: bot player=%d userid=%d resource=%d catalog=%u\n",
   player->entindex(),state.userid,state.glove,unsigned(gloveCatalog.size()));
 }
@@ -260,7 +265,7 @@ void GloveSnapshot(CBasePlayer *target)
   if(peer&&!peer->IsDormant())
   {
    EquipBotGlove(peer);
-   SendGlove(oc2_gloves::Upsert,i,PlayerState(peer).glove,target);
+   SendGlove(oc2_gloves::Upsert,i,PlayerState(peer).controlGlove>=0?PlayerState(peer).controlGlove:PlayerState(peer).glove,target);
   }
  }
 }
@@ -505,6 +510,20 @@ void TestCommand(CBasePlayer *caller)
 }
 }
 
+void OC2_ItemsControlGlove(CBasePlayer *player,CBasePlayer *bot)
+{
+ if(!player)return;
+ auto &state=PlayerState(player);
+ state.controlGlove=bot?PlayerState(bot).glove:-1;
+ SendGlove(oc2_gloves::Upsert,player->entindex(),state.controlGlove>=0?state.controlGlove:state.glove);
+}
+void OC2_ItemsKill(CBasePlayer *player)
+{
+ auto *item=player?player->m_pActiveItem:nullptr;
+ if(!item||!item->m_oc2Appearance.accessory.stattrak)return;
+ auto &a=item->m_oc2Appearance;
+ if((item->m_bOc2Transferred||(a.flags&oc2_item::BotOrigin))&&a.count<oc2_accessories::kMaximumCount)++a.count;
+}
 void OC2_ItemsRegisterMessage()
 { messageId=REG_USER_MSG(oc2_item::kMessage,-1);gloveMessageId=REG_USER_MSG(oc2_gloves::kMessage,-1);carryMessageId=REG_USER_MSG(oc2_carry::kMessage,-1); }
 
@@ -569,6 +588,17 @@ void OC2_ItemsAcquire(CBasePlayerItem *item,CBasePlayer *player)
   a.originUserid=GETPLAYERUSERID(player->edict());
   a.flags=player->IsBot()?oc2_item::BotOrigin:0;
   ApplyChoice(item,player);
+  const auto defaults=oc2_accessories::DefaultConfig();
+  if(const auto *config=oc2_accessories::Find(defaults,item->m_iId))
+  {
+   a.accessory=*config;a.accessoryReady=true;
+   if(player->IsBot())
+   {
+    a.accessory.stattrak=true;a.accessory.charm=true;
+    std::vector<int> choices;for(const auto &entry:catalog)if(entry.kind==Kind::Sticker&&!IsTransparent(entry))choices.push_back(entry.id);
+    a.charm=Pick(choices,BotSeed(player)+unsigned(item->m_iId));
+   }
+  }
  }
  else if(a.originUserid!=GETPLAYERUSERID(player->edict()))item->m_bOc2Transferred=true;
  issued[a.serial]=static_cast<CBaseEntity *>(item);
@@ -591,6 +621,21 @@ void OC2_ItemsFrame()
 }
 bool OC2_ItemsCommand(CBasePlayer *player,const char *command)
 {
+ if(FStrEq(command,"oc2_item_acc"))
+ {
+  if(!player||player->IsBot()||CMD_ARGC()!=16)return true;
+  std::ostringstream row;for(int i=1;i<CMD_ARGC();++i)row<<CMD_ARGV(i)<<' ';
+  std::istringstream input(row.str());int serial=0,stat=0,charm=0;Appearance candidate;
+  auto &w=candidate.accessory;
+  if(!(input>>serial>>w.weapon>>stat>>w.statU>>w.statV>>charm>>w.charmU>>w.charmV>>w.sticker>>w.amplitude>>w.length>>w.stiffness>>w.damping>>candidate.count>>candidate.charm)||!oc2_accessories::End(input)||stat<0||stat>1||charm<0||charm>1||!oc2_accessories::Valid(w)||candidate.count>oc2_accessories::kMaximumCount)return true;
+  w.stattrak=stat!=0;w.charm=charm!=0;
+  if(candidate.charm>0){const auto *entry=FindEntry(catalog,candidate.charm);if(!entry||entry->kind!=Kind::Sticker)return true;}
+  const auto found=issued.find(serial);if(found==issued.end())return true;
+  auto *item=static_cast<CBasePlayerItem *>((CBaseEntity *)found->second);
+  if(!item||item->m_pPlayer!=player||item->m_bOc2Transferred||item->m_iId!=w.weapon||item->m_oc2Appearance.originUserid!=GETPLAYERUSERID(player->edict()))return true;
+  item->m_oc2Appearance.accessory=w;item->m_oc2Appearance.accessoryReady=true;
+  item->m_oc2Appearance.count=candidate.count;item->m_oc2Appearance.charm=candidate.charm;Publish();return true;
+ }
  if(FStrEq(command,"oc2_glove_test"))
  {
   // Explicit local verification only; changes server memory, never a DAT.
@@ -614,7 +659,7 @@ bool OC2_ItemsCommand(CBasePlayer *player,const char *command)
      (resource&&!oc2_gloves::FindEntry(gloveCatalog,int(resource))))
    {ALERT(at_console,"oc2gloveserver: rejected player=%d\n",player->entindex());return true;}
   auto &state=PlayerState(player);state.glove=int(resource);state.gloveRevision=unsigned(revision);
-  SendGlove(oc2_gloves::Upsert,player->entindex(),state.glove);
+  SendGlove(oc2_gloves::Upsert,player->entindex(),state.controlGlove>=0?state.controlGlove:state.glove);
   ALERT(at_console,"oc2gloveserver: accepted player=%d resource=%d revision=%u\n",player->entindex(),state.glove,state.gloveRevision);
   return true;
  }
