@@ -1,6 +1,7 @@
 #include "precompiled.h"
 #include "oc2_spec_stats.h"
 #include "wpn_shared/wpn_molotov.h"
+#include "hostage/hostage.h"
 
 static oc2_stats::Accumulator g_oc2Stats;
 void OC2_SpecStatsReset() { g_oc2Stats.Reset(); }
@@ -663,6 +664,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Observer_Think)()
 			int equip = alive ? ((p->m_bHasDefuser ? 1 : 0) | (p->m_bHasC4 ? 2 : 0) |
 				(p->m_bHasNightVision ? 4 : 0) | (p->GetItemById(WEAPON_KNIFE) ? 8 : 0) |
 				(p->GetItemById(WEAPON_TASER) ? 16 : 0) | (p->HasShield() ? 64 : 0)) : 0;
+			// Keep bit 1 as ownership for both kits; unused bit 128 describes
+			// the server's map mode, including before a CT purchases the kit.
+			if (alive && p->m_iTeam == CT && OC2_HostageMap()) equip |= 128;
 			if (fire && OC2_SpecGrenadeCount(p, WEAPON_MOLOTOV) > 0 &&
 				(static_cast<CBasePlayerWeapon *>(fire)->m_iWeaponState & CMolotovGrenade::INCENDIARY_STATE)) equip |= 32;
 			const oc2_stats::Player &stats = g_oc2Stats.Get(i);
@@ -703,7 +707,8 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Observer_Think)()
 		if (weapon->m_iPrimaryAmmoType >= 0 && weapon->m_iPrimaryAmmoType < MAX_AMMO_SLOTS)
 			reserve = target->m_rgAmmo[weapon->m_iPrimaryAmmoType];
 	}
-	const int flags = (target->m_bHasDefuser ? 1 : 0) | (target->m_bHasC4 ? 2 : 0) | (target->m_bHasNightVision ? 4 : 0);
+	const int flags = (target->m_bHasDefuser ? 1 : 0) | (target->m_bHasC4 ? 2 : 0) |
+		(target->m_bHasNightVision ? 4 : 0) | (target->m_iTeam == CT && OC2_HostageMap() ? 128 : 0);
 	MESSAGE_BEGIN(MSG_ONE_UNRELIABLE, gmsgOC2Spec, nullptr, pev);
 		WRITE_BYTE(1); // protocol version
 		WRITE_BYTE(target->entindex());

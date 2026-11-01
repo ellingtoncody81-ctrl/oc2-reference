@@ -32,7 +32,9 @@ Measurements taken from the decompiled binary:
 #include "hud/radar_modern.h"
 #include "view_ads.h"		// V_CurrentADSWorldFOV: the cone must follow the scope
 #include "radar_fullmap_layout.h"
+#include "spectator_layout.h"
 #include "oc2_spectator_data.h"
+#include "match_ui.h"
 
 #include <math.h>
 #include <cmath>
@@ -2534,10 +2536,20 @@ int CHudRadarModern::Draw( float flTime )
 	m_iCenterY  = m_iRadius + (int)m_pRadarPosY->value;
 	if( m_bFullMap )
 	{
-		const auto layout = radar_fullmap_layout::Make(ScreenWidth, ScreenHeight);
-		m_iRadius = layout.size / 2;
-		m_iCenterX = layout.x + m_iRadius;
-		m_iCenterY = layout.y + m_iRadius;
+		if( observing && !gHUD.m_Scoreboard.ShouldDrawScoreboard() )
+		{
+			const auto layout = spectator_layout::Make(ScreenWidth,ScreenHeight).radar;
+			m_iRadius = int(layout.w) / 2;
+			m_iCenterX = int(layout.x) + m_iRadius;
+			m_iCenterY = int(layout.y) + m_iRadius;
+		}
+		else
+		{
+			const auto layout = radar_fullmap_layout::Make(ScreenWidth, ScreenHeight);
+			m_iRadius = layout.size / 2;
+			m_iCenterX = layout.x + m_iRadius;
+			m_iCenterY = layout.y + m_iRadius;
+		}
 	}
 
 	// ---- overview background: re-read only when the map changes,
@@ -2591,7 +2603,8 @@ int CHudRadarModern::Draw( float flTime )
 	// flat disc first, so map-less areas read as background instead of
 	// showing the game through the HUD
 	if( m_bFullMap )
-		FillRGBABlend(m_iCenterX-m_iRadius,m_iCenterY-m_iRadius,m_iRadius*2,m_iRadius*2,12,18,24,225);
+		FillRGBABlend(m_iCenterX-m_iRadius,m_iCenterY-m_iRadius,m_iRadius*2,m_iRadius*2,12,18,24,
+			observing && !gHUD.m_Scoreboard.ShouldDrawScoreboard() ? 140 : 225);
 	else if( !bHasBackground )
 		DrawRadarDisc( m_iCenterX, m_iCenterY, m_iRadius );
 
@@ -2636,8 +2649,10 @@ int CHudRadarModern::Draw( float flTime )
 		if( m_bFullMap )
 		{
 			const int left=m_iCenterX-m_iRadius, top=m_iCenterY-m_iRadius, size=m_iRadius*2;
-			FillRGBABlend(left,top,size,2,r,g,b,a); FillRGBABlend(left,top+size-2,size,2,r,g,b,a);
-			FillRGBABlend(left,top,2,size,r,g,b,a); FillRGBABlend(left+size-2,top,2,size,r,g,b,a);
+			const bool observerFrame=observing && !gHUD.m_Scoreboard.ShouldDrawScoreboard();
+			const int edge=observerFrame ? 1 : 2, alpha=observerFrame ? 70 : a;
+			FillRGBABlend(left,top,size,edge,r,g,b,alpha); FillRGBABlend(left,top+size-edge,size,edge,r,g,b,alpha);
+			FillRGBABlend(left,top,edge,size,r,g,b,alpha); FillRGBABlend(left+size-edge,top,edge,size,r,g,b,alpha);
 		}
 		else if( !bWarning )
 			DrawRadarFrame( m_iCenterX, m_iCenterY, m_iRadius, r, g, b, a, true );
@@ -2685,9 +2700,11 @@ int CHudRadarModern::Draw( float flTime )
 		snprintf(mapLabel, sizeof(mapLabel), "%s", name);
 		char *extension = strrchr(mapLabel, '.');
 		if( extension ) *extension = '\0';
-		const int x = m_iCenterX - m_iRadius + 5, y = m_iCenterY + m_iRadius - gHUD.GetCharHeight() - 4;
-		FillRGBABlend(x - 3, y - 1, m_iRadius * 2 - 4, gHUD.GetCharHeight() + 2, 14, 16, 18, 185);
-		DrawUtils::DrawConsoleString(x, y, mapLabel);
+		const float scale=spectator_layout::Make(ScreenWidth,ScreenHeight).scale;
+		const float left=m_iCenterX-m_iRadius+3*scale, width=2*m_iRadius-6*scale;
+		const float bottom=m_iCenterY+m_iRadius-3*scale, height=27*scale;
+		FillRGBABlend(int(left),int(bottom-height),int(width),int(height),14,16,18,185);
+		match_ui::Text(mapLabel,left+7*scale,bottom-height+4*scale,18*scale,{230,233,238},false,width-14*scale);
 	}
 
 	// ---- warning frame while alive with a bomb in hand

@@ -8,7 +8,8 @@ struct Target {
 	unsigned int weapons; // GoldSrc weapon-ID bit mask, not grenade quantities
 	int money, score, deaths, armorType, equipment;
 };
-enum Equipment { Defuser = 1, Bomb = 2, NightVision = 4, Knife = 8, Taser = 16, Incendiary = 32, Shield = 64 };
+// Bit 128 identifies the CT kit variant; Defuser remains the ownership bit.
+enum Equipment { Defuser = 1, Bomb = 2, NightVision = 4, Knife = 8, Taser = 16, Incendiary = 32, Shield = 64, RescueKitMode = 128 };
 struct Radar { int playerIndex, team; float x, y, z; };
 struct Round { int completedRounds, maxRounds, aliveT, aliveCT; };
 struct PlayerRow {

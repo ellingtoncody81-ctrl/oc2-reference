@@ -44,6 +44,9 @@
 #include "camera.h"
 
 #include "draw_util.h"
+#include "com_model.h"
+#include "r_studioint.h"
+extern engine_studio_api_t IEngineStudio;
 
 namespace oc2_spec {
 static Target target = {};
@@ -52,13 +55,20 @@ static Round round = {};
 static PlayerRow rows[33] = {};
 static float targetTime = -1.0f, radarTime[33] = {}, roundTime = -1.0f;
 static float rowTime[33] = {};
+static int targetUserId = 0, radarUserId[33] = {};
+static int CurrentUserId(int index)
+{
+	if (index < 1 || index > 32 || index > gEngfuncs.GetMaxClients() || !IEngineStudio.PlayerInfo) return 0;
+	const player_info_t *player = IEngineStudio.PlayerInfo(index-1);
+	return player && player->name[0] && player->userid > 0 ? player->userid : 0;
+}
 static int shortAt(const unsigned char *p) { int n = p[0] | (p[1] << 8); return n >= 32768 ? n - 65536 : n; }
 static unsigned int longAt(const unsigned char *p) { return unsigned(p[0]) | (unsigned(p[1]) << 8) | (unsigned(p[2]) << 16) | (unsigned(p[3]) << 24); }
 static bool fresh(float time) { float now = gEngfuncs.GetClientTime(); return time >= 0 && now >= time && now - time < 1.0f; }
-const Target *GetTarget(int index) { return index > 0 && target.playerIndex == index && fresh(targetTime) ? &target : nullptr; }
-const Radar *GetRadar(int index) { return index > 0 && index <= 32 && radar[index].playerIndex == index && fresh(radarTime[index]) ? &radar[index] : nullptr; }
-const Round *GetRound() { return fresh(roundTime) ? &round : nullptr; }
-const PlayerRow *GetPlayerRow(int index) { return index > 0 && index <= 32 && rows[index].playerIndex == index && fresh(rowTime[index]) ? &rows[index] : nullptr; }
+const Target *GetTarget(int index) { return g_iUser1 && index > 0 && target.playerIndex == index && targetUserId > 0 && targetUserId == CurrentUserId(index) && fresh(targetTime) ? &target : nullptr; }
+const Radar *GetRadar(int index) { return g_iUser1 && index > 0 && index <= 32 && radar[index].playerIndex == index && radarUserId[index] > 0 && radarUserId[index] == CurrentUserId(index) && fresh(radarTime[index]) ? &radar[index] : nullptr; }
+const Round *GetRound() { return g_iUser1 && fresh(roundTime) ? &round : nullptr; }
+const PlayerRow *GetPlayerRow(int index) { return g_iUser1 && index > 0 && index <= 32 && rows[index].playerIndex == index && rows[index].userId > 0 && rows[index].userId == CurrentUserId(index) && fresh(rowTime[index]) ? &rows[index] : nullptr; }
 static int MsgTarget(const char *, int size, void *buffer)
 {
 	if (size != 23 || !buffer) return 1;
@@ -69,7 +79,7 @@ static int MsgTarget(const char *, int size, void *buffer)
 	t.clip = shortAt(p+7); t.reserve = shortAt(p+9);
 	t.weapons = unsigned(p[11]) | (unsigned(p[12]) << 8) | (unsigned(p[13]) << 16) | (unsigned(p[14]) << 24);
 	t.money = shortAt(p+15); t.score = shortAt(p+17); t.deaths = shortAt(p+19); t.armorType = p[21]; t.equipment = p[22];
-	target = t; targetTime = gEngfuncs.GetClientTime(); return 1;
+	target = t; targetUserId = CurrentUserId(t.playerIndex); targetTime = gEngfuncs.GetClientTime(); return 1;
 }
 static int MsgRadar(const char *, int size, void *buffer)
 {
@@ -77,7 +87,7 @@ static int MsgRadar(const char *, int size, void *buffer)
 	const unsigned char *p = static_cast<const unsigned char *>(buffer);
 	int i = p[1]; if (p[0] != 1 || i < 1 || i > 32 || (p[2] != 1 && p[2] != 2)) return 1;
 	Radar r = { i, p[2], shortAt(p+3)/8.0f, shortAt(p+5)/8.0f, shortAt(p+7)/8.0f };
-	radar[i] = r; radarTime[i] = gEngfuncs.GetClientTime(); return 1;
+	radar[i] = r; radarUserId[i] = CurrentUserId(i); radarTime[i] = gEngfuncs.GetClientTime(); return 1;
 }
 static int MsgRound(const char *, int size, void *buffer)
 {
@@ -102,8 +112,8 @@ static int MsgRow(const char *, int size, void *buffer)
 }
 static void Init()
 {
-	target = {}; round = {}; targetTime = roundTime = -1.0f;
-	for (int i = 0; i <= 32; ++i) { radar[i] = {}; radarTime[i] = -1.0f; rows[i] = {}; rowTime[i] = -1.0f; }
+	target = {}; round = {}; targetUserId = 0; targetTime = roundTime = -1.0f;
+	for (int i = 0; i <= 32; ++i) { radar[i] = {}; radarTime[i] = -1.0f; radarUserId[i] = 0; rows[i] = {}; rowTime[i] = -1.0f; }
 	gEngfuncs.pfnHookUserMsg("OC2Spec", MsgTarget);
 	gEngfuncs.pfnHookUserMsg("OC2Radar", MsgRadar);
 	gEngfuncs.pfnHookUserMsg("OC2Round", MsgRound);

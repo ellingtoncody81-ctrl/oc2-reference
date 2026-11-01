@@ -33,6 +33,7 @@
 #include "scoreboard_layout.h"
 #include "radar_fullmap_layout.h"
 #include "unicode_labels.h"
+#include "oc2_spectator_data.h"
 #include <algorithm>
 #include <vector>
 #include <string>
@@ -48,6 +49,11 @@ int g_iTeamNumber;
 
 namespace
 {
+const char *ObserverKitLabel(int slot)
+{
+	const auto *row=oc2_spec::GetPlayerRow(slot);
+	return row ? (row->equipment & oc2_spec::RescueKitMode ? u8"\u6551\u63f4\u5de5\u5177" : u8"\u62c6\u5f39\u5668") : u8"\u62c6\u5f39\u94b3";
+}
 int s_scoreRowGap = 15;
 int s_scoreAvatarSize = 0;
 float s_scoreFontHeight = 16;
@@ -153,7 +159,8 @@ int DrawModernScoreboard()
 		const float killsRight=deathsRight-deathsWidth-12*s,killsWidth=72*s;
 		const float hpRight=killsRight-killsWidth-12*s,hpWidth=showHealth?62*s:0;
 		const float moneyRight=hpRight-(showHealth?hpWidth+12*s:0),moneyWidth=showMoney?110*s:0;
-		const float statusRight=moneyRight-(showMoney?moneyWidth+12*s:0),statusWidth=82*s;
+		const float statusRight=moneyRight-(showMoney?moneyWidth+12*s:0);
+		const float statusWidth=max(82*s,hud_unicode::FixedLabelWidth(u8"\u6551\u63f4\u5de5\u5177",layout.font)+4*s);
 		const float nameRight=statusRight-statusWidth-12*s;
 		const float nameX=x+20*s+layout.avatar+12*s;
 		const float labelHeight=16*s,labelY=columnY+5*s;
@@ -173,7 +180,7 @@ int DrawModernScoreboard()
 			if(gHUD.m_Avatars.Enabled())gHUD.m_Avatars.DrawPlayerAvatar(slot,int(x+20*s),int(rowY+(layout.row-layout.avatar)*.5f),int(layout.avatar));
 			const match_ui::Color foreground=extra.dead?match_ui::Color(145,151,158):match_ui::Color(235,238,241);
 			match_ui::Text(info.name,nameX,textY,layout.font,foreground,false,max(1.0f,nameRight-nameX));
-			const char *status=extra.dead?"阵亡":extra.has_c4?"炸弹":extra.vip?"要员":extra.has_defuse_kit?"拆弹钳":"";
+			const char *status=extra.dead?"阵亡":extra.has_c4?"炸弹":extra.vip?"要员":extra.has_defuse_kit?ObserverKitLabel(slot):"";
 			ModernScoreValue(status,statusRight,textY,statusWidth,layout.font,extra.dead?foreground:theme);
 			if(showMoney){if(extra.sb_account>=0)snprintf(text,sizeof(text),"$%d",extra.sb_account);else snprintf(text,sizeof(text),"--");ModernScoreValue(text,moneyRight,textY,moneyWidth,layout.font,foreground);}
 			if(showHealth){if(extra.sb_health>=0&&!extra.dead)snprintf(text,sizeof(text),"%d",extra.sb_health);else snprintf(text,sizeof(text),"--");ModernScoreValue(text,hpRight,textY,hpWidth,layout.font,foreground);}
@@ -452,7 +459,7 @@ int CHudScoreboard :: DrawScoreboard( float fTime )
 	g_Columns[COL_HP].end = min( g_Columns[COL_HP].end, g_Columns[COL_HP].start - ScoreTextWidth( "999999" ) );
 
 	g_Columns[COL_ATTRIB] = Column( g_Columns[COL_HP].end - 10 );
-	g_Columns[COL_ATTRIB].end = g_Columns[COL_ATTRIB].start - ScoreTextWidth( "拆弹钳" );
+	g_Columns[COL_ATTRIB].end = g_Columns[COL_ATTRIB].start - ScoreTextWidth( u8"\u6551\u63f4\u5de5\u5177" );
 
 	g_Columns[COL_NAME] = Column( xstart + 15, nullptr, false );
 	g_Columns[COL_NAME].end = g_Columns[COL_ATTRIB].end - 10;
@@ -714,7 +721,7 @@ int CHudScoreboard :: DrawPlayers( float list_slot, int nameoffset, const char *
 				else if( g_PlayerExtraInfo[best_player].vip )
 					ScoreTextReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, "要员",  r, g, b );
 				else if (g_PlayerExtraInfo[best_player].has_defuse_kit )
-					ScoreTextReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, "拆弹钳",  r, g, b );
+					ScoreTextReverse( g_Columns[COL_ATTRIB].start, ypos, g_Columns[COL_ATTRIB].end, ObserverKitLabel(best_player),  r, g, b );
 			}
 		}
 		else

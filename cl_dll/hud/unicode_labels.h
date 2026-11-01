@@ -15,7 +15,7 @@ namespace hud_unicode
 {
 namespace detail
 {
-inline std::map<int,HFont> &Fonts(){static std::map<int,HFont> fonts;return fonts;}
+inline std::map<std::pair<int,int>,HFont> &Fonts(){static std::map<std::pair<int,int>,HFont> fonts;return fonts;}
 }
 inline void ClearFonts(){detail::Fonts().clear();}
 inline float LabelScale(){return gHUD.m_flScale>0?gHUD.m_flScale:1.0f;}
@@ -24,21 +24,22 @@ inline bool UnicodeLabel(const char *text)
     if(text)for(const unsigned char *ch=reinterpret_cast<const unsigned char*>(text);*ch;++ch)if(*ch>=0x80)return true;
     return false;
 }
-inline HFont LabelFont(float height)
+inline HFont LabelFont(float height,int weight=500)
 {
     if(!g_pMenu)return 0;
     const int pixels=(std::max)(4,int(std::floor(height*LabelScale()+0.5f)));
-    auto &fonts=detail::Fonts();const auto found=fonts.find(pixels);
+    const auto key=std::make_pair(pixels,weight);
+    auto &fonts=detail::Fonts();const auto found=fonts.find(key);
     // WinAPI fonts add six pixels of atlas padding to GetFontTall(). The
     // requested size is the cache key; comparing it to that padded height
     // would rebuild every glyph atlas on every label of every frame.
     if(found!=fonts.end())return found->second;
-    CFontBuilder builder("Microsoft YaHei UI",pixels,500);
-    return fonts[pixels]=g_pMenu->BuildFont(builder);
+    CFontBuilder builder("Microsoft YaHei UI",pixels,weight);
+    return fonts[key]=g_pMenu->BuildFont(builder);
 }
-inline float FixedLabelWidth(const char *text,float height)
+inline float FixedLabelWidth(const char *text,float height,int weight=500)
 {
-    const HFont font=LabelFont(height);if(font<=0||!text)return 0;
+    const HFont font=LabelFont(height,weight);if(font<=0||!text)return 0;
     int wide=0;g_pMenu->GetTextSize(font,text,&wide);return wide/LabelScale();
 }
 inline int GlyphCount(const char *text)
@@ -78,9 +79,9 @@ inline std::vector<std::string> WrapLines(const char *text,float height,float av
         return FixedLabelWidth(visible.c_str(),height);
     });
 }
-inline void FixedLabel(const char *input,float x,float y,float height,match_ui::Color color,bool rightAlign=false,float maxWidth=0)
+inline void FixedLabel(const char *input,float x,float y,float height,match_ui::Color color,bool rightAlign=false,float maxWidth=0,int weight=500)
 {
-    const HFont font=LabelFont(height);if(font<=0||!input||color.a<=0)return;
+    const HFont font=LabelFont(height,weight);if(font<=0||!input||color.a<=0)return;
     const float scale=LabelScale();std::string text=input;
     int width=0;g_pMenu->GetTextSize(font,text.c_str(),&width);
     if(maxWidth>0&&width>maxWidth*scale)
