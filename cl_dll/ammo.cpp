@@ -28,6 +28,7 @@
 #include "skin_inventory_client.h"
 #include "../common/oc2_knife_icons.h"
 #include "../common/oc2_display_names.h"
+#include "../common/oc2_crosshair.h"
 #include "hud/unicode_labels.h"
 #include "view_ads.h"
 #include "cvardef.h"
@@ -54,6 +55,20 @@ WEAPON *gpLastSel;		// Last weapon menu selection
 client_sprite_t *GetSpriteList(client_sprite_t *pList, const char *psz, int iRes, int iCount);
 
 WeaponsResource gWR;
+extern "C" int HUD_GetBobWeaponState(int *,int *,int *,float *,float *,int *,int *);
+extern "C" float HUD_GetCrosshairRecoil();
+namespace
+{
+oc2_crosshair::OldState crosshairOld;
+oc2_crosshair::Input crosshairInput;
+void CrosshairDump()
+{
+ const auto c=oc2_crosshair::ReadConfig([](const char *key){return gEngfuncs.pfnGetCvarFloat(key);});
+ const auto r=oc2_crosshair::Build(c,crosshairInput);
+ gEngfuncs.Con_Printf("oc2_crosshair: style=%d size=%.3f thickness=%.3f gap=%.3f color=%d rgba=%d/%d/%d/%d dot=%d t=%d outline=%d spread=%.6f old_gap=%.4f rects=%u\n",
+  c.style,c.size,c.thickness,c.gap,c.color,c.r,c.g,c.b,c.alpha,int(c.dot),int(c.t),int(c.drawOutline),crosshairInput.spread,crosshairInput.oldGap,unsigned(r.size()));
+}
+}
 
 namespace
 {
@@ -336,6 +351,9 @@ int CHudAmmo::Init(void)
 	HOOK_COMMAND(gHUD.m_Ammo, "autobuy", Autobuy);
 	gEngfuncs.pfnAddCommand("weapon_feedback_dump", WeaponFeedbackDump);
 	gEngfuncs.pfnAddCommand("weapon_hud_layout_dump", WeaponHudLayoutDump);
+	gEngfuncs.pfnAddCommand("oc2_crosshair_dump", CrosshairDump);
+	for(const auto &v:oc2_crosshair::variables)
+		if(!gEngfuncs.pfnGetCvarPointer(v.name))CVAR_CREATE(v.name,v.value,FCVAR_ARCHIVE);
 
 	Reset();
 
@@ -1734,6 +1752,10 @@ void CHudAmmo::DrawCrosshair( int weaponId )
 
 void CHudAmmo::DrawCrosshair()
 {
+	// GoldSrc's Crosshair message is a legacy observer indicator; ReGameDLL
+	// also sends zero on unrelated HUD transitions and does not re-enable it
+	// at spawn. Weapon visibility is governed by HideWeapon/ADS above.
+	if(!gEngfuncs.pfnGetCvarFloat("crosshair"))return;
 	if( g_iUser1 && g_iUser1 != OBS_IN_EYE )
 		return;
 
@@ -1753,6 +1775,37 @@ void CHudAmmo::DrawCrosshair()
 
 	if ( g_iWeaponFlags & WPNSTATE_SHIELD_DRAWN )
 		return;
+	{
+		const auto config=oc2_crosshair::ReadConfig([](const char *key){return gEngfuncs.pfnGetCvarFloat(key);});
+		auto &in=crosshairInput;in=oc2_crosshair::Input();
+		in.width=ScreenWidth*gHUD.m_flScale;in.height=ScreenHeight*gHUD.m_flScale;
+		in.centerX=in.width*.5f;in.centerY=in.height*.5f;in.fov=gHUD.m_iFOV;
+		in.speed=g_flPlayerSpeed;in.grounded=(g_iPlayerFlags&FL_ONGROUND)!=0;in.ducked=(g_iPlayerFlags&FL_DUCKING)!=0;
+		in.weaponGap=weaponid>0&&weaponid<=30?Distances[weaponid-1][0]:4;
+		int id=0,shots=g_iShotsFired;float spread=0;
+		if(!g_iUser1&&HUD_GetBobWeaponState(&id,nullptr,nullptr,nullptr,&spread,nullptr,nullptr)&&id==weaponid)in.spread=spread;
+		else
+		{
+			// A remote target has no local prediction history. Never reuse the
+			// previous owner's spread when entering or switching observation.
+			in.spread=0;
+			if(g_iUser1){const auto *target=gEngfuncs.GetEntityByIndex(g_iUser2);if(target){in.speed=target->curstate.velocity.Length2D();in.grounded=target->curstate.onground!=0;in.ducked=target->curstate.usehull!=0;}}
+		}
+		in.oldGap=oc2_crosshair::OldGap(crosshairOld,gEngfuncs.GetClientTime(),shots,weaponid,g_iUser1?g_iUser2:0,
+			config.weaponGap?in.weaponGap:4,HUD_GetCrosshairRecoil());
+		gEngfuncs.pTriAPI->Brightness(1);
+		gEngfuncs.pTriAPI->CullFace(TRI_NONE);
+		gRenderAPI.GL_SelectTexture(0);gRenderAPI.GL_Bind(0,gHUD.m_WhiteTex);
+		for(const auto &rect:oc2_crosshair::Build(config,in))
+		{
+			gEngfuncs.pTriAPI->RenderMode(rect.additive?kRenderTransAdd:kRenderTransTexture);
+			gEngfuncs.pTriAPI->Color4f(rect.r/255.f,rect.g/255.f,rect.b/255.f,rect.a/255.f);
+			DrawUtils::Draw2DQuad(rect.x,rect.y,rect.x+rect.w,rect.y+rect.h);
+		}
+		gEngfuncs.pTriAPI->RenderMode(kRenderNormal);
+		gEngfuncs.pTriAPI->CullFace(TRI_FRONT);
+		return;
+	}
 
 	if ( weaponid <= 30 )
 	{

@@ -620,11 +620,26 @@ CHud :: ~CHud()
 
 extern void V_ResetViewModelEffects();
 
+static void OC2_PrecacheCombatDecals()
+{
+	if(!gEngfuncs.pEfxAPI||!gEngfuncs.pEfxAPI->Draw_DecalIndexFromName||!gEngfuncs.pEfxAPI->Draw_DecalIndex)return;
+	// Resolve the small combat decal set while the level is loading. The first
+	// shot must not synchronously search the image paths and load a WAD texture.
+	const char *names[]={"{shot1","{shot2","{shot3","{shot4","{shot5","{break1","{break2","{break3","{bproof1",
+		"{blood1","{blood2","{blood3","{blood4","{blood5","{blood6","{scorch1","{scorch2","{scorch3"};
+	for(const char *name:names)
+	{
+		const int index=gEngfuncs.pEfxAPI->Draw_DecalIndexFromName(const_cast<char *>(name));
+		if(index>0)gEngfuncs.pEfxAPI->Draw_DecalIndex(index);
+	}
+}
+
 void CHud :: VidInit( void )
 {
 	V_ResetViewModelEffects();
 	OC2_AccessoriesVidInit();
 	OC2_InventoryVidInit();
+	OC2_PrecacheCombatDecals();
 	static bool firstinit = true;
 	m_scrinfo.iSize = sizeof( m_scrinfo );
 	GetScreenInfo( &m_scrinfo );

@@ -93,7 +93,7 @@ bool ReadStudioTriangles(const StudioTriangleCache& cache, int body, int skin,
 bool ReadStudioTriangles(const studiohdr_t* header, int body, int skin,
                          const float (*poseMatrices)[3][4], std::vector<Triangle>& out,
                           bool append = false, const std::vector<int>* allowedBones = nullptr);
-bool BuildMountCache(const studiohdr_t* header, MountCache& out);
+bool BuildMountCache(const studiohdr_t* header, MountCache& out,const studiohdr_t* orientationHeader=nullptr);
 // Maximum actual part-vertex departure from its bind socket in receiver space.
 // Measures geometry only; no sequence, timing or collision-gap classification.
 bool BoneSocketDisplacement(const MountCache& cache,int receiver,int part,

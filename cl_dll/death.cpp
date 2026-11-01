@@ -30,6 +30,7 @@
 #include "weapon_hud_layout.h"
 #include "hud_readability.h"
 #include "oc2_ragdoll.h"
+#include "death_notice_extra.h"
 #include "hud/unicode_labels.h"
 #include "../common/oc2_knife_icons.h"
 #include <cmath>
@@ -48,8 +49,8 @@ struct DeathNoticeItem {
 	float *VictimColor;
 	int iHeadShotId;
 	int killerTeam, victimTeam;
-	bool localKiller, localVictim;
-	int killerIndex, victimIndex;
+	bool localKiller, localVictim, localAssister;
+	int killerIndex, victimIndex, assisterIndex;
 	char weaponResource[64]; // fixed directory plus an ASCII-validated resource name
 };
 
@@ -100,14 +101,26 @@ match_ui::Color NoticeNameColor(int team)
 	return match_ui::Color(190,190,190,255);
 }
 
+void NoticeBorder(float x, float y, float width, float height, const DeathNoticeItem& item, int alpha)
+{
+	if (!(item.localKiller || item.localVictim || item.localAssister)) return;
+	const int left = max(0, int(x)), top = max(0, int(y));
+	const int right = min(ScreenWidth, int(x)+int(width)), bottom = min(ScreenHeight, int(y)+int(height));
+	const int w = right-left, h = bottom-top;
+	if (w <= 0 || h <= 0) return;
+	const int edge = min(min(w,h), max(1,int(2.0f*match_ui::Scale()+0.5f)));
+	// Inset strokes use the existing row rectangle; names and adjacent rows keep their positions.
+	FillRGBABlend(left,top,w,edge,220,53,61,alpha);
+	FillRGBABlend(left,bottom-edge,w,edge,220,53,61,alpha);
+	FillRGBABlend(left,top,edge,h,220,53,61,alpha);
+	FillRGBABlend(right-edge,top,edge,h,220,53,61,alpha);
+}
+
 void NoticeBackground(float x, float y, float width, float height, const DeathNoticeItem& item, int alpha)
 {
-	// The shipped killbg/deathbg pictures contain blue/orange RGB, rather
-	// than a neutral mask. Use the reference's black translucent panel.
-	// CSGO's local involvement remains visible through the darker panel;
-	// no bright team stripe competes with the white weapon silhouette.
-	const int opacity = item.localKiller || item.localVictim ? 235 : 215;
+	const int opacity = item.localKiller || item.localVictim || item.localAssister ? 235 : 215;
 	FillRGBABlend((int)x,(int)y,(int)width,(int)height,0,0,0,opacity*alpha/255);
+	NoticeBorder(x,y,width,height,item,alpha);
 }
 
 bool NoticeIconFlips(const char *path)
@@ -171,8 +184,9 @@ void DeathNoticeDump()
 	for (int i=0;i<MAX_DEATHNOTICES && rgDeathNoticeList[i].iId;++i)
 	{
 		const auto &item=rgDeathNoticeList[i];
-		gEngfuncs.Con_Printf("deathnotice: index=%d killer=%d victim=%d local_killer=%d local_victim=%d path=%s sprite=%d expires=%.3f\n",
-			i,item.killerIndex,item.victimIndex,int(item.localKiller),int(item.localVictim),item.weaponResource,item.iId,item.flDisplayTime);
+		gEngfuncs.Con_Printf("deathnotice: index=%d killer=%d victim=%d local_killer=%d local_victim=%d assister=%d local_assister=%d border=%d path=%s sprite=%d expires=%.3f\n",
+			i,item.killerIndex,item.victimIndex,int(item.localKiller),int(item.localVictim),item.assisterIndex,int(item.localAssister),
+			int(item.localKiller || item.localVictim || item.localAssister),item.weaponResource,item.iId,item.flDisplayTime);
 	}
 }
 
@@ -273,6 +287,7 @@ void DrawSpectatorNotice(const DeathNoticeItem& item, int row, int skull, int he
 	if (x < 0 || y+height > ScreenHeight) return;
 	const int alpha = int(255.0f*kill_feedback::NoticeOpacity(time,item.flDisplayTime));
 	FillRGBABlend(int(x),int(y),int(width),int(height),0,0,0,180*alpha/255);
+	NoticeBorder(x,y,width,height,item,alpha);
 	match_ui::Color killerColor = TeamColor(item.killerTeam), victimColor = TeamColor(item.victimTeam);
 	killerColor.a = victimColor.a = alpha;
 	const match_ui::Color iconColor(255,255,255,alpha);
@@ -338,7 +353,7 @@ void DrawKillCard(float time)
 	color.b += (int)((255-color.b)*flash);
 	using namespace weapon_hud_layout;
 	static_assert(cardBottomMargin >= 80.0f, "Keep card numerals above the bottom emblem");
-	const float cardTop = ScreenHeight-(cardAlphaBottom[group-1]*cardSourceScale+cardBottomMargin)*scale;
+	const float cardTop = CardTop(group, ScreenHeight, scale);
 	if (texture) match_ui::Picture(texture,center-cardWidth*scale*0.5f,cardTop,cardWidth*scale,cardHeight*scale,color);
 	else
 	{
@@ -374,8 +389,7 @@ void HUD_KillFeedbackDump()
 	gEngfuncs.Con_Printf("killcardlayout: width=%.3f height=%.3f x=%.3f y=%.3f scale=%.5f frame=%d\n",
 		weapon_hud_layout::cardWidth*scale,weapon_hud_layout::cardHeight*scale,
 		(ScreenWidth-weapon_hud_layout::cardWidth*scale)*0.5f,
-		ScreenHeight-(weapon_hud_layout::cardAlphaBottom[max(0,min(s_KillFeedback.round_kills,5)-1)]
-			*weapon_hud_layout::cardSourceScale+weapon_hud_layout::cardBottomMargin)*scale,
+		weapon_hud_layout::CardTop(s_KillFeedback.round_kills, ScreenHeight, scale),
 		gHUD.m_flScale,kill_feedback::CardFrame(s_KillFeedback,gHUD.m_flTime));
 }
 
@@ -600,6 +614,7 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	rgDeathNoticeList[i] = DeathNoticeItem();
 	rgDeathNoticeList[i].killerIndex = killer;
 	rgDeathNoticeList[i].victimIndex = victim;
+	rgDeathNoticeList[i].assisterIndex = oc2_death_notice::Assister(pbuf,iSize);
 	// Resource alias only: retain the original event weapon name for kill state.
 	const char *resourceName = !strcmp(weaponName,"mp5navy") || !strcmp(weaponName,"mp5") ? "mp7" : weaponName;
 	if (!strcmp(resourceName,"taser")) resourceName = "zeus";
@@ -677,8 +692,10 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 		rgDeathNoticeList[i].bTeamKill = true;
 	const cl_entity_t *localPlayer = gEngfuncs.GetLocalPlayer();
 	const int localIndex = localPlayer ? localPlayer->index : 0;
-	rgDeathNoticeList[i].localKiller = localIndex == killer && killer != victim;
-	rgDeathNoticeList[i].localVictim = localIndex == victim;
+	const bool validLocal = localIndex >= 1 && localIndex <= MAX_PLAYERS;
+	rgDeathNoticeList[i].localKiller = validLocal && localIndex == killer && killer != victim;
+	rgDeathNoticeList[i].localVictim = validLocal && localIndex == victim;
+	rgDeathNoticeList[i].localAssister = validLocal && localIndex == rgDeathNoticeList[i].assisterIndex;
 	kill_feedback::Event event;
 	event.time = gHUD.m_flTime; event.local = localIndex; event.killer = killer; event.victim = victim;
 	event.killer_team = rgDeathNoticeList[i].killerTeam;
@@ -705,7 +722,7 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	if (!std::isfinite(lifetime)) lifetime = 6.0f;
 	lifetime = max(0.0f,lifetime);
 	// CSGO csgo_huddeathnotice.cpp:536 extends local killer/victim notices.
-	if (match_ui::Enabled() && (rgDeathNoticeList[i].localKiller || rgDeathNoticeList[i].localVictim)) lifetime *= 1.5f;
+	if (match_ui::Enabled() && (rgDeathNoticeList[i].localKiller || rgDeathNoticeList[i].localVictim || rgDeathNoticeList[i].localAssister)) lifetime *= 1.5f;
 	const float fadeTime = match_ui::Enabled() && lifetime > 0.0f ? 1.0f : 0.0f;
 	rgDeathNoticeList[i].flDisplayTime = gHUD.m_flTime + lifetime + fadeTime;
 	if (confirmedKill) HUD_KillFeedbackDump();

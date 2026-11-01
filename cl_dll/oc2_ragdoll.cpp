@@ -1,4 +1,5 @@
 #include "hud.h"
+#include "oc2_cold_perf.h"
 #include "cl_util.h"
 #include "const.h"
 #include "pm_defs.h"
@@ -1526,6 +1527,7 @@ static void Advance(Body &body, double now)
 
 void OC2_RagdollTick(double clientTime)
 {
+    OC2ColdTimer cold("ragdoll_tick","bodies");
     double now = clientTime;
     if (IEngineStudio.GetTimes) IEngineStudio.GetTimes(NULL, &now, NULL);
     for (int i = 0; i < 64; ++i)
@@ -1543,6 +1545,7 @@ void OC2_RagdollTick(double clientTime)
 
 void OC2_RagdollApply(CStudioModelRenderer &renderer)
 {
+    OC2ColdTimer cold("ragdoll_apply",renderer.m_pRenderModel?renderer.m_pRenderModel->name:nullptr);
     cl_entity_t *entity = renderer.m_pCurrentEntity;
     if (!entity || !entity->curstate.iuser4) return;
     Body *body = NULL;

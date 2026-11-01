@@ -1,5 +1,6 @@
 #pragma once
 #include "hud.h"
+#include "oc2_cold_perf.h"
 #include "match_ui.h"
 #include "cl_dll/IGameMenuExports.h"
 #include "utflib.h"
@@ -34,6 +35,8 @@ inline HFont LabelFont(float height,int weight=500)
     // requested size is the cache key; comparing it to that padded height
     // would rebuild every glyph atlas on every label of every frame.
     if(found!=fonts.end())return found->second;
+    const std::string description=std::to_string(pixels)+"/"+std::to_string(weight);
+    OC2ColdTimer cold("hud_font",description.c_str());
     CFontBuilder builder("Microsoft YaHei UI",pixels,weight);
     return fonts[key]=g_pMenu->BuildFont(builder);
 }

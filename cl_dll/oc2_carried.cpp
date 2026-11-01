@@ -442,6 +442,7 @@ void OC2_InventoryDrawCarried(CStudioModelRenderer &renderer,const entity_state_
   RememberDraw(player->number,item.weapon,item.serial,knife||pistol?"Pelvis":"Spine2",model,
    knife?"blade":"muzzle",direction);
   if(!knife)OC2_DrawWorldStickers(renderer,model,'c',player->number,item.serial,lightdir);
+  if(!knife)OC2_DrawWorldAccessories(renderer,model,player->number,item.serial,lighting,lightdir);
   *renderer.m_pCurrentEntity=savedEntity;renderer.m_pStudioHeader=savedHeader;renderer.m_pRenderModel=savedModel;
   renderer.m_pBodyPart=savedPart;renderer.m_pSubModel=savedSub;
   memcpy(*renderer.m_pbonetransform,savedBones,header->numbones*sizeof(savedBones[0]));

@@ -13,6 +13,7 @@
 *
 ****/
 #include "hud.h"
+#include "oc2_cold_perf.h"
 #include "cl_util.h"
 #include "const.h"
 #include "entity_state.h"
@@ -48,6 +49,7 @@ extern float g_flRoundTime;
 
 char EV_HLDM_PlayTextureSound( int idx, pmtrace_t *ptr, const Vector &vecSrc, const Vector &vecEnd, int iBulletType, bool& isSky )
 {
+	OC2ColdTimer cold("bullet_material","texture_sound");
 	// hit the world, try to play sound based on texture material type
 	char chTextureType = CHAR_TEX_CONCRETE;
 	float fvol;
@@ -246,6 +248,7 @@ char *EV_HLDM_DamageDecal( physent_t *pe )
 
 void EV_HLDM_GunshotDecalTrace( pmtrace_t *pTrace, char *decalName, char chTextureType )
 {
+	OC2ColdTimer cold("bullet_decal",decalName);
 	int iRand;
 	physent_t *pe;
 
@@ -456,6 +459,7 @@ TEMPENTITY *EV_CS16Client_CreateSmoke( ESmoke type, Vector origin, Vector dir,
 
 void EV_HLDM_DecalGunshot(pmtrace_t *pTrace, int iBulletType, float scale, int r, int g, int b, bool bCreateWallPuff, bool bCreateSparks, char cTextureType, bool isSky)
 {
+	OC2ColdTimer cold("bullet_impact","decal_sparks_smoke");
 	physent_t *pe;
 
 	if( isSky )

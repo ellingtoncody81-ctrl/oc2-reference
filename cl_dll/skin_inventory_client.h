@@ -7,6 +7,9 @@ struct model_s;
 struct alight_s;
 namespace oc2_gloves { struct Entry; }
 void OC2_InventoryInit();
+void OC2_InventoryShutdown();
+void OC2_WorldAccessoriesInit();
+void OC2_WorldAccessoriesReset();
 void OC2_InventoryVidInit();
 void OC2_InventoryFrame();
 void OC2_InventoryResetSession();
@@ -15,6 +18,9 @@ int OC2_InventoryPlayerKnifeDefinition(int player);
 float OC2_InventoryKnifeDuration(int animation,float fallback);
 bool OC2_InventoryOwnAccessories(int weapon);
 bool OC2_InventoryInstanceAccessories(int weapon,oc2_accessories::WeaponConfig &config,unsigned &count);
+bool OC2_InventoryWorldAccessories(model_s *model,int player,int serial,int entity,oc2_accessories::WeaponConfig &config,unsigned &count,int &pattern,int &instance);
+int OC2_LegacyCharmTexture(int sticker);
+void OC2_DrawWorldAccessories(CStudioModelRenderer &renderer,model_s *model,int player,int serial,alight_s &lighting,float *lightdir);
 void OC2_InventoryPublishAccessories(int weapon,const oc2_accessories::WeaponConfig &config,unsigned count);
 model_s *OC2_InventoryPlayerModel(model_s *model,int player);
 // Returns 0 for legacy customization, -1 for removal, or the local pattern ID.

@@ -43,6 +43,25 @@ PreviewAPI *API()
     auto *api=static_cast<PreviewAPI *>(EngFuncs::textfuncs.pfnGetNativeObject("OC2ModelPreview002"));
     return api&&api->version==2?api:nullptr;
 }
+struct ThumbnailAPI
+{
+    unsigned version;
+    int (*Draw)(unsigned,int,int,int,int);
+    int (*Render)(unsigned,const ref_viewpass_t *);
+    void (*Release)(unsigned);
+    void (*Stats)();
+};
+ThumbnailAPI *Thumbnails()
+{
+    if(!EngFuncs::textfuncs.pfnGetNativeObject)return nullptr;
+    auto *api=static_cast<ThumbnailAPI *>(EngFuncs::textfuncs.pfnGetNativeObject("OC2Thumbnail001"));
+    return api&&api->version==1?api:nullptr;
+}
+unsigned thumbnailKey=0;
+float thumbnailFrame=-1;
+unsigned thumbnailBuilds=0;
+std::vector<CMenuPanoramaModelView *> previewViews;
+unsigned geometryUse=0,resourceReleases=0;
 void RotationZ(float degrees,float matrix[3][3])
 {
     const float s=std::sin(degrees*kRadians),c=std::cos(degrees*kRadians);
@@ -259,6 +278,8 @@ struct Geometry
         std::vector<std::array<float,3>> points;
     };
     studiohdr_t *header=nullptr;
+    unsigned used=0;
+    float usedFrame=-1;
     geo::StudioTriangleCache mesh;
     std::vector<geo::BindMatrix> bind;
     BoneValues knifePose;
@@ -278,9 +299,18 @@ Geometry *Mesh(const std::string &path,cl_entity_t &entity,bool knife=false)
     if(!header)return nullptr;
     // The same MDL may also be used outside a knife thumbnail. Its reference
     // cache and its sampled idle pose must never share bounds or mount data.
-    auto &entry=geometries[knife?path+"#knife_idle":path];
+    const std::string key=knife?path+"#knife_idle":path;
+    if(!geometries.count(key)&&geometries.size()>=16)
+    {
+        auto oldest=geometries.end();
+        for(auto i=geometries.begin();i!=geometries.end();++i)
+            if(i->second&&i->second->usedFrame!=gpGlobals->time&&(oldest==geometries.end()||i->second->used<oldest->second->used))oldest=i;
+        if(oldest!=geometries.end()){CMenuPanoramaModelView::InvalidateGeometry(oldest->second.get());geometries.erase(oldest);}
+    }
+    auto &entry=geometries[key];
     if(!entry||entry->header!=header)
     {
+        if(entry)CMenuPanoramaModelView::InvalidateGeometry(entry.get());
         entry.reset(new Geometry);entry->header=header;
         entry->xm1014=path=="models/v_xm1014.mdl"&&!knife;
         entry->valid=geo::DecodeStudioTriangles(header,entry->mesh)&&
@@ -288,6 +318,7 @@ Geometry *Mesh(const std::string &path,cl_entity_t &entity,bool knife=false)
             Bind(header,entry->bind,knife?&entry->knifePose:nullptr);
         if(entry->valid)geo::BuildMountCache(header,entry->mounts);
     }
+    entry->used=++geometryUse;entry->usedFrame=gpGlobals->time;
     return entry->valid?entry.get():nullptr;
 }
 const char *WeaponModel(int weapon)
@@ -858,6 +889,21 @@ int OC2_PreviewAppearance::Swaps() const
 
 struct CMenuPanoramaModelView::Scene
 {
+    unsigned cacheKey=++thumbnailKey;
+    std::uint64_t cacheSignature=0;
+    std::uint64_t Signature(int w,int h) const
+    {
+        std::uint64_t result=resources.signature;
+        const auto add=[&](double n){const auto value=static_cast<std::int64_t>(n*1000000.0);result^=std::uint64_t(value);result*=1099511628211ULL;};
+        for(int n:{w,h,mode,weapon,definition,skin,glove,accessoryRegion,appearance.charm})add(n);
+        for(int n:appearance.stickers)add(n);
+        for(double n:{double(yaw),double(pitch),double(zoom),double(accessories.stattrak),double(accessories.charm),
+            double(accessories.statU),double(accessories.statV),double(accessories.charmU),double(accessories.charmV),
+            double(accessories.length),double(accessories.sticker),double(previewCount),double(overridePreview)})add(n);
+        const int index=oc2_accessories::Index(weapon);if(index>=0)add(resources.counts.values[index]);
+        for(unsigned char c:previewPattern){result^=c;result*=1099511628211ULL;}
+        return result;
+    }
     int mode=1,team=2,weapon=28,definition=0,skin=0,glove=0,accessoryRegion=-1;
     oc2_inventory::WeaponState appearance;
     oc2_accessories::WeaponConfig accessories;
@@ -889,10 +935,28 @@ struct CMenuPanoramaModelView::Scene
 };
 CMenuPanoramaModelView::CMenuPanoramaModelView():m_scene(new Scene)
 {
+    previewViews.push_back(this);
     eFocusAnimation=QM_HIGHLIGHTIFFOCUS;
     SetWeapon(28);
 }
-CMenuPanoramaModelView::~CMenuPanoramaModelView(){delete m_dualView;delete m_scene;}
+CMenuPanoramaModelView::~CMenuPanoramaModelView(){previewViews.erase(std::remove(previewViews.begin(),previewViews.end(),this),previewViews.end());if(auto *api=Thumbnails())api->Release(m_scene->cacheKey);delete m_dualView;delete m_scene;}
+void CMenuPanoramaModelView::InvalidateGeometry(const void *geometry)
+{
+    for(auto *view:previewViews)if(view->m_scene->geometry==geometry)
+    {view->m_scene->geometry=nullptr;view->m_scene->projectionValid=false;}
+}
+void CMenuPanoramaModelView::ReleaseResources()
+{
+    if(geometries.empty()&&textures.empty())return;
+    auto *thumbnails=Thumbnails();auto *api=API();
+    for(auto *view:previewViews)
+    {
+        auto &scene=*view->m_scene;scene.geometry=nullptr;scene.projectionValid=false;scene.lastDrawSucceeded=false;
+        if(thumbnails)thumbnails->Release(scene.cacheKey);
+    }
+    if(api)for(const auto &t:textures)if(api->OwnTexture(t.second.handle,t.first.c_str()))api->FreeTexture(t.second.handle);
+    textures.clear();geometries.clear();++resourceReleases;
+}
 void CMenuPanoramaModelView::SetLobby(int team,int weaponId)
 {m_scene->mode=0;m_scene->team=team==1?1:2;m_scene->weapon=weaponId;}
 void CMenuPanoramaModelView::SetWeapon(int weaponId,int skinId)
@@ -1012,6 +1076,8 @@ void CMenuPanoramaModelView::ReloadConfiguration()
 void CMenuPanoramaModelView::ResetView(){m_scene->yaw=m_scene->pitch=0;m_scene->zoom=1;m_scene->dragging=false;}
 void CMenuPanoramaModelView::Dump(const char *tag) const
 {
+    Con_Printf("oc2_preview_resources: geometry=%u texture=%u releases=%u\n",unsigned(geometries.size()),unsigned(textures.size()),resourceReleases);
+    if(auto *api=Thumbnails())api->Stats();
     const Scene &scene=*m_scene;
     Con_Printf("oc2_panorama_model: tag=%s mode=%d weapon=%d knife=%d glove=%d skin=%d draw_success=%d viewport=%d/%d/%d/%d model_type=%d material_swaps=%d accessory_entities=%d yaw=%.3f pitch=%.3f zoom=%.3f model=%s pose=%s pose_sequence=%d\n",
         tag?tag:"none",scene.mode,scene.weapon,scene.definition,scene.glove,scene.mode==0?0:scene.skin,
@@ -1033,6 +1099,18 @@ void CMenuPanoramaModelView::Draw(){DrawAt(m_scPos.x,m_scPos.y,m_scSize.w,m_scSi
 bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
 {
     Scene &scene=*m_scene;scene.x=x;scene.y=y;scene.width=width;scene.height=height;scene.dualSingle=false;
+    static auto *cacheEnabled=EngFuncs::CvarRegister("ui_inventory_thumbnails","1",0);
+    auto *thumbnail=!scene.interactive&&scene.mode!=0&&!scene.dualUnfold&&cacheEnabled&&cacheEnabled->value!=0?Thumbnails():nullptr;
+    if(thumbnail&&gpGlobals&&width>0&&height>0)
+    {
+        const auto signature=scene.Signature(width,height);
+        if(signature!=scene.cacheSignature){thumbnail->Release(scene.cacheKey);scene.cacheSignature=signature;}
+        if(thumbnail->Draw(scene.cacheKey,x,y,width,height)){scene.lastDrawSucceeded=true;return true;}
+        if(thumbnailFrame!=gpGlobals->time){thumbnailFrame=gpGlobals->time;thumbnailBuilds=0;}
+        // Spread cold page construction over frames so input keeps responding.
+        if(thumbnailBuilds>=2)return false;
+        ++thumbnailBuilds;
+    }
     if(scene.dualUnfold&&scene.mode==1&&scene.weapon==10&&width>=2&&height>0&&
         gpGlobals&&!scene.rendering&&x>=0&&y>=0&&x+width<=gpGlobals->scrWidth&&y+height<=gpGlobals->scrHeight)
     {
@@ -1279,7 +1357,7 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         {pattern=Texture(std::string(oc2_accessories::kStickerDirectory)+entry.file,true);break;}
         charmOverride.Replace("charm_sticker.bmp",pattern,true);
     }
-    for(int kind=0;kind<2;++kind)
+    for(int kind=0;scene.interactive&&kind<2;++kind)
     {
         Geometry *attachment=kind?charmGeometry:statGeometry;if(!attachment)continue;
         geo::Mount mount;if(!geo::FindMount(geometry->mounts,kind?config.charmU:config.statU,kind?config.charmV:config.statV,mount))continue;
@@ -1302,7 +1380,8 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     const bool added=EngFuncs::CL_CreateVisibleEntity(ET_NORMAL,&scene.entity)!=0;
     if(drawStat&&EngFuncs::CL_CreateVisibleEntity(ET_NORMAL,&scene.stat))++scene.lastAccessories;
     if(drawCharm&&EngFuncs::CL_CreateVisibleEntity(ET_NORMAL,&scene.charm))++scene.lastAccessories;
-    EngFuncs::RenderScene(&view);scene.rendering=false;
+    if(thumbnail)thumbnail->Render(scene.cacheKey,&view);else EngFuncs::RenderScene(&view);
+    scene.rendering=false;
     scene.lastMaterialSwaps=weaponOverride.SwapCount()+statOverride.SwapCount()+charmOverride.SwapCount();
     scene.lastDrawSucceeded=added;return added;
 }

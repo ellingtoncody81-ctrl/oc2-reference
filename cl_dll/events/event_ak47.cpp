@@ -26,6 +26,7 @@
 *
 */
 #include "events.h"
+#include "oc2_cold_perf.h"
 #include "wpn_shared.h"
 #include "../../dlls/wpn_shared/oc2_weapon_params.h"
 
@@ -52,6 +53,7 @@ void EV_FireAK47( event_args_t *args )
 
 	if ( EV_IsLocal( args->entindex ) )
 	{
+		OC2ColdTimer cold("ak_local","animation_muzzle_shell");
 		++g_iShotsFired;
 		gEngfuncs.pEventAPI->EV_WeaponAnimation(Com_RandomLong(AK47_SHOOT1, AK47_SHOOT3), 2);
 		EV_MuzzleFlash();
@@ -70,9 +72,9 @@ void EV_FireAK47( event_args_t *args )
 	}
 
 
-	EV_EjectBrass(ShellOrigin, ShellVelocity, angles[ YAW ], g_iRShell, TE_BOUNCE_SHELL);
+	{OC2ColdTimer cold("ak_brass","brass");EV_EjectBrass(ShellOrigin, ShellVelocity, angles[ YAW ], g_iRShell, TE_BOUNCE_SHELL);}
 
-	PLAY_EVENT_SOUND( SOUNDS_NAME[Com_RandomLong(0, 1)] );
+	{OC2ColdTimer cold("ak_sound","sound");PLAY_EVENT_SOUND( SOUNDS_NAME[Com_RandomLong(0, 1)] );}
 
 	EV_GetGunPosition( args, vecSrc, origin );
 	VectorCopy( forward, vecAiming );

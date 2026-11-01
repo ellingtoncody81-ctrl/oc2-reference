@@ -1602,7 +1602,10 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 			playerGloves.Draw(lighting,dir);
 		}
 		if (!bIsViewModel)
+		{
 			OC2_DrawWorldStickers(*this,m_pRenderModel,'w',0,0,dir);
+			OC2_DrawWorldAccessories(*this,m_pRenderModel,0,0,lighting,dir);
+		}
 		if (bIsViewModel)
 		{
 			bool shield;
@@ -1904,6 +1907,7 @@ int CStudioModelRenderer::StudioDrawPlayer(int flags, entity_state_t *pplayer)
 				StudioRenderModel(dir);
 			}
 			OC2_DrawWorldStickers(*this,pweaponmodel,'p',pplayer->number,0,dir);
+			OC2_DrawWorldAccessories(*this,pweaponmodel,pplayer->number,0,lighting,dir);
 
 			StudioCalcAttachments();
 

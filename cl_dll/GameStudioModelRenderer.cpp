@@ -999,6 +999,7 @@ int CGameStudioModelRenderer::_StudioDrawPlayer(int flags, entity_state_t *pplay
 				StudioRenderModel(dir);
 			}
 			OC2_DrawWorldStickers(*this,pweaponmodel,'p',pplayer->number,0,dir);
+			OC2_DrawWorldAccessories(*this,pweaponmodel,pplayer->number,0,lighting,dir);
 
 			StudioCalcAttachments();
 

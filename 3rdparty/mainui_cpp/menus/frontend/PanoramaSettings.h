@@ -48,6 +48,9 @@ private:
     void PaintRow(Row &row);
     void Save();
     void Revert();
+    void CrosshairDefaults();
+    void CrosshairDemo(CMenuBaseItem *item);
+    void PaintCrosshair();
     void Back();
     void OpenDisplay();
     void CycleDisplayMode(int direction=1);
@@ -61,7 +64,8 @@ private:
     void Remember(const char *name);
     static const Setting *Definitions(int &count);
     void Button(CMenuAction &item,const char *label,const char *tag);
-    CMenuAction m_tabs[4],m_back,m_save,m_revert,m_up,m_down;
+    CMenuAction m_tabs[5],m_back,m_save,m_revert,m_up,m_down,m_crosshairDefaults,m_crosshairDemo[3];
+    int m_crosshairDemoMode=0;
     CMenuAction m_displayMode,m_displayWindow,m_displayApply,m_displayCancel;
     Row m_rows[9];
     char m_rowTags[9][32];

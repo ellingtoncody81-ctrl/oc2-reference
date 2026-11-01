@@ -4,6 +4,7 @@
 #include "triangleapi.h"
 #include "render_api.h"
 #include "match_ui.h"
+#include "oc2_cold_perf.h"
 
 #include <cmath>
 #include <cstdio>
@@ -174,6 +175,7 @@ int Texture(const char *path)
 	const auto cached = s_textures.find(path);
 	if (cached != s_textures.end()) return cached->second;
 	if (s_textures.size() >= 256) return 0;
+	OC2ColdTimer cold("hud_texture",path);
 	const int texture = gRenderAPI.GL_LoadTexture(path, nullptr, 0, TF_NOMIPMAP | TF_CLAMP);
 	s_textures[path] = texture;
 	return texture;
@@ -206,6 +208,7 @@ hud_icon::Bounds SilhouetteBounds(const char *path)
 	if (!texture) return {};
 	const auto found = s_silhouettes.find(path);
 	if (found != s_silhouettes.end()) return found->second;
+	OC2ColdTimer cold("hud_bounds",path);
 	hud_icon::Bounds bounds;
 	int bytes = 0;
 	if (gEngfuncs.COM_LoadFile && gEngfuncs.COM_FreeFile)

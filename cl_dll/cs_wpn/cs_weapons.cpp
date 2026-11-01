@@ -119,6 +119,13 @@ static float OC2_DisplaySpread(CBasePlayerWeapon *weapon)
     return sample.inaccuracy+params.spread[mode];
 }
 
+extern "C" float HUD_GetCrosshairRecoil()
+{
+ auto *weapon=static_cast<CBasePlayerWeapon *>(player.m_pActiveItem);
+ oc2_weapon::Kind kind;
+ if(!weapon||!OC2_GunKind(weapon->m_iId,kind))return 3.5f;
+ return oc2_weapon::Get(kind).recoilMagnitude[oc2_weapon::Mode(weapon->m_iId,weapon->m_iWeaponState,player.pev->fov)];
+}
 extern "C" int HUD_GetBobWeaponState( int *id, int *shots_fired, int *in_reload, float *max_speed, float *accuracy, int *weapon_state, int *clip )
 {
 	CBasePlayerWeapon *pWeapon = static_cast<CBasePlayerWeapon *>( player.m_pActiveItem );

@@ -9,6 +9,8 @@ class CMenuPanoramaModelView : public CMenuBaseItem
 public:
     CMenuPanoramaModelView();
     ~CMenuPanoramaModelView() override;
+    static void ReleaseResources();
+    static void InvalidateGeometry(const void *geometry);
     void SetLobby(int team,int weaponId=28);
     void SetWeapon(int weaponId,int skinId=0);
     void SetKnife(int definition,int skinId=0);

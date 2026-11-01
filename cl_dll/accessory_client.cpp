@@ -12,6 +12,7 @@
 #include "accessory_client.h"
 #include "skin_inventory_client.h"
 #include "accessory_geometry.h"
+#include "oc2_cold_perf.h"
 #include "accessory_swing_path.h"
 #include "accessory_mount_contact.h"
 #include <algorithm>
@@ -96,21 +97,26 @@ bool LoadText(const char *path,std::string &text,int maximum,bool *exists=nullpt
 }
 void ReadSettings(double time,bool force=false)
 {
+ static const cvar_t *configPoll=nullptr;
+ if(!configPoll)configPoll=gEngfuncs.pfnGetCvarPointer("cl_oc2_config_poll");
+ if(!force&&configPoll&&configPoll->value==0)return;
  if(!force&&time>=lastTime&&time<nextRead)return;
  lastTime=time;nextRead=time+.25;
+ static std::string parsedSettings,parsedCounts,parsedCatalog;
  std::string text,error;Config candidate;
  if(LoadText(kConfigPath,text,16384))
  {
-  if(ParseConfig(text.c_str(),candidate,error)){settings=candidate;readError=false;}
+  if(!force&&text==parsedSettings){}
+  else if(ParseConfig(text.c_str(),candidate,error)){settings=candidate;readError=false;parsedSettings=text;}
   else if(!readError){gEngfuncs.Con_Printf("accessories: %s\n",error.c_str());readError=true;}
  }
- if(LoadText(kCountsPath,text,4096))
+ if(LoadText(kCountsPath,text,4096)&&(force||text!=parsedCounts))
  {
-  Counts current;if(ParseCounts(text.c_str(),current,error))counters=current;
+  Counts current;if(ParseCounts(text.c_str(),current,error)){counters=current;parsedCounts=text;}
  }
- if(LoadText(kCatalogPath,text,131072))
+ if(LoadText(kCatalogPath,text,131072)&&(force||text!=parsedCatalog))
  {
-  Catalog current;if(ParseCatalog(text.c_str(),current,error))catalog=current;
+  Catalog current;if(ParseCatalog(text.c_str(),current,error)){catalog=current;parsedCatalog=text;}
  }
 }
 int WeaponId(const char *name)
@@ -201,6 +207,7 @@ void Dump()
 void Reload() { nextRead=-1;stickerTextures.clear();ReadSettings(gEngfuncs.GetClientTime(),true); }
 }
 
+int OC2_LegacyCharmTexture(int sticker){ReadSettings(gEngfuncs.GetClientTime());return StickerTexture(sticker);}
 void OC2_AccessoryKill(const char *weapon,int killer,int victim,int killerTeam,int victimTeam)
 {
  const cl_entity_t *local=gEngfuncs.GetLocalPlayer();
@@ -329,6 +336,8 @@ std::map<const studiohdr_t *,geo::StudioTriangleCache> meshes;
 geo::SwingState swing;
 struct Motion
 {
+ unsigned searchCursor=0;
+ double searchRetry=0;
  double time=-1;float anchor[3]{},velocity[3]{};
  int weapon=0;unsigned token=0,revision=0;
  const studiohdr_t *header=nullptr;bool left=false;
@@ -597,7 +606,7 @@ const ContactSample &ContactOnMesh(studiohdr_t *header,const std::array<Matrix,M
  return contactSamples.insert(std::make_pair(header,sample)).first->second;
 }
 void PosePlacement(CStudioModelRenderer &r,studiohdr_t *header,const std::array<Matrix,MAXSTUDIOBONES> &base,
-                   int body,bool charm,bool left,Placement &p,bool localReady=false)
+                   int body,bool charm,bool left,Placement &p,bool localReady=false,bool diagnostics=true)
 {
  p.frame=p.anchorFrame;
  if(!localReady)p.local=base;
@@ -616,6 +625,7 @@ void PosePlacement(CStudioModelRenderer &r,studiohdr_t *header,const std::array<
  Matrix world=FrameMatrix(p.frame);
  for(int i=0;i<header->numbones;++i)p.posed[i]=Product(world,p.local[i]);
  geo::ReadStudioTriangles(Mesh(header),body,0,reinterpret_cast<const float (*)[3][4]>(p.posed.data()),p.triangles,false,true);
+ if(!diagnostics)return;
  for(const auto &triangle:p.triangles)for(const auto &point:triangle.p)
  {
   float d[3];for(int i=0;i<3;++i)d[i]=point[i]-r.m_vRenderOrigin[i];
@@ -675,30 +685,38 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
  }
  const auto pose=[&](geo::SwingOutput angles)
  {
-  Placement p=desired;p.angles=angles;p.foot=motion.foot;
-  PosePlacement(r,header,base,body,true,left,p);return p;
+  Placement p;p.anchorFrame=desired.anchorFrame;p.swingState=desired.swingState;p.angles=angles;p.foot=motion.foot;
+  std::copy(desired.velocity,desired.velocity+3,p.velocity);
+  PosePlacement(r,header,base,body,true,left,p,false,false);return p;
  };
  const auto free=[&](const Placement& p){return CharmFree(p.triangles);};
- const auto fitFoot=[&](Placement& result)
+ const auto seekRest=[&](Placement& result)
  {
-  auto bones=reinterpret_cast<mstudiobone_t *>(reinterpret_cast<byte *>(header)+header->boneindex);
-  int fixedBone=-1;for(int i=0;i<header->numbones;++i)if(!strcmp(bones[i].name,"skin_08"))fixedBone=i;
+  // Continue a bounded search across frames. The old nested search could do
+  // 14,600 complete poses, then repeat all of them on the very next frame.
+  if(r.m_clTime<motion.searchRetry)return false;
+  static const float pitch[]={0,-15,-30,-45,-60,-90,-120,-150,30,60,90,120};
+  static const float yaw[]={0,25,-25,60,-60,100,-100,180,-180};
+  static const float footPitch[]={0,-5,5,-10,10,-20,20,-35,35,-60,60,-75,75,-90,90,-120,120,-150,150,180};
+  static const float footYaw[]={0,-15,15,-30,30,-60,60,-120,120,180};
+  static const float bodyPitch[]={0,-30,-60,-90,-120,-150,60,120};
+  static const float bodyYaw[]={0,-25,25,-60,60,-120,120,180,-180};
   const auto old=motion.foot;
-  for(float footPitch:{0.f,-5.f,5.f,-10.f,10.f,-20.f,20.f,-35.f,35.f,-60.f,60.f,-75.f,75.f,-90.f,90.f,-120.f,120.f,-150.f,150.f,180.f})
-  for(float footYaw:{0.f,-15.f,15.f,-30.f,30.f,-60.f,60.f,-120.f,120.f,180.f})
+  const auto started=std::chrono::steady_clock::now();
+  for(unsigned attempted=0;attempted<32;++attempted)
   {
-   motion.foot.pitch=footPitch;motion.foot.yaw=footYaw;
-   Placement test=pose(geo::SwingOutput());std::vector<geo::Triangle> fixed;
-   for(const auto& t:test.triangles)if(t.bone==fixedBone)fixed.push_back(t);
-   if(!CharmFree(fixed))continue;
-   for(float pitch:{0.f,-30.f,-60.f,-90.f,-120.f,-150.f,60.f,120.f})
+   unsigned cursor=motion.searchCursor++;geo::SwingOutput angles;
+   if(cursor<108){motion.foot=old;angles.pitch=pitch[cursor/9];angles.yaw=yaw[cursor%9];}
+   else
    {
-    for(float yaw:{0.f,-25.f,25.f,-60.f,60.f,-120.f,120.f,180.f,-180.f})
-    {
-     geo::SwingOutput angles;angles.pitch=pitch;angles.yaw=yaw;
-     test=pose(angles);if(free(test)){result=std::move(test);return true;}
-    }
+    cursor-=108;
+    if(cursor>=14400){motion.searchCursor=0;motion.searchRetry=r.m_clTime+.25;break;}
+    const unsigned foot=cursor/72;motion.foot.pitch=footPitch[foot/10];motion.foot.yaw=footYaw[foot%10];
+    angles.pitch=bodyPitch[(cursor%72)/9];angles.yaw=bodyYaw[cursor%9];
    }
+   Placement test=pose(angles);
+   if(free(test)){result=std::move(test);motion.searchCursor=0;motion.searchRetry=0;return true;}
+   if(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count()>=3)break;
   }
   motion.foot=old;return false;
  };
@@ -708,17 +726,7 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
  {
   Placement neutral=pose(geo::SwingOutput());
   bool found=free(neutral);
-  if(!found)for(float pitch:{0.f,-15.f,-30.f,-45.f,-60.f,-90.f,-120.f,-150.f,30.f,60.f,90.f,120.f})
-  {
-   for(float yaw:{0.f,25.f,-25.f,60.f,-60.f,100.f,-100.f,180.f,-180.f})
-   {
-    geo::SwingOutput angles;angles.pitch=pitch;angles.yaw=yaw;
-    Placement test=pose(angles);if(!free(test))continue;
-    neutral=std::move(test);found=true;break;
-   }
-   if(found)break;
-  }
-  if(!found)found=fitFoot(neutral);
+  if(!found)found=seekRest(neutral);
   if(!found){CharmFailure();return desired;}
   motion.bias=neutral.angles;motion.biasReady=true;
   motion.safeLocal=neutral.local;motion.safeAngles=neutral.angles;motion.charmSafe=true;
@@ -742,13 +750,7 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
   };
   if(desiredFree){previous=desired;found=true;}
   else if(seek(motion.bias.pitch,motion.bias.yaw))found=true;
-  if(!found)for(float pitch:{0.f,-15.f,-30.f,-45.f,-60.f,-90.f,-120.f,-150.f,30.f,60.f,90.f,120.f})
-  {
-   for(float yaw:{0.f,25.f,-25.f,60.f,-60.f,100.f,-100.f,180.f,-180.f})
-    if(seek(pitch,yaw)){found=true;break;}
-   if(found)break;
-  }
-  if(!found)found=fitFoot(previous);
+   if(!found)found=seekRest(previous);
   if(!found){CharmFailure();return desired;}
   desired.foot=motion.foot;
   PosePlacement(r,header,base,body,true,left,desired);
@@ -829,6 +831,7 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
  if(charm)
  {
   selected=ConstrainCharm(r,header,base,body,left,std::move(selected));
+   PosePlacement(r,header,base,body,true,left,selected,true);
   if(charmVerify&&charmVerify->value!=0)
   {
    ++charmStats.checks;
@@ -967,6 +970,7 @@ void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)
  auto it=mounts.find(r.m_pStudioHeader);
  if(it==mounts.end())
  {
+  OC2ColdTimer cold("view_mount_build",r.m_pRenderModel?r.m_pRenderModel->name:nullptr);
   geo::MountCache cache;geo::BuildMountCache(r.m_pStudioHeader,cache);
   it=mounts.insert(std::make_pair(r.m_pStudioHeader,cache)).first;
  }

@@ -16,12 +16,16 @@
 #include "parsemsg.h"
 #include "demo_api.h"
 #include "pm_shared.h"
+#include "oc2_cold_perf.h"
+#include "oc2_texture_stream.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
+#include <chrono>
 
 extern engine_studio_api_t IEngineStudio;
 extern render_api_t gRenderAPI;
@@ -29,6 +33,19 @@ namespace
 {
 using namespace oc2_inventory;
 Config loadout=DefaultConfig();Catalog catalog;
+std::string parsedLoadout,parsedGloves;
+unsigned configReadCalls=0;double configReadMs=0,configReadMax=0;
+cvar_t *configPoll=nullptr,*worldGlovesEnabled=nullptr;
+cvar_t *textureStreaming=nullptr;
+int textureUploadFrame=-1,textureUploadsThisFrame=0;
+double textureUploadMs=0;
+unsigned texturePrefetchEpoch=0;
+struct ConfigReadTimer
+{
+ std::chrono::steady_clock::time_point start=std::chrono::steady_clock::now();
+ ~ConfigReadTimer(){const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();++configReadCalls;configReadMs+=ms;configReadMax=std::max(configReadMax,ms);}
+};
+void ConfigPerfDump(){gEngfuncs.Con_Printf("oc2_config_perf: calls=%u total_ms=%.5f max_ms=%.5f\n",configReadCalls,configReadMs,configReadMax);configReadCalls=0;configReadMs=configReadMax=0;}
 oc2_gloves::Config gloveLoadout=oc2_gloves::DefaultConfig();
 oc2_gloves::Catalog gloveCatalog;
 std::array<int,33> playerGloves{};
@@ -56,6 +73,9 @@ struct WorldGloveDraw
  bool corpse=false,restored=false,legacy=false;double time=0;std::string model;
 };
 std::map<std::pair<int,int>,WorldGloveDraw> worldGloveDraws;
+// A body's hand bindings are immutable for its model lifetime. Never repeat
+// string allocation and bone-name classification for every vertex each frame.
+std::map<std::pair<const studiohdr_t *,const mstudiomodel_t *>,bool> worldHandLayouts;
 struct TextureSlot {int handle=0,frame=-1,visibleFrame=-1;std::uint64_t serial=0,bytes=0;std::string name;};
 std::map<std::string,TextureSlot> textures;
 std::map<std::string,int> textureBlockedFrame;
@@ -83,6 +103,12 @@ bool catalogAttempted=false,configExists=false;
 std::string readError;
 cvar_t *enabled=nullptr,*knifeInfo=nullptr;
 std::map<int,oc2_item::Appearance> items;
+struct ItemQueryIndex
+{
+ bool dirty=true;
+ std::array<std::vector<int>,33> owned;
+ std::map<std::pair<int,int>,int> player,active,world;
+} itemQueryIndex;
 std::map<int,std::string> accessorySent;
 bool networkReady=false,resyncSent=false,itemSnapshotStarted=false;
 std::string sessionLevel,lastSent,queuedConfig;
@@ -103,22 +129,57 @@ int ViewPlayer()
  if(g_iUser1==OBS_IN_EYE)return g_iUser2;
  const cl_entity_t *local=gEngfuncs.GetLocalPlayer();return local?local->index:0;
 }
+void ClearItemQueryIndex()
+{
+ for(auto &serials:itemQueryIndex.owned)serials.clear();
+ itemQueryIndex.player.clear();itemQueryIndex.active.clear();itemQueryIndex.world.clear();
+ itemQueryIndex.dirty=true;
+}
+void EnsureItemQueryIndex()
+{
+ if(!itemQueryIndex.dirty)return;
+ ClearItemQueryIndex();
+ const auto first=[](std::map<std::pair<int,int>,int> &index,int identity,int weapon,int serial)
+ {
+  // emplace retains the first serial from the ordered authoritative map.
+  index.emplace(std::make_pair(identity,0),serial);
+  index.emplace(std::make_pair(identity,weapon),serial);
+ };
+ for(const auto &row:items)
+ {
+  const auto &item=row.second;const int serial=row.first;
+  if(item.owner>0&&item.owner<=32)
+  {
+   itemQueryIndex.owned[item.owner].push_back(serial);
+   first(itemQueryIndex.player,item.owner,item.weapon,serial);
+   if(item.flags&oc2_item::Active)first(itemQueryIndex.active,item.owner,item.weapon,serial);
+  }
+  else if(!item.owner)
+  {
+   if(item.entity>0)first(itemQueryIndex.world,item.entity,item.weapon,serial);
+   if(item.box>0&&item.box!=item.entity)first(itemQueryIndex.world,item.box,item.weapon,serial);
+  }
+ }
+ itemQueryIndex.dirty=false;
+}
 const oc2_item::Appearance *PlayerItem(int player,int weapon=0,bool active=true)
 {
  if(player<1||player>32)return nullptr;
- for(const auto &row:items)
- {
-  const auto &item=row.second;
-  if(item.owner==player&&(!weapon||item.weapon==weapon)&&(!active||(item.flags&oc2_item::Active)))return &item;
- }
- return nullptr;
+ EnsureItemQueryIndex();
+ const auto &index=active?itemQueryIndex.active:itemQueryIndex.player;
+ const auto hit=index.find(std::make_pair(player,weapon));
+ if(hit==index.end())return nullptr;
+ const auto found=items.find(hit->second);
+ return found==items.end()?nullptr:&found->second;
 }
 const oc2_item::Appearance *WorldItem(int entity,int weapon=0)
 {
  if(entity<=0)return nullptr;
- for(const auto &row:items)
-  if(!row.second.owner&&(!weapon||row.second.weapon==weapon)&&(row.second.box==entity||row.second.entity==entity))return &row.second;
- return nullptr;
+ EnsureItemQueryIndex();
+ const auto hit=itemQueryIndex.world.find(std::make_pair(entity,weapon));
+ if(hit==itemQueryIndex.world.end())return nullptr;
+ const auto found=items.find(hit->second);
+ return found==items.end()?nullptr:&found->second;
 }
 void CheckSession()
 {
@@ -133,11 +194,11 @@ int ItemMessage(const char *,int size,void *buffer)
  const int operation=reader.ReadByte();
  if(operation==oc2_item::Reset&&size==oc2_item::kResetBytes)
  {
-  CheckSession();items.clear();draws.clear();networkReady=true;itemSnapshotStarted=true;return 1;
+  CheckSession();items.clear();ClearItemQueryIndex();draws.clear();networkReady=true;itemSnapshotStarted=true;return 1;
  }
  if(operation==oc2_item::Remove&&size==oc2_item::kRemoveBytes)
  {
-  const int serial=reader.ReadLong();items.erase(serial);
+  const int serial=reader.ReadLong();items.erase(serial);itemQueryIndex.dirty=true;
   for(auto i=draws.begin();i!=draws.end();)if(i->first.first==serial)i=draws.erase(i);else ++i;
   return 1;
  }
@@ -157,7 +218,7 @@ int ItemMessage(const char *,int size,void *buffer)
     (oc2_accessories::Index(item.weapon)<0&&item.weapon!=29)||
     (item.flags&~(oc2_item::Active|oc2_item::BotOrigin|oc2_item::OriginOwner)))return 1;
  for(int s:item.stickers)if(s<-1)return 1;
- CheckSession();networkReady=true;
+ CheckSession();networkReady=true;itemQueryIndex.dirty=true;
  // Entity slots can be reused. A new server identity retires the old entry;
  // one player can only have one active weapon even while a diff is arriving.
  for(auto i=items.begin();i!=items.end();)
@@ -218,9 +279,10 @@ void ReadGloveState(bool force)
  }
  if(LoadText(oc2_gloves::kConfigPath,text,int(oc2_gloves::kMaximumConfigBytes),exists))
  {
+  if(!force&&gloveConfigExists&&text==parsedGloves){gloveReadError.clear();return;}
   oc2_gloves::Config candidate;
   if(!oc2_gloves::ParseConfig(text,candidate,error)||!oc2_gloves::ValidateConfig(candidate,gloveCatalog,error))goto failed;
-  gloveLoadout=candidate;gloveConfigExists=true;
+  gloveLoadout=candidate;gloveConfigExists=true;parsedGloves=text;
  }
  else if(exists){error="Cannot read glove loadout";goto failed;}
  else {gloveLoadout=oc2_gloves::DefaultConfig();gloveConfigExists=false;}
@@ -237,8 +299,10 @@ void SyncKnifeInfo()
 }
 void ReadState(bool force=false)
 {
+ if(!force&&configPoll&&configPoll->value==0)return;
  const double time=gEngfuncs.GetClientTime();
  if(!force&&time>=lastRead&&time<nextRead)return;
+ ConfigReadTimer timer;
  lastRead=time;nextRead=time+.25;
  ReadGloveState(force);
  std::string text,error;bool exists=false;
@@ -261,10 +325,11 @@ void ReadState(bool force=false)
  }
  if(LoadText(kConfigPath,text,int(kMaximumConfigBytes),exists))
  {
+  if(!force&&configExists&&text==parsedLoadout){ReportError("");SyncKnifeInfo();return;}
   Config candidate;
   if(!ParseConfig(text,candidate,error)||!ValidateConfig(candidate,catalog,error))
    {ReportError(error);SyncKnifeInfo();return;}
-  loadout=candidate;configExists=true;
+  loadout=candidate;configExists=true;parsedLoadout=text;
  }
  else if(exists){ReportError("Cannot read loadout file");SyncKnifeInfo();return;}
  else {loadout=DefaultConfig();configExists=false;}
@@ -410,6 +475,62 @@ bool ResizeTga(const byte *data,int size,int limit,std::vector<byte> &out)
  out.resize(start+std::size_t(dw)*dh*channels);std::memcpy(out.data(),data,start);
  out[2]=2;
  out[12]=byte(dw&255);out[13]=byte(dw>>8);out[14]=byte(dh&255);out[15]=byte(dh>>8);
+ // Integer ratios give every source sample the same weight dw*dh.
+ // Cancelling it preserves round-to-nearest, including odd denominators.
+ // 65153*N bounds colour + alpha/2 (65025*N + floor(255*N/2)).
+ if(w%dw==0&&h%dh==0)
+ {
+  const int stepX=w/dw,stepY=h/dh;
+  const std::uint32_t samples=std::uint32_t(stepX)*std::uint32_t(stepY);
+  if(samples<=0xffffffffu/65153u)
+  {
+   bool opaque=true;
+   if(channels==4)for(std::size_t i=3;i<std::size_t(rawBytes);i+=4)
+    if(pixels[i]!=255){opaque=false;break;}
+   const std::size_t stride=std::size_t(w)*channels;
+   for(int y=0;y<dh;++y)
+   {
+    const byte *row=pixels+std::size_t(y)*stepY*stride;
+    byte *target=out.data()+start+std::size_t(y)*dw*channels;
+    for(int x=0;x<dw;++x,target+=channels)
+    {
+     const byte *block=row+std::size_t(x)*stepX*channels;
+     std::uint32_t red=0,green=0,blue=0;
+     if(opaque)
+     {
+      for(int sy=0;sy<stepY;++sy)
+      {
+       const byte *p=block+std::size_t(sy)*stride;
+       for(int sx=0;sx<stepX;++sx,p+=channels)
+        {red+=p[0];green+=p[1];blue+=p[2];}
+      }
+      target[0]=byte((red+samples/2)/samples);
+      target[1]=byte((green+samples/2)/samples);
+      target[2]=byte((blue+samples/2)/samples);
+      if(channels==4)target[3]=255;
+     }
+     else
+     {
+      std::uint32_t alpha=0;
+      for(int sy=0;sy<stepY;++sy)
+      {
+       const byte *p=block+std::size_t(sy)*stride;
+       for(int sx=0;sx<stepX;++sx,p+=4)
+       {
+        const std::uint32_t a=p[3];alpha+=a;
+        red+=a*p[0];green+=a*p[1];blue+=a*p[2];
+       }
+      }
+      target[0]=alpha?byte((red+alpha/2)/alpha):0;
+      target[1]=alpha?byte((green+alpha/2)/alpha):0;
+      target[2]=alpha?byte((blue+alpha/2)/alpha):0;
+      target[3]=byte((alpha+samples/2)/samples);
+     }
+    }
+   }
+   return true;
+  }
+ }
  for(int y=0;y<dh;++y)for(int x=0;x<dw;++x)
  {
   const int xa=x*w,xb=(x+1)*w,ya=y*h,yb=(y+1)*h;
@@ -429,6 +550,33 @@ bool ResizeTga(const byte *data,int size,int limit,std::vector<byte> &out)
   if(channels==4)pixel[3]=byte((weightedAlpha+total/2)/total);
  }
  return true;
+}
+// Prepare an uncompressed DDS on the worker. This is lossless and bypasses
+// a second full TGA decode on the rendering thread. Match engine TGA Y order.
+void PrepareStreamImage(std::vector<byte> &data,int limit,bool &resized,bool &dds)
+{
+ std::vector<byte> smaller;
+ if(limit>0&&ResizeTga(data.data(),int(data.size()),limit,smaller)){data.swap(smaller);resized=true;}
+ if(data.size()<18||data[1]||(data[2]!=2&&data[2]!=10)||(data[17]&0xc0))return;
+ const int channels=data[16]/8,w=data[12]+(int(data[13])<<8),h=data[14]+(int(data[15])<<8);
+ if((channels!=3&&channels!=4)||!w||!h||data[16]!=channels*8)return;
+ const std::size_t start=18u+data[0],bytes=std::size_t(w)*h*channels;
+ if(start>data.size()||bytes>16u*1024u*1024u)return;
+ std::vector<byte> decoded;const byte *pixels=nullptr;
+ if(data[2]==10){if(!DecodeTgaRle(data.data(),data.size(),start,channels,bytes,decoded))return;pixels=decoded.data();}
+ else {if(bytes>data.size()-start)return;pixels=data.data()+start;}
+ std::vector<byte> prepared(128u+std::size_t(w)*h*4,0);
+ auto put=[&](int offset,unsigned value){for(int b=0;b<4;++b)prepared[offset+b]=byte(value>>(b*8));};
+ put(0,0x20534444);put(4,124);put(8,0x81007);put(12,h);put(16,w);put(20,unsigned(w)*h*4);
+ put(76,32);put(80,0x41);put(88,32);put(92,0x00ff0000);put(96,0x0000ff00);put(100,0x000000ff);put(104,0xff000000);put(108,0x1000);
+ for(int y=0;y<h;++y)
+ {
+  const byte *row=pixels+std::size_t((data[17]&0x20)?y:h-1-y)*w*channels;
+  byte *target=prepared.data()+128+std::size_t(y)*w*4;
+  if(channels==4)memcpy(target,row,std::size_t(w)*4);
+  else for(int x=0;x<w;++x){memcpy(target+x*4,row+x*3,3);target[x*4+3]=255;}
+ }
+ data.swap(prepared);dds=true;
 }
 bool PrepareTexture(const std::string &key)
 {
@@ -463,40 +611,57 @@ int Texture(const std::string &path,bool sticker,int maxDimension=0)
  const auto alias=textureVariantAliases.find(requested);
  if(alias!=textureVariantAliases.end())key=alias->second;
  if(const int cached=CachedTexture(key))return cached;
+ OC2ColdTimer cold("texture",path.c_str());
  ++textureStats.misses;
  if(textureBlockedFrame.count(key)){++textureStats.blocked;return 0;}
  // Prefer textures not used this frame; under pressure only evict completed,
  // unpinned draws. This keeps an oversized working set visually correct.
  bool prepared=maxDimension<=0||key!=requested||textureKnownCost.count(key);
  if(prepared&&!PrepareTexture(key))return 0;
+ if(textureUploadFrame!=textureVisibleFrame){textureUploadFrame=textureVisibleFrame;textureUploadsThisFrame=0;textureUploadMs=0;}
+ std::vector<byte> streamed;bool streamReady=false,streamResized=false,streamDds=false,engineData=false;
+ if(textureStreaming&&textureStreaming->value!=0)
+ {
+  const int limit=key==requested?maxDimension:0;
+  oc2_texture_stream::Request(path,limit);
+  if(textureUploadsThisFrame>=1||textureUploadMs>=2)return 0;
+  const auto status=oc2_texture_stream::Take(path,limit,streamed,streamResized,streamDds);
+  if(status==oc2_texture_stream::Status::Pending)return 0;
+  streamReady=status==oc2_texture_stream::Status::Ready;
+ }
  ++textureStats.reads;
- int size=0;byte *data=gEngfuncs.COM_LoadFile(const_cast<char *>(path.c_str()),5,&size);
+ int size=streamReady?int(streamed.size()):0;byte *data=streamReady?streamed.data():nullptr;
+ if(!streamReady){OC2ColdTimer read("texture_read",path.c_str());data=gEngfuncs.COM_LoadFile(const_cast<char *>(path.c_str()),5,&size);engineData=true;}
+ const auto freeData=[&](){if(engineData&&data)gEngfuncs.COM_FreeFile(data);};
  if(!data){textureBlockedFrame[key]=textureVisibleFrame;++textureStats.failures;return 0;}
- if(size<=0||size>16*1024*1024){gEngfuncs.COM_FreeFile(data);textureBlockedFrame[key]=textureVisibleFrame;++textureStats.failures;return 0;}
+ if(size<=0||size>17*1024*1024){freeData();textureBlockedFrame[key]=textureVisibleFrame;++textureStats.failures;return 0;}
  std::vector<byte> resized;
  if(maxDimension>0&&key==requested)
  {
+  OC2ColdTimer resize("texture_resize",path.c_str());
   const bool tga=path.size()>=4&&!stricmp(path.c_str()+path.size()-4,".tga");
-  if(tga&&ResizeTga(data,size,maxDimension,resized))++textureStats.resized;
+  if(streamReady?streamResized:tga&&ResizeTga(data,size,maxDimension,resized))++textureStats.resized;
   else
   {
    ++textureStats.variantFallbacks;
    if(textureVariantAliases.size()>=512&&!textureVariantAliases.count(requested))textureVariantAliases.erase(textureVariantAliases.begin());
    textureVariantAliases[requested]=path;key=path;prepared=false;
-   if(const int cached=CachedTexture(key)){gEngfuncs.COM_FreeFile(data);return cached;}
-   if(textureBlockedFrame.count(key)){gEngfuncs.COM_FreeFile(data);++textureStats.blocked;return 0;}
+   if(const int cached=CachedTexture(key)){freeData();return cached;}
+   if(textureBlockedFrame.count(key)){freeData();++textureStats.blocked;return 0;}
   }
  }
- if(!prepared&&!PrepareTexture(key)){gEngfuncs.COM_FreeFile(data);return 0;}
+ if(!prepared&&!PrepareTexture(key)){freeData();return 0;}
  // A private renderer name avoids sharing an uncounted handle with menu pics.
  // The # prefix selects the engine's supported load-from-buffer image path.
  std::uint64_t hash=14695981039346656037ull;
  for(unsigned char c:key)hash=(hash^c)*1099511628211ull;
  const std::size_t dot=path.rfind('.');
- const std::string name="#oc2_inventory_"+std::to_string(hash)+(dot==std::string::npos?".tga":path.substr(dot));
+ const std::string name="#oc2_inventory_"+std::to_string(hash)+(streamDds?".dds":dot==std::string::npos?".tga":path.substr(dot));
  ++textureStats.uploads;
- const int handle=gRenderAPI.GL_LoadTexture(name.c_str(),resized.empty()?data:resized.data(),resized.empty()?size:int(resized.size()),sticker?TF_CLAMP:0);
- gEngfuncs.COM_FreeFile(data);
+ ++textureUploadsThisFrame;const auto uploadStart=std::chrono::steady_clock::now();
+ int handle=0;
+ {OC2ColdTimer upload("texture_upload",path.c_str());handle=gRenderAPI.GL_LoadTexture(name.c_str(),resized.empty()?data:resized.data(),resized.empty()?size:int(resized.size()),sticker?TF_CLAMP:0);}
+ textureUploadMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-uploadStart).count();freeData();
  if(!handle){textureBlockedFrame[key]=textureVisibleFrame;++textureStats.failures;return 0;}
  TextureSlot slot;slot.handle=handle;slot.frame=textureFrame;slot.visibleFrame=textureVisibleFrame;
  slot.serial=++textureSerial;slot.name=name;slot.bytes=TextureCost(handle);
@@ -609,7 +774,7 @@ const OverlayLayout *GetOverlayLayout(model_t *model,studiohdr_t *header,mstudio
  if(overlayLayouts.size()>=64)overlayLayouts.clear();
  ++textureStats.layoutBuilds;return &overlayLayouts.emplace(model,std::move(v)).first->second;
 }
-void Reload() { ReleaseTextures();OC2_ResetWorldStickers();catalogAttempted=false;ReadState(true); }
+void Reload() { oc2_texture_stream::Reset();++texturePrefetchEpoch;ReleaseTextures();OC2_ResetWorldStickers();catalogAttempted=false;ReadState(true); }
 void GloveDump()
 {
  ReadState(true);
@@ -682,8 +847,15 @@ void Dump()
 }
 }
 
+void OC2_InventoryShutdown(){oc2_texture_stream::Shutdown();}
 void OC2_InventoryInit()
 {
+ textureStreaming=gEngfuncs.pfnRegisterVariable("cl_oc2_texture_stream","1",0);
+ oc2_texture_stream::Start(gEngfuncs.pfnGetGameDirectory(),PrepareStreamImage);
+ configPoll=gEngfuncs.pfnRegisterVariable("cl_oc2_config_poll","1",0);
+ gEngfuncs.pfnAddCommand("oc2_config_perf_dump",ConfigPerfDump);
+ worldGlovesEnabled=gEngfuncs.pfnRegisterVariable("cl_oc2_world_gloves","1",0);
+ OC2_WorldAccessoriesInit();
  OC2_InitWorldStickers();
  enabled=gEngfuncs.pfnRegisterVariable("cl_oc2_inventory","1",FCVAR_ARCHIVE);
  textureBudget=gEngfuncs.pfnRegisterVariable("cl_oc2_texture_cache_mb","256",0);
@@ -701,23 +873,87 @@ void OC2_InventoryInit()
 }
 void OC2_InventoryVidInit()
 {
+ oc2_texture_stream::Reset();++texturePrefetchEpoch;
+ ClearItemQueryIndex();
+ worldHandLayouts.clear();
+ OC2_WorldAccessoriesReset();
  OC2_ResetWorldStickers();
  ReleaseTextures();textureFrame=-1;catalog.clear();resourceIndices.clear();knifeIndices.clear();knifeModels.clear();catalogAttempted=false;nextRead=lastRead=-1;
  gloveCatalog.clear();gloveCatalogAttempted=false;gloveDraw=GloveDraw();
  diagnostics=Diagnostics();ReadState(true);
+ // Prepare third-person geometry during the loading screen. Otherwise a
+ // weapon first seen after a death/drop synchronously loads its body, overlay
+ // and attachment models in the middle of the combat frame.
+ if(IEngineStudio.Mod_ForName&&IEngineStudio.IsHardware&&IEngineStudio.IsHardware())
+ {
+  std::set<std::string> paths;
+  static const char *guns[]={"p228","scout","xm1014","mac10","aug","elite","fiveseven","ump45","sg550","galil","famas","usp","glock18","awp","mp7","m249","m3","m4a1","tmp","g3sg1","deagle","sg552","ak47","p90"};
+  for(const char *gun:guns)for(char prefix:{'p','w'})
+  {const std::string name=std::string(1,prefix)+"_"+gun+".mdl";paths.insert("models/"+name);paths.insert("models/oc2/stickers/"+name);}
+  for(const auto &entry:gloveCatalog)paths.insert(oc2_gloves::WorldModelPath(entry));
+  for(const auto &entry:catalog)if(entry.kind==Kind::Knife&&entry.model.size()>8)
+   for(char prefix:{'p','w'}){std::string path=entry.model;path[7]=prefix;paths.insert(path);}
+  paths.insert("models/attachments/oc2_stattrak.mdl");paths.insert("models/attachments/oc2_sticker_charm.mdl");paths.insert("models/attachments/oc2_sticker_charm_m249.mdl");
+  for(const auto &path:paths)if(!path.empty())IEngineStudio.Mod_ForName(path.c_str(),false);
+ }
 }
 void OC2_InventoryResetSession()
 {
+ oc2_texture_stream::Reset();++texturePrefetchEpoch;
+ worldHandLayouts.clear();
+ OC2_WorldAccessoriesReset();
  OC2_ResetWorldStickers();
  overlayLayouts.clear();
  accessorySent.clear();
- items.clear();draws.clear();networkReady=false;resyncSent=false;itemSnapshotStarted=false;lastSent.clear();queuedConfig.clear();upload.clear();uploadIndex=0;
+ items.clear();ClearItemQueryIndex();draws.clear();networkReady=false;resyncSent=false;itemSnapshotStarted=false;lastSent.clear();queuedConfig.clear();upload.clear();uploadIndex=0;
  playerGloves.fill(0);gloveNetworkReady=false;lastGloveSent.clear();gloveDraw=GloveDraw();gloveShaders.clear();
  corpseGloves.clear();worldGloveDraws.clear();
+}
+namespace
+{
+void PrefetchAppearanceTextures()
+{
+ if(!textureStreaming||textureStreaming->value==0||!Active())return;
+ struct Wanted {std::string path;int limit;bool sticker;};
+ static std::vector<Wanted> wanted;static double next=-1,last=-1;static unsigned epoch=0;
+ const double now=gEngfuncs.GetClientTime();
+ if(epoch!=texturePrefetchEpoch||now<last||now>=next)
+ {
+  epoch=texturePrefetchEpoch;last=now;next=now+.25;wanted.clear();
+  std::map<std::pair<std::string,int>,bool> unique;
+  const auto append=[&](int id,int limit,bool sticker){const auto *entry=Resource(id);if(entry&&!entry->file.empty())unique[std::make_pair(entry->file,limit)]=sticker;};
+  const int view=ViewPlayer();
+  for(const auto &row:items)
+  {
+   const auto &item=row.second;if(!item.owner)continue;
+   append(item.skin,512,false);for(int id:item.stickers)if(id>0)append(id,256,true);if(item.charm>0)append(item.charm,256,true);
+   if(item.owner==view){append(item.skin,0,false);for(int id:item.stickers)if(id>0)append(id,0,true);if(item.charm>0)append(item.charm,0,true);}
+  }
+  for(int id:playerGloves)if(const auto *glove=oc2_gloves::FindEntry(gloveCatalog,id))
+  {if(!glove->leftTexture.empty())unique[std::make_pair(glove->leftTexture,0)]=false;if(!glove->rightTexture.empty())unique[std::make_pair(glove->rightTexture,0)]=false;}
+  for(const auto &entry:unique)if(wanted.size()<400)wanted.push_back({entry.first.first,entry.first.second,entry.second});
+ }
+ BeginTextureDraw();
+ // Queue the whole known loadout before it enters the camera. Only one ready
+ // image is uploaded per frame; file reads/decoding/resizing run off-thread.
+ for(const auto &entry:wanted)
+ {
+  const std::string requested=entry.limit?entry.path+"|oc2max="+std::to_string(entry.limit):entry.path;
+  const auto alias=textureVariantAliases.find(requested);const std::string &key=alias==textureVariantAliases.end()?requested:alias->second;
+  if(textures.count(key))continue;
+  oc2_texture_stream::Request(entry.path,key==requested?entry.limit:0);
+ }
+ for(const auto &entry:wanted)
+ {
+  if(textureUploadFrame==textureVisibleFrame&&textureUploadsThisFrame>=1)break;
+  Texture(entry.path,entry.sticker,entry.limit);
+ }
+}
 }
 void OC2_InventoryFrame()
 {
  CheckSession();ReadState();
+ PrefetchAppearanceTextures();
  const auto *local=gEngfuncs.GetLocalPlayer();
  if(sessionLevel.empty()||!local||local->index<1||gEngfuncs.IsSpectateOnly()||
     (gEngfuncs.pDemoAPI&&gEngfuncs.pDemoAPI->IsPlayingback()))return;
@@ -767,11 +1003,12 @@ model_s *OC2_InventoryWorldKnifeModel(int definition,int &displayDefinition)
 int OC2_InventoryOwnedItems(int player,oc2_item::Appearance *out,int capacity)
 {
  if(!networkReady||!itemSnapshotStarted||player<1||player>32||!out||capacity<=0)return 0;
+ EnsureItemQueryIndex();
  int count=0;
- for(const auto &row:items)
+ for(int serial:itemQueryIndex.owned[player])
  {
-  if(row.second.owner!=player)continue;
-  out[count++]=row.second;
+  const auto found=items.find(serial);if(found==items.end())continue;
+  out[count++]=found->second;
   if(count==capacity)break;
  }
  return count;
@@ -817,6 +1054,19 @@ bool OC2_InventoryInstanceAccessories(int weapon,oc2_accessories::WeaponConfig &
  const auto *local=gEngfuncs.GetLocalPlayer();
  if(!item||!local||((item->flags&oc2_item::OriginOwner)&&!(item->flags&oc2_item::BotOrigin)&&ViewPlayer()==local->index)||!item->accessoryReady)return false;
  config=item->accessory;count=item->count;return true;
+}
+bool OC2_InventoryWorldAccessories(model_s *model,int player,int serial,int entity,oc2_accessories::WeaponConfig &config,unsigned &count,int &pattern,int &instance)
+{
+ if(!networkReady||!Active()||!model)return false;
+ const int weapon=WeaponId(model->name);if(!weapon)return false;
+ const auto found=items.find(serial);
+ const auto *item=serial?(found!=items.end()&&found->second.owner==player?&found->second:nullptr):player?PlayerItem(player,weapon):WorldItem(entity,weapon);
+ if(!item||!item->accessoryReady||item->weapon!=weapon)return false;
+ config=item->accessory;count=item->count;instance=item->serial;
+ if(item->charm)config.charm=item->charm>0;
+ pattern=item->charm>0?StickerTexture(item->charm,256):0;
+ if(!item->charm&&config.sticker>0)pattern=OC2_LegacyCharmTexture(config.sticker);
+ return config.stattrak||config.charm;
 }
 void OC2_InventoryPublishAccessories(int weapon,const oc2_accessories::WeaponConfig &config,unsigned count)
 {
@@ -1086,6 +1336,7 @@ OC2_InventoryGloveBodyModelScope::~OC2_InventoryGloveBodyModelScope()
 
 OC2_InventoryPlayerGloveScope::OC2_InventoryPlayerGloveScope(CStudioModelRenderer &studio,int index):renderer(studio),player(index)
 {
+ if(worldGlovesEnabled&&worldGlovesEnabled->value==0)return;
  auto *entity=renderer.m_pCurrentEntity;
  if(!entity||!renderer.m_pStudioHeader||!IEngineStudio.IsHardware()||!Active())return;
  if(!player)
@@ -1134,17 +1385,29 @@ OC2_InventoryPlayerGloveScope::OC2_InventoryPlayerGloveScope(CStudioModelRendere
      !HeaderRange(bodyHeader,sub.vertinfoindex,sub.numverts,1))continue;
   const std::string name=oc2_inventory::Lower(sub.name);
   if(name.find("glove")==std::string::npos&&name.find("hand")==std::string::npos)continue;
-  const auto *bindings=reinterpret_cast<const byte *>(bodyHeader)+sub.vertinfoindex;
-  bool handsOnly=true;
-  for(int v=0;v<sub.numverts&&handsOnly;++v)
+  const auto layoutKey=std::make_pair(static_cast<const studiohdr_t *>(bodyHeader),static_cast<const mstudiomodel_t *>(&sub));
+  auto layout=worldHandLayouts.find(layoutKey);
+  if(layout==worldHandLayouts.end())
   {
-   if(bindings[v]>=bodyHeader->numbones){handsOnly=false;break;}
-   const auto &bone=bones[bindings[v]];
-   if(!memchr(bone.name,0,sizeof(bone.name))){handsOnly=false;break;}
-   const std::string boneName=oc2_inventory::Lower(bone.name);
-   handsOnly=boneName.find("hand")!=std::string::npos||boneName.find("wrist")!=std::string::npos||boneName.find("forearm")!=std::string::npos;
+   const auto *bindings=reinterpret_cast<const byte *>(bodyHeader)+sub.vertinfoindex;
+   bool handsOnly=true;std::array<int,MAXSTUDIOBONES> classification{};
+   for(int v=0;v<sub.numverts&&handsOnly;++v)
+   {
+    const unsigned boneIndex=bindings[v];
+    if(boneIndex>=unsigned(bodyHeader->numbones)||boneIndex>=classification.size()){handsOnly=false;break;}
+    int &hand=classification[boneIndex];
+    if(!hand)
+    {
+     const auto &bone=bones[boneIndex];
+     if(!memchr(bone.name,0,sizeof(bone.name))){handsOnly=false;break;}
+     const std::string boneName=oc2_inventory::Lower(bone.name);
+     hand=(boneName.find("hand")!=std::string::npos||boneName.find("wrist")!=std::string::npos||boneName.find("forearm")!=std::string::npos)?1:-1;
+    }
+    handsOnly=hand>0;
+   }
+   layout=worldHandLayouts.emplace(layoutKey,handsOnly).first;
   }
-  if(handsOnly)hidden.push_back(Saved(&sub.nummesh,sub.nummesh));
+  if(layout->second)hidden.push_back(Saved(&sub.nummesh,sub.nummesh));
  }
  replacementBody=LegacyGloveBody(renderer.m_pRenderModel);
  if(hidden.empty()&&!replacementBody){model=nullptr;return;}

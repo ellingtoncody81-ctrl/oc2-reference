@@ -1,5 +1,6 @@
 #include "PanoramaSettings.h"
 #include "keydefs.h"
+#include "../../../../common/oc2_crosshair.h"
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -36,7 +37,7 @@ std::vector<std::string> Split(const char *s)
     const char *start=s;for(;;++s)if(*s=='|'||!*s){parts.emplace_back(start,s-start);if(!*s)break;start=s+1;}
     return parts;
 }
-const char *Categories[]={"键盘 / 鼠标","游戏设置","音频设置","视频设置"};
+const char *Categories[]={"键盘 / 鼠标","游戏设置","音频设置","视频设置","自定义准星"};
 }
 
 // These are registration defaults, never read back from config.cfg as defaults.
@@ -81,9 +82,27 @@ const CMenuPanoramaSettings::Setting *CMenuPanoramaSettings::Definitions(int &co
         {1,Number,"持枪位置：左右","viewmodel_offset_x","0",-2,2.5f,0.1f,nullptr,nullptr},
         {1,Number,"持枪位置：前后","viewmodel_offset_y","0",-2,2,0.1f,nullptr,nullptr},
         {1,Number,"持枪位置：上下","viewmodel_offset_z","0",-2,2,0.1f,nullptr,nullptr},
-        {1,Choice,"动态准星","cl_dynamiccrosshair","1",0,1,1,"关闭|开启","0|1"},
-        {1,Choice,"准星大小","cl_crosshair_size","auto",0,3,1,"自动|小|中|大","auto|small|medium|large"},
-        {1,Choice,"半透明准星","cl_crosshair_translucent","1",0,1,1,"关闭|开启","0|1"},
+        {4,Choice,"显示准星","crosshair","1",0,1,1,"关闭|开启","0|1"},
+        {4,Choice,"准星样式","cl_crosshairstyle","2",0,5,1,"默认动态|默认静态|经典分离动态|经典动态|经典静态|经典射击反馈","0|1|2|3|4|5"},
+        {4,Number,"线段长度","cl_crosshairsize","5",0,15,.5f,nullptr,nullptr},
+        {4,Number,"线段粗细","cl_crosshairthickness","0.5",0,5,.1f,nullptr,nullptr},
+        {4,Number,"准星间距","cl_crosshairgap","1",-15,20,.5f,nullptr,nullptr},
+        {4,Choice,"中心点","cl_crosshairdot","1",0,1,1,"关闭|开启","0|1"},
+        {4,Choice,"T 形准星","cl_crosshair_t","0",0,1,1,"关闭|开启","0|1"},
+        {4,Choice,"颜色","cl_crosshaircolor","1",0,5,1,"红|绿|黄|蓝|青|自定义","0|1|2|3|4|5"},
+        {4,Number,"自定义：红","cl_crosshaircolor_r","50",0,255,1,nullptr,nullptr},
+        {4,Number,"自定义：绿","cl_crosshaircolor_g","250",0,255,1,nullptr,nullptr},
+        {4,Number,"自定义：蓝","cl_crosshaircolor_b","50",0,255,1,nullptr,nullptr},
+        {4,Number,"不透明度","cl_crosshairalpha","200",0,255,1,nullptr,nullptr},
+        {4,Choice,"透明混合","cl_crosshairusealpha","1",0,1,1,"加法高亮|透明混合","0|1"},
+        {4,Choice,"黑色描边","cl_crosshair_drawoutline","1",0,1,1,"关闭|开启","0|1"},
+        {4,Number,"描边粗细","cl_crosshair_outlinethickness","1",.1f,3,.1f,nullptr,nullptr},
+        {4,Choice,"使用武器基础间距","cl_crosshairgap_useweaponvalue","0",0,1,1,"关闭|开启","0|1"},
+        {4,Number,"动态分离距离","cl_crosshair_dynamic_splitdist","7",0,30,.5f,nullptr,nullptr},
+        {4,Number,"分离内段不透明度","cl_crosshair_dynamic_splitalpha_innermod","1",0,1,.05f,nullptr,nullptr},
+        {4,Number,"分离外段不透明度","cl_crosshair_dynamic_splitalpha_outermod","0.5",.3f,1,.05f,nullptr,nullptr},
+        {4,Number,"分离外段长度比例","cl_crosshair_dynamic_maxdist_splitratio","0.35",0,1,.05f,nullptr,nullptr},
+        {4,Number,"默认静态间距","cl_fixedcrosshairgap","3",-5,20,.5f,nullptr,nullptr},
         {1,Choice,"允许下载服务器资源","cl_allowdownload","1",0,1,1,"关闭|开启","0|1"},
         {1,Choice,"显示天气效果","cl_weather","1",0,1,1,"关闭|开启","0|1"},
         {1,Choice,"简化玩家模型","cl_minmodels","0",0,1,1,"关闭|开启","0|1"},
@@ -119,8 +138,8 @@ void CMenuPanoramaSettings::Button(CMenuAction &item,const char *label,const cha
 void CMenuPanoramaSettings::_Init()
 {
     m_chrome.Init(*this,2);
-    const char *tags[]={"settings_keyboard","settings_game","settings_audio","settings_video"};
-    for(int i=0;i<4;++i)
+    const char *tags[]={"settings_keyboard","settings_game","settings_audio","settings_video","settings_crosshair"};
+    for(int i=0;i<5;++i)
     {
         Button(m_tabs[i],Categories[i],tags[i]);
         SET_EVENT_MULTI(m_tabs[i].onReleased,{static_cast<CMenuPanoramaSettings*>(pSelf->Parent())->ChooseTab(pSelf);});
@@ -128,6 +147,9 @@ void CMenuPanoramaSettings::_Init()
     Button(m_back,"返回","settings_back");m_back.onReleased=VoidCb(&CMenuPanoramaSettings::Back);
     Button(m_save,"保存更改","settings_save");m_save.onReleased=VoidCb(&CMenuPanoramaSettings::Save);
     Button(m_revert,"撤销本次更改","settings_revert");m_revert.onReleased=VoidCb(&CMenuPanoramaSettings::Revert);
+    Button(m_crosshairDefaults,"恢复准星默认","crosshair_defaults");m_crosshairDefaults.onReleased=VoidCb(&CMenuPanoramaSettings::CrosshairDefaults);
+    const char *demoNames[]={"静止","跑动","射击"},*demoTags[]={"crosshair_demo_0","crosshair_demo_1","crosshair_demo_2"};
+    for(int i=0;i<3;++i){Button(m_crosshairDemo[i],demoNames[i],demoTags[i]);SET_EVENT_MULTI(m_crosshairDemo[i].onReleased,{static_cast<CMenuPanoramaSettings*>(pSelf->Parent())->CrosshairDemo(pSelf);});}
     Button(m_up,"上移","settings_up");SET_EVENT_MULTI(m_up.onReleased,{static_cast<CMenuPanoramaSettings*>(pSelf->Parent())->Scroll(-1);});
     Button(m_down,"下移","settings_down");SET_EVENT_MULTI(m_down.onReleased,{static_cast<CMenuPanoramaSettings*>(pSelf->Parent())->Scroll(1);});
     for(int i=0;i<9;++i)
@@ -148,12 +170,14 @@ void CMenuPanoramaSettings::_VidInit()
 {
     m_chrome.Layout();
     const int width=uiStatic.width,left=104,right=width-50;
-    const int tabWidth=(right-left)/4;
-    for(int i=0;i<4;++i)m_tabs[i].SetRect(left+i*tabWidth,112,tabWidth-4,46);
+    const int tabWidth=(right-left)/5;
+    for(int i=0;i<5;++i)m_tabs[i].SetRect(left+i*tabWidth,112,tabWidth-4,46);
     for(int i=0;i<9;++i)m_rows[i].SetRect(left,185+i*51,right-left-20,48);
     m_up.SetRect(right-115,650,55,30);m_down.SetRect(right-55,650,55,30);
     m_back.SetRect(left,696,100,42);m_save.SetRect(right-190,690,190,48);
     m_revert.SetRect(right-400,690,195,48);Refresh();
+    m_crosshairDefaults.SetRect(right-310,590,292,40);
+    for(int i=0;i<3;++i)m_crosshairDemo[i].SetRect(right-310+i*99,503,94,38);
     const int displayLeft=(width-700)/2;
     m_displayMode.SetRect(displayLeft,260,700,54);m_displayWindow.SetRect(displayLeft,330,700,54);
     m_displayApply.SetRect(displayLeft+365,450,335,50);m_displayCancel.SetRect(displayLeft,450,335,50);
@@ -168,14 +192,14 @@ void CMenuPanoramaSettings::Show()
 void CMenuPanoramaSettings::Hide()
 {
     if(m_displayOpen)CancelDisplay();
-    Save();m_capture=-1;m_captureKey=-1;for(auto &row:m_rows)row.dragging=false;
+    Revert();m_capture=-1;m_captureKey=-1;for(auto &row:m_rows)row.dragging=false;
     CMenuFramework::Hide();
 }
 
 void CMenuPanoramaSettings::SelectCategory(int category)
-{m_category=bound(0,category,3);m_scroll=0;m_capture=-1;Refresh();}
+{m_category=bound(0,category,4);m_scroll=0;m_capture=-1;Refresh();}
 void CMenuPanoramaSettings::ChooseTab(CMenuBaseItem *item)
-{for(int i=0;i<4;++i)if(item==&m_tabs[i])SelectCategory(i);}
+{for(int i=0;i<5;++i)if(item==&m_tabs[i])SelectCategory(i);}
 void CMenuPanoramaSettings::Refresh()
 {
     int count;const Setting *settings=Definitions(count);m_visible.clear();
@@ -184,9 +208,14 @@ void CMenuPanoramaSettings::Refresh()
     for(int i=0;i<9;++i)
     {
         const int row=m_scroll+i;m_rows[i].index=row<int(m_visible.size())?m_visible[row]:-1;
+        if(m_category==4)m_rows[i].SetRect(122,222+i*46,uiStatic.width-540,44);
+        else m_rows[i].SetRect(104,185+i*51,uiStatic.width-174,48);
+        m_rows[i].VidInit();
         m_rows[i].SetVisibility(!m_displayOpen&&m_rows[i].index>=0);m_rows[i].SetGrayed(m_rows[i].index>=0&&!Available(settings[m_rows[i].index]));
     }
-    for(int i=0;i<4;++i){m_tabs[i].colorBase=i==m_category?AccentColor():Ink();m_tabs[i].SetVisibility(!m_displayOpen);}
+    for(int i=0;i<5;++i){m_tabs[i].colorBase=i==m_category?AccentColor():Ink();m_tabs[i].SetVisibility(!m_displayOpen);}
+    m_crosshairDefaults.SetVisibility(m_category==4&&!m_displayOpen);
+    for(int i=0;i<3;++i){m_crosshairDemo[i].SetVisibility(m_category==4&&!m_displayOpen);m_crosshairDemo[i].colorBase=i==m_crosshairDemoMode?AccentColor():Muted();m_crosshairDemo[i].SetBackground(PackRGBA(115,180,217,i==m_crosshairDemoMode?38:10),PackRGBA(115,180,217,55));}
     m_back.SetVisibility(!m_displayOpen);m_save.SetVisibility(!m_displayOpen);m_revert.SetVisibility(!m_displayOpen);
     m_up.SetGrayed(m_scroll==0);m_down.SetGrayed(m_scroll+9>=int(m_visible.size()));
     m_up.SetVisibility(!m_displayOpen&&m_visible.size()>9);m_down.SetVisibility(!m_displayOpen&&m_visible.size()>9);
@@ -198,6 +227,16 @@ void CMenuPanoramaSettings::Scroll(int rows)
 
 bool CMenuPanoramaSettings::Available(const Setting &setting) const
 {
+    if(setting.category==4)
+    {
+        const auto config=oc2_crosshair::ReadConfig([](const char *key){return EngFuncs::GetCvarFloat(key);});
+        const int style=config.style;
+        const std::string key=setting.key;
+        if(key.find("cl_crosshair_dynamic_")==0&&style!=2)return false;
+        if(key=="cl_fixedcrosshairgap"&&style!=1)return false;
+        if(key.find("cl_crosshaircolor_")==0&&config.color!=5)return false;
+        if(style<2&&(key=="cl_crosshairsize"||key=="cl_crosshairthickness"||key=="cl_crosshairgap"||key=="cl_crosshairdot"||key=="cl_crosshair_t"||key=="cl_crosshairgap_useweaponvalue"))return false;
+    }
     if(setting.kind==Binding||setting.kind==Resolution)return true;
     const char *value=EngFuncs::GetCvarString(setting.key);
     return value&&*value&&(!EngFuncs::textfuncs.pfnIsCvarReadOnly||EngFuncs::textfuncs.pfnIsCvarReadOnly(setting.key)<=0);
@@ -295,9 +334,10 @@ void CMenuPanoramaSettings::PaintRow(Row &row)
 {
     int count;const Setting *settings=Definitions(count);if(row.index<0||row.index>=count)return;
     const Setting &setting=settings[row.index];const bool enabled=Available(setting);const int width=row.size.w;
-    if(row.IsCurrentSelected())Fill(row,0,0,width,48,PackRGBA(255,255,255,17));
-    Fill(row,0,47,width,1,PackRGBA(255,255,255,18));
-    Text(row,16,0,width-350,48,setting.label,17,enabled?Ink():Muted(),false,QM_CENTER);
+    const int height=row.size.h;
+    if(row.IsCurrentSelected())Fill(row,0,0,width,height,PackRGBA(115,180,217,20));
+    Fill(row,0,height-1,width,1,PackRGBA(255,255,255,12));
+    Text(row,16,0,width-350,height,setting.label,m_category==4?16:17,enabled?Ink():Muted(),false,m_category==4?QM_LEFT:QM_CENTER);
     const std::string value=m_capture==row.index?"请按下一个按键…":Value(setting);
     if(setting.kind==Number&&enabled)
     {
@@ -306,7 +346,7 @@ void CMenuPanoramaSettings::PaintRow(Row &row)
         Fill(row,width-272,22,int(212*ratio),3,AccentColor());Fill(row,width-275+int(212*ratio),17,6,13,Ink());
         Text(row,width-54,0,48,48,value.c_str(),15,Ink(),false,QM_CENTER);
     }
-    else Text(row,width-330,0,312,48,value.c_str(),16,m_capture==row.index?AccentColor():enabled?Ink():Muted(),false,QM_CENTER);
+    else Text(row,width-330,0,312,height,value.c_str(),m_category==4?15:16,m_capture==row.index?AccentColor():enabled?Ink():Muted(),false,m_category==4?QM_RIGHT:QM_CENTER);
 }
 
 bool CMenuPanoramaSettings::KeyDown(int key)
@@ -379,7 +419,7 @@ void CMenuPanoramaSettings::Revert()
 }
 void CMenuPanoramaSettings::Back()
 {
-    Save();
+    Revert();
     if(CL_IsActive())
     {
         Hide();if(m_backCallback)m_backCallback();
@@ -500,16 +540,25 @@ void CMenuPanoramaSettings::Draw()
     Text(*this,104,43,uiStatic.width-154,48,"设置",34,Ink(),false,QM_CENTER);
     Fill(*this,104,99,uiStatic.width-154,1,PackRGBA(255,255,255,35));
     if(m_displayOpen){PaintDisplay();CMenuFramework::Draw();return;}
-    const int tabWidth=(uiStatic.width-154)/4;
+    const int tabWidth=(uiStatic.width-154)/5;
     Fill(*this,104+m_category*tabWidth,157,tabWidth-4,3,AccentColor());
+    if(m_category==4)
+    {
+        Fill(*this,104,185,uiStatic.width-502,464,PackRGBA(17,25,33,242));
+        Fill(*this,104,185,3,464,PackRGBA(115,180,217,160));
+        Text(*this,138,192,420,26,"准星参数",18,Ink(),true);
+        Text(*this,uiStatic.width-590,192,170,26,"实时生效",12,Muted(),false,QM_RIGHT);
+    }
     if(m_visible.size()>9)
     {
         const int height=459,thumb=Q_max(26,height*9/int(m_visible.size()));
-        Fill(*this,uiStatic.width-55,185,3,height,PackRGBA(255,255,255,20));
-        Fill(*this,uiStatic.width-55,185+(height-thumb)*m_scroll/Q_max(1,int(m_visible.size())-9),3,thumb,PackRGBA(210,219,226,135));
+        const int scrollbar=uiStatic.width-(m_category==4?406:55);
+        Fill(*this,scrollbar,185,3,height,PackRGBA(255,255,255,20));
+        Fill(*this,scrollbar,185+(height-thumb)*m_scroll/Q_max(1,int(m_visible.size())-9),3,thumb,PackRGBA(210,219,226,135));
     }
     Text(*this,104,650,uiStatic.width-400,30,m_category==0?"滚轮滚动  ·  点击键位后按新键  ·  删除键清除键位":"滚轮滚动  ·  点击或拖动修改  ·  方向键微调",13,Muted(),false,QM_CENTER);
-    Text(*this,225,690,uiStatic.width-760,48,m_dirty?"更改已生效，返回时保存。":"设置已保存",13,Muted(),false,QM_CENTER);
+    Text(*this,225,690,uiStatic.width-760,48,m_dirty?"已修改":"已保存",13,Muted(),false,QM_CENTER);
+    if(m_category==4)PaintCrosshair();
     if(!inGame)m_chrome.Draw();CMenuFramework::Draw();
     if(m_capture>=0)
     {
@@ -520,6 +569,41 @@ void CMenuPanoramaSettings::Draw()
     if(!inGame&&m_drawChrome)m_drawChrome(this);
 }
 
+void CMenuPanoramaSettings::CrosshairDefaults()
+{
+ for(const auto &v:oc2_crosshair::variables){Remember(v.name);EngFuncs::CvarSetString(v.name,v.value);}
+ Remember("crosshair");EngFuncs::CvarSetValue("crosshair",1);m_dirty=true;Refresh();
+}
+void CMenuPanoramaSettings::CrosshairDemo(CMenuBaseItem *item)
+{
+ for(int i=0;i<3;++i)if(item==&m_crosshairDemo[i])m_crosshairDemoMode=i;
+ Refresh();
+}
+void CMenuPanoramaSettings::PaintCrosshair()
+{
+ const int x=uiStatic.width-378;
+ Fill(*this,x,185,328,464,PackRGBA(17,25,33,247));
+ Fill(*this,x,185,328,2,PackRGBA(115,180,217,150));
+ Text(*this,x+20,201,250,30,"准星预览",22,Ink(),true);
+ Text(*this,x+20,235,288,24,"在实景中查看颜色、间距与动态",12,Muted());
+ const auto preview=Pixel(*this,x+18,274);const auto previewSize=Size(292,164).Scale();
+ UI_DrawPic(preview,previewSize,PackRGBA(255,255,255,255),"gfx/shell/splash.bmp");
+ UI_FillRect(preview,previewSize,PackRGBA(13,20,27,35));
+ Fill(*this,x+18,274,292,1,PackRGBA(180,205,220,70));Fill(*this,x+18,438,292,1,PackRGBA(180,205,220,70));
+ const auto config=oc2_crosshair::ReadConfig([](const char *key){return EngFuncs::GetCvarFloat(key);});
+ oc2_crosshair::Input input;input.width=ScreenWidth;input.height=ScreenHeight;
+ const auto center=Pixel(*this,x+164,356);input.centerX=center.x;input.centerY=center.y;
+ input.spread=m_crosshairDemoMode==1?.045f:m_crosshairDemoMode==2?.012f+.04f*(.5f+.5f*std::sin(gpGlobals->time*8)):.007f;
+ input.speed=m_crosshairDemoMode==1?220:0;
+ input.oldGap=m_crosshairDemoMode==2?4+12*(.5f+.5f*std::sin(gpGlobals->time*8)):4;
+ if(EngFuncs::GetCvarFloat("crosshair"))for(const auto &r:oc2_crosshair::Build(config,input))
+ {
+  const auto white=EngFuncs::PIC_Load("*white");EngFuncs::PIC_Set(white,r.r,r.g,r.b,r.a);
+  if(r.additive)EngFuncs::PIC_DrawAdditive(r.x,r.y,r.w,r.h);else EngFuncs::PIC_DrawTrans(r.x,r.y,r.w,r.h);
+ }
+ Text(*this,x+20,453,288,28,"演示状态",13,Muted());
+ Text(*this,x+20,551,288,24,"预览按游戏中的实际尺寸显示",12,Muted(),false,QM_CENTER);
+}
 void CMenuPanoramaSettings::Dump()
 {
     Con_Printf("panorama_settings: visible=%d category=%d scroll=%d rows=%u dirty=%d capture=%d display_open=%d display_testing=%d display_mode=%d display_window=%d\n",int(IsVisible()),m_category,m_scroll,unsigned(m_visible.size()),int(m_dirty),m_capture,int(m_displayOpen),int(m_displayTesting),m_displaySelectedMode,m_displaySelectedWindow);

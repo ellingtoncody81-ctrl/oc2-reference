@@ -366,7 +366,7 @@ bool ReadStudioTriangles(const studiohdr_t* h,int body,int skin,const float (*po
     return DecodeStudioTriangles(h,cache)&&ReadStudioTriangles(cache,body,skin,poseMatrices,out,append,false,allowedBones);
 }
 
-static bool BuildMountRegion(const studiohdr_t* h,MountCache& out,int root)
+static bool BuildMountRegion(const studiohdr_t* h,MountCache& out,int root,const StudioTriangleCache* orientation=nullptr)
 {
     out=MountCache();
     if(!DecodeStudioTriangles(h,out.studio)||!buildBind(h,out.bind))return false;
@@ -376,8 +376,9 @@ static bool BuildMountRegion(const studiohdr_t* h,MountCache& out,int root)
     const float (*matrices)[3][4]=&out.bind[0].m;
     std::vector<Triangle> decals;std::set<int> bones;V normal;
     V seed;
-    for(const StudioTriangle& t:out.studio.triangles)
-        if(t.decal&&sameActive(out.studio,t,0)&&weaponRoot(sourceBones,t.corner[0].bone)==root)
+    const auto &side=orientation?*orientation:out.studio;
+    for(const StudioTriangle& t:side.triangles)
+        if(t.decal&&sameActive(side,t,0)&&weaponRoot(sourceBones,t.corner[0].bone)==root)
         {
             Triangle tri=posed(t,matrices);if(tri.bone<0)continue;
             V a(tri.p[0]),b(tri.p[1]),c(tri.p[2]),n(tri.normal);
@@ -414,7 +415,7 @@ static bool BuildMountRegion(const studiohdr_t* h,MountCache& out,int root)
             std::string name=lower(sourceBones[corner.bone].name,sizeof(sourceBones[corner.bone].name));
             arm|=contains(name,"bip01")&&(contains(name,"hand")||contains(name,"finger")||contains(name,"foretwist")||contains(name,"arm"));
         }
-        if(arm)continue;
+        if(arm&&!orientation)continue;
         bool belongs=true;for(const auto& corner:raw.corner)belongs=belongs&&weaponRoot(sourceBones,corner.bone)==root;
         if(!belongs)continue;
         Triangle t=posed(raw,matrices);
@@ -457,18 +458,20 @@ static bool BuildMountRegion(const studiohdr_t* h,MountCache& out,int root)
     return out.valid;
 }
 
-bool BuildMountCache(const studiohdr_t* h,MountCache& out)
+bool BuildMountCache(const studiohdr_t* h,MountCache& out,const studiohdr_t* orientationHeader)
 {
-    out=MountCache();StudioTriangleCache decoded;
+    out=MountCache();StudioTriangleCache decoded,orientation;
     if(!DecodeStudioTriangles(h,decoded))return false;
+    if(orientationHeader&&(!DecodeStudioTriangles(orientationHeader,orientation)||orientationHeader->numbones!=h->numbones))return false;
+    const auto &side=orientationHeader?orientation:decoded;
     const auto* bones=at<mstudiobone_t>(h,h->boneindex,h->numbones);if(!bones)return false;
     std::set<int> roots;
-    for(const auto& triangle:decoded.triangles)if(triangle.decal&&sameActive(decoded,triangle,0))
+    for(const auto& triangle:side.triangles)if(triangle.decal&&sameActive(side,triangle,0))
         roots.insert(weaponRoot(bones,triangle.corner[0].bone));
     if(roots.empty())return false;
-    if(roots.size()==1)return BuildMountRegion(h,out,*roots.begin());
+    if(roots.size()==1)return BuildMountRegion(h,out,*roots.begin(),orientationHeader?&side:nullptr);
     std::vector<MountCache> regions;
-    for(int root:roots){MountCache region;if(BuildMountRegion(h,region,root))regions.push_back(std::move(region));}
+    for(int root:roots){MountCache region;if(BuildMountRegion(h,region,root,orientationHeader?&side:nullptr))regions.push_back(std::move(region));}
     if(regions.empty())return false;
     out=regions.front();
     out.regions=std::move(regions);

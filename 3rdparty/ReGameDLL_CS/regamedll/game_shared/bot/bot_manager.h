@@ -54,10 +54,11 @@ public:
 
 private:
 	int m_id;
-	bool m_oc2Smoke = false;
 	EntityHandle<CGrenade> m_entity;
 	Vector m_detonationPosition;
 	float m_dieTimestamp;
+	// Append extension state so the original grenade-handle offsets stay stable.
+	bool m_oc2Smoke;
 };
 
 typedef std::list<ActiveGrenade *> ActiveGrenadeList;
