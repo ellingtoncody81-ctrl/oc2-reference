@@ -47,11 +47,14 @@ public:
 
 	bool IsEntity(CGrenade *grenade) const { return grenade == m_entity; }
 	int GetID() const { return m_id; }
+	bool IsOC2Smoke() const { return m_oc2Smoke; }
+	void MarkOC2Smoke() { m_oc2Smoke = true; }
 	const Vector *GetDetonationPosition() const { return &m_detonationPosition; }
 	const Vector *GetPosition();
 
 private:
 	int m_id;
+	bool m_oc2Smoke = false;
 	EntityHandle<CGrenade> m_entity;
 	Vector m_detonationPosition;
 	float m_dieTimestamp;
@@ -63,6 +66,7 @@ class CBotManager
 {
 public:
 	CBotManager();
+	void MarkOC2Smoke(CGrenade *grenade);
 	virtual ~CBotManager() {}
 
 	virtual void ClientDisconnect(CBasePlayer *pPlayer) = 0;

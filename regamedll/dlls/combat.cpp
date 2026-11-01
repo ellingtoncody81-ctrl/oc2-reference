@@ -53,7 +53,7 @@ void RadiusFlash(Vector vecSrc, entvars_t *pevInflictor, entvars_t *pevAttacker,
 	TraceResult tr;
 	float flAdjustedDamage, falloff;
 	Vector vecSpot;
-	float flRadius = 1500;
+	float flRadius = 3000;
 
 	if (flRadius)
 		falloff = flDamage / flRadius;
@@ -64,7 +64,7 @@ void RadiusFlash(Vector vecSrc, entvars_t *pevInflictor, entvars_t *pevAttacker,
 
 	vecSrc.z += 1;
 
-	while ((pEntity = UTIL_FindEntityInSphere(pEntity, vecSrc, 1500.0)))
+	while ((pEntity = UTIL_FindEntityInSphere(pEntity, vecSrc, flRadius)))
 	{
 		TraceResult tr2;
 		Vector vecLOS;
@@ -130,20 +130,13 @@ void RadiusFlash(Vector vecSrc, entvars_t *pevInflictor, entvars_t *pevAttacker,
 
 			UTIL_MakeVectors(pPlayer->pev->v_angle);
 			vecLOS = vecSrc - pPlayer->EarPosition();
+			vecLOS.NormalizeInPlace();
 			flDot = DotProduct(vecLOS, gpGlobals->v_forward);
-
-			if (flDot < 0)
-			{
-				alpha = 200;
-				fadeTime = flAdjustedDamage * 1.75;
-				fadeHold = flAdjustedDamage / 3.5;
-			}
-			else
-			{
-				alpha = 255;
-				fadeTime = flAdjustedDamage * 3;
-				fadeHold = flAdjustedDamage / 1.5;
-			}
+			alpha = 255;
+			if (flDot >= 0.6f) { fadeTime=flAdjustedDamage*2.5f; fadeHold=flAdjustedDamage*1.25f; }
+			else if (flDot >= 0.3f) { fadeTime=flAdjustedDamage*1.75f; fadeHold=flAdjustedDamage*0.8f; }
+			else if (flDot >= -0.2f) { fadeTime=flAdjustedDamage; fadeHold=flAdjustedDamage*0.5f; }
+			else { fadeTime=flAdjustedDamage*0.5f; fadeHold=flAdjustedDamage*0.25f; }
 
 			currentHoldTime = pPlayer->m_blindStartTime + pPlayer->m_blindHoldTime - gpGlobals->time;
 
@@ -294,7 +287,13 @@ void RadiusDamage(Vector vecSrc, entvars_t *pevInflictor, entvars_t *pevAttacker
 #endif
 				length = (vecSrc - pEntity->pev->origin).Length();
 
-			if (useLOS)
+			if (bitsDamageType & DMG_EXPLOSION)
+			{
+				// HE only: CS:GO Gaussian attenuation with real BSP exposure.
+				const float sigma=flRadius/3.0f;
+				flAdjustedDamage=flDamage*std::exp(-length*length/(2*sigma*sigma))*GetAmountOfPlayerVisible(vecSrc,pEntity);
+			}
+			else if (useLOS)
 			{
 				if (!flRadius)
 					flRadius = flDamage;

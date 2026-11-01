@@ -27,6 +27,7 @@
 */
 
 #include "precompiled.h"
+#include "oc2_bot_tactics.h"
 
 // Lightweight maintenance, invoked frequently
 void CCSBot::Upkeep()
@@ -34,6 +35,12 @@ void CCSBot::Upkeep()
 	if (TheCSBots()->IsLearningMap() || !IsAlive())
 		return;
 
+	if(IsUsingGrenade())StopRapidFire();
+	if(GetActiveWeapon() && GetActiveWeapon()->m_iId==WEAPON_TASER)
+	{
+		StopRapidFire();
+		if(!OC2_BotCanUseZeus(this))ClearPrimaryAttack();
+	}
 	if (m_isRapidFiring)
 		TogglePrimaryAttack();
 
@@ -314,6 +321,7 @@ void CCSBot::Update()
 	// if we're blind, retreat!
 	if (IsBlind())
 	{
+		OC2_BotUtilityUpdate(this,nullptr); // holster a prepared grenade before the blind-input path
 		if (!IsAtHidingSpot())
 		{
 			switch (m_blindMoveDir)
@@ -340,6 +348,7 @@ void CCSBot::Update()
 
 	// "threat" may be the same as our current enemy
 	CBasePlayer* threat = GetRecognizedEnemy();
+	if(OC2_BotUtilityUpdate(this,threat))return;
 	if (threat)
 	{
 		// adjust our personal "safe" time
@@ -487,33 +496,6 @@ void CCSBot::Update()
 		FireWeaponAtEnemy();
 	}
 
-	if (IsEndOfSafeTime() && IsUsingGrenade() && (IsWellPastSafe() || !IsUsingHEGrenade()) && !m_isWaitingToTossGrenade)
-	{
-		Vector target;
-		if (FindGrenadeTossPathTarget(&target))
-		{
-			ThrowGrenade(&target);
-		}
-	}
-
-	if (IsUsingGrenade())
-	{
-		bool doToss = (m_isWaitingToTossGrenade && (m_tossGrenadeTimer.IsElapsed() || m_lookAtSpotState == LOOK_AT_SPOT));
-
-		if (doToss)
-		{
-			ClearPrimaryAttack();
-			m_isWaitingToTossGrenade = false;
-		}
-		else
-		{
-			PrimaryAttack();
-		}
-	}
-	else
-	{
-		m_isWaitingToTossGrenade = false;
-	}
 
 #ifdef REGAMEDLL_FIXES
 	// bots with low skill cannot switch weapons underwater

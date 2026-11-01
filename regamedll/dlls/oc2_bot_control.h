@@ -2,6 +2,8 @@
 class CBasePlayer;
 bool OC2_BotTakeover(CBasePlayer *player);
 bool OC2_BotParked(CBasePlayer *player);
+bool OC2_ControlledBot(CBasePlayer *player);
+void OC2_BotControlTeamAward(int team, int amount);
 void OC2_BotControlRegister();
 void OC2_BotControlReset();
 void OC2_BotControlRound();

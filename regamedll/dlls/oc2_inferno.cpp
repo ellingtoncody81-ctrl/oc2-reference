@@ -1,6 +1,8 @@
 #include "precompiled.h"
 #include "effects.h"
 #include "oc2_inferno.h"
+#include "oc2_smoke.h"
+#include "oc2_bot_tactics.h"
 #include <cmath>
 
 // Behavior reference: CS:GO molotov_projectile.cpp and Effects/inferno.cpp.
@@ -13,7 +15,7 @@ const char *const kFlame = "sprites/flame1.spr";
 const char *const kBurnSound = "weapons/molotov-1.wav"; // verified eight-second sample
 const char *const kImpactSound = "weapons/molotov_hit1.wav";
 EHANDLE s_pools[kPools], s_projectiles[kProjectiles];
-struct SmokeCloud { Vector origin; float start = 0, end = 0; bool active = false; };
+struct SmokeCloud { Vector origin; float start = 0, end = 0; bool active = false, modern = false; };
 SmokeCloud s_clouds[kClouds];
 int s_flame = 0, s_puff = 0, s_damageEvents = 0;
 float s_damageAmount = 0;
@@ -91,12 +93,13 @@ bool SmokeContains(const Vector &point, const Vector &origin)
 }
 bool InSmoke(const Vector &point)
 {
+	if (OC2_SmokeInside(point)) return true;
 	const float now = gpGlobals->time;
 	for (SmokeCloud &cloud : s_clouds)
 	{
 		if (!cloud.active) continue;
 		if (now < cloud.start || now > cloud.end) { cloud.active = false; continue; }
-		if (SmokeContains(point, cloud.origin)) return true;
+		if (!cloud.modern && SmokeContains(point, cloud.origin)) return true;
 	}
 	return false;
 }
@@ -220,6 +223,17 @@ public:
 		int count = 0;
 		for (int i=0; i<m_count; ++i) if (m_cells[i].burning) ++count;
 		return count;
+	}
+	bool Nearest(const Vector &point, float &distance, Vector &fire) const
+	{
+		bool found=false;
+		if(m_stopped || gpGlobals->time>=m_end)return false;
+		for(int i=0;i<m_count;++i)if(m_cells[i].burning)
+		{
+			const float d=(point-m_cells[i].point).LengthSquared();
+			if(d<distance){distance=d;fire=m_cells[i].point;found=true;}
+		}
+		return found;
 	}
 	void FireThink()
 	{
@@ -555,7 +569,7 @@ CGrenade *OC2_ThrowMolotov(entvars_t *owner,const Vector &source,const Vector &v
 	return grenade;
 }
 
-void OC2_InfernoSmokeDetonate(const Vector &origin)
+void OC2_InfernoSmokeDetonate(const Vector &origin, bool modern)
 {
 	if (!Finite(origin) || !std::isfinite(gpGlobals->time)) return;
 	int slot = 0;
@@ -568,6 +582,7 @@ void OC2_InfernoSmokeDetonate(const Vector &origin)
 	s_clouds[slot].start = gpGlobals->time;
 	s_clouds[slot].end = gpGlobals->time+kSmokeLifetime;
 	s_clouds[slot].active = true;
+	s_clouds[slot].modern = modern;
 	for (int i=0; i<kPools; ++i)
 	{
 		CBaseEntity *entity = s_pools[i];
@@ -593,6 +608,8 @@ bool OC2_InfernoSmokeTouch(CGrenade *smoke)
 
 void OC2_InfernoRoundReset()
 {
+	OC2_SmokeReset();
+	OC2_BotTacticsReset();
 	for (int i=0; i<kProjectiles; ++i)
 	{
 		CBaseEntity *entity = s_projectiles[i];
@@ -633,4 +650,21 @@ void OC2_InfernoDump()
 		CGrenade *grenade=static_cast<CGrenade *>(entity);
 		ALERT(at_console,"oc2grenade: index=%d model=%s origin=%.3f/%.3f/%.3f velocity=%.3f/%.3f/%.3f detonated=%d flags=%d\n",entity->entindex(),STRING(entity->pev->model),entity->pev->origin.x,entity->pev->origin.y,entity->pev->origin.z,entity->pev->velocity.x,entity->pev->velocity.y,entity->pev->velocity.z,int(grenade->m_bDetonated),entity->pev->flags);
 	}
+}
+
+bool OC2_InfernoNearest(const Vector &point,float range,Vector *fire)
+{
+	if(!fire || !Finite(point) || range<=0)return false;
+	float distance=range*range;bool found=false;
+	for(auto &handle:s_pools)
+	{
+		CBaseEntity *entity=handle;
+		if(entity && static_cast<COC2Inferno *>(entity)->Nearest(point,distance,*fire))found=true;
+	}
+	return found;
+}
+bool OC2_InfernoDanger(const Vector &point)
+{
+	Vector fire;
+	return OC2_InfernoNearest(point,85,&fire)&&std::fabs(point.z-fire.z)<60;
 }

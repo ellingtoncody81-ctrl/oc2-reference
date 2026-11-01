@@ -27,6 +27,7 @@
 */
 
 #include "precompiled.h"
+#include "oc2_bot_tactics.h"
 
 bool HasDefaultPistol(CCSBot *me)
 {
@@ -490,44 +491,7 @@ void BuyState::OnUpdate(CCSBot *me)
 				me->ClientCommand("secammo");
 			}
 
-			// buy a grenade if we wish, and we don't already have one
-			if (m_buyGrenade && !me->HasGrenade())
-			{
-				if (UTIL_IsTeamAllBots(me->m_iTeam))
-				{
-					// only allow Flashbangs if everyone on the team is a bot (dont want to blind our friendly humans)
-					float rnd = RANDOM_FLOAT(0, 100);
-
-					if (rnd < 10.0f)
-					{
-						// smoke grenade
-						me->ClientCommand("sgren");
-					}
-					else if (rnd < 35.0f)
-					{
-						// flashbang
-						me->ClientCommand("flash");
-					}
-					else
-					{
-						// he grenade
-						me->ClientCommand("hegren");
-					}
-				}
-				else
-				{
-					if (RANDOM_FLOAT(0, 100) < 10.0f)
-					{
-						// smoke grenade
-						me->ClientCommand("sgren");
-					}
-					else
-					{
-						// he grenade
-						me->ClientCommand("hegren");
-					}
-				}
-			}
+			OC2_BotBuyUtility(me);
 
 			if (m_buyDefuseKit)
 			{

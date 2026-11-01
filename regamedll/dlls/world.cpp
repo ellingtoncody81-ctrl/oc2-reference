@@ -1,5 +1,6 @@
 #include "precompiled.h"
 #include "oc2_bot_control.h"
+#include "oc2_smoke.h"
 #include "oc2_weapon_pickup.h"
 
 edict_t *g_pBodyQueueHead;
@@ -337,6 +338,7 @@ void CWorld::Precache()
 	// player picks up a gun.
 	PRECACHE_SOUND("items/gunpickup2.wav");
 	OC2_PickupPrecache();
+	OC2_SmokePrecache();
 	OC2_BotControlReset();
 
 	// dead bodies hitting the ground (animation events)

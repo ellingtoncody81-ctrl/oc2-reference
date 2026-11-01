@@ -27,6 +27,8 @@
 */
 
 #include "precompiled.h"
+#include "oc2_economy.h"
+#include "oc2_bot_control.h"
 
 cvar_t cv_hostage_ai_enable = { "hostage_ai_enable", "0", 0, 0.0f, nullptr };
 cvar_t cv_hostage_debug = { "hostage_debug", "0", FCVAR_SERVER, 0.0f, nullptr };
@@ -1050,6 +1052,10 @@ void CHostage::TraceAttack(entvars_t *pevAttacker, float flDamage, Vector vecDir
 BOOL CHostage::TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType)
 {
 	if (pev->takedamage == DAMAGE_NO || m_iOC2Terminal) return FALSE;
+	CBaseEntity *attacker = CBaseEntity::Instance(pevAttacker);
+	if (attacker && attacker->IsPlayer() && flDamage > 0 && std::isfinite(flDamage))
+		static_cast<CBasePlayer *>(attacker)->AddAccount(-oc2_economy::HostageDamage
+			* int(Q_min(flDamage, Q_max(0.0f, pev->health))), RT_HOSTAGE_DAMAGED);
 	PlayPainSound();
 	return TRUE;
 }
@@ -1231,9 +1237,9 @@ void CHostage::GiveCTTouchBonus(CBasePlayer *pPlayer)
 		return;
 
 	m_bTouched = TRUE;
-	CSGameRules()->m_iAccountCT += CSGameRules()->m_rgRewardAccountRules[RR_TOOK_HOSTAGE_ACC];
+	OC2_BotControlTeamAward(CT,oc2_economy::HostageTouchTeam);
 
-	pPlayer->AddAccount(CSGameRules()->m_rgRewardAccountRules[RR_TOOK_HOSTAGE], RT_HOSTAGE_TOOK);
+	pPlayer->AddAccount(oc2_economy::HostageTouch, RT_HOSTAGE_TOOK);
 	UTIL_LogPrintf("\"%s<%i><%s><CT>\" triggered \"Touched_A_Hostage\"\n", STRING(pPlayer->pev->netname), GETPLAYERUSERID(pPlayer->edict()), GETPLAYERAUTHID(pPlayer->edict()));
 }
 

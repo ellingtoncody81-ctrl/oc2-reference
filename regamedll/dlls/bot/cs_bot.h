@@ -296,6 +296,8 @@ private:
 class CCSBot: public CBot
 {
 public:
+	void PrimaryAttack() override;
+	friend bool OC2_BotUtilityUpdate(CCSBot *, CBasePlayer *);
 	CCSBot();																											// constructor initializes all values to zero
 	virtual BOOL TakeDamage(entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int bitsDamageType);		// invoked when injured by something (EXTEND) - returns the amount of damage inflicted
 	virtual void Killed(entvars_t *pevAttacker, int iGib);																// invoked when killed (EXTEND)
@@ -1571,6 +1573,8 @@ public:
 };
 
 // Functor used with NavAreaBuildPath()
+bool OC2_InfernoDanger(const Vector &point);
+
 class PathCost
 {
 public:
@@ -1581,6 +1585,7 @@ public:
 	}
 	float operator()(CNavArea *area, CNavArea *fromArea, const CNavLadder *ladder)
 	{
+		if(fromArea && OC2_InfernoDanger(*area->GetCenter()))return -1.0f;
 		const float baseDangerFactor = 100.0f;
 
 		// respond to the danger modulated by our aggression (even super-aggressives pay SOME attention to danger)
