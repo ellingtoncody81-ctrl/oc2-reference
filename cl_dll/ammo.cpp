@@ -19,6 +19,7 @@
 //
 
 #include "hud.h"
+#include "oc2_observer.h"
 #include "match_ui.h"
 #include "match_status.h"
 #include "buy_menu_state.h"
@@ -850,6 +851,7 @@ int CHudAmmo::MsgFunc_Brass( const char *pszName, int iSize, void *pbuf )
 // Slot button pressed
 void CHudAmmo::SlotInput( int iSlot )
 {
+ if(g_iUser1&&!gHUD.m_Menu.m_fMenuDisplayed){OC2_ObserverSelect(iSlot);return;}
 	gWR.SelectSlot(iSlot, FALSE, 1);
 }
 
@@ -987,6 +989,7 @@ void CHudAmmo::UserCmd_Close(void)
 // Selects the next item in the weapon menu
 void CHudAmmo::UserCmd_NextWeapon(void)
 {
+	if(g_iUser1){if(gEngfuncs.IsSpectateOnly())gHUD.m_Spectator.SetModes(g_iUser1==4?2:g_iUser1==2?3:4,0);else gEngfuncs.pfnServerCmd("spec_cycle\n");return;}
 	if ( gHUD.m_fPlayerDead || (gHUD.m_iHideHUDDisplay & (HIDEHUD_WEAPONS | HIDEHUD_ALL)) )
 		return;
 
@@ -1044,6 +1047,7 @@ void CHudAmmo::UserCmd_NextWeapon(void)
 // Selects the previous item in the menu
 void CHudAmmo::UserCmd_PrevWeapon(void)
 {
+	if(g_iUser1){if(gEngfuncs.IsSpectateOnly())gHUD.m_Spectator.SetModes(g_iUser1==4?2:g_iUser1==2?3:4,0);else gEngfuncs.pfnServerCmd("spec_cycle\n");return;}
 	if ( gHUD.m_fPlayerDead || (gHUD.m_iHideHUDDisplay & (HIDEHUD_WEAPONS | HIDEHUD_ALL)) )
 		return;
 

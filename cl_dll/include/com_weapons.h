@@ -38,6 +38,7 @@ int				UTIL_SharedRandomLong( unsigned int seed, int low, int high );
 int				HUD_GetWeaponAnim( void );
 void			HUD_SendWeaponAnim(int iAnim, int iWeaponId, int iBody, int iForce = 0 );
 int				HUD_GetWeapon( void );
+unsigned HUD_WeaponAnimationAction();
 void HUD_UpdateReloadAnimation(const struct local_state_s *state, double predictedTime);
 void HUD_ApplyReloadAnimation(struct cl_entity_s *view, int weapon, bool shield, double time);
 void HUD_DumpReloadAnimation();

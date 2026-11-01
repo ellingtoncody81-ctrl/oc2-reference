@@ -17,6 +17,7 @@
 // Shared weapons common/shared functions
 #include <stdarg.h>
 #include "hud.h"
+#include "oc2_observer.h"
 #include "cl_util.h"
 #include "com_weapons.h"
 
@@ -441,6 +442,7 @@ HUD_GetWeapon
 Retrieve current predicted weapon id
 =====================
 */
+unsigned HUD_WeaponAnimationAction(){return g_weaponAnimationAction;}
 int HUD_GetWeapon( void )
 {
 	return g_currentweapon;

@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_bot_control.h"
 #include "oc2_spec_stats.h"
 #include "oc2_inferno.h"
 #include "oc2_item_server.h"
@@ -252,6 +253,7 @@ void LinkUserMessages()
 	gmsgOC2Row        = REG_USER_MSG("OC2SpecRow", 37);
 	gmsgFireVariant   = REG_USER_MSG("FireVariant", 1); // Physical fire-grenade variant, independent of team.
 	OC2_ItemsRegisterMessage();
+	OC2_BotControlRegister();
 }
 
 void WriteSigonMessages()
@@ -340,6 +342,7 @@ void EXT_FUNC ClientDisconnect(edict_t *pEntity)
 	OC2_SpecStatsClear(ENTINDEX(pEntity));
 	CBasePlayer *pPlayer = CBasePlayer::Instance(pEntity);
 	if (pPlayer) OC2_HostageDropPlayer(pPlayer);
+	OC2_BotControlDisconnect(pPlayer);
 	OC2_ItemsClientDisconnected(pPlayer);
 
 	if (!g_pGameRules->IsGameOver())
@@ -1409,6 +1412,7 @@ LINK_HOOK_VOID_CHAIN(BuyItem, (CBasePlayer *pPlayer, int iSlot), pPlayer, iSlot)
 
 void EXT_FUNC __API_HOOK(BuyItem)(CBasePlayer *pPlayer, int iSlot)
 {
+	if((iSlot==MENU_SLOT_ITEM_FLASHGREN||iSlot==MENU_SLOT_ITEM_HEGREN||iSlot==MENU_SLOT_ITEM_SMOKEGREN)&&OC2_GrenadeCount(pPlayer)>=3){ClientPrint(pPlayer->pev,HUD_PRINTCENTER,u8"\u624b\u96f7\u6700\u591a\u643a\u5e26 3 \u9897");return;}
 	int iItemPrice = 0;
 	const char *pszItem = nullptr;
 
@@ -1695,6 +1699,7 @@ CBaseEntity *EXT_FUNC __API_HOOK(BuyWeaponByWeaponID)(CBasePlayer *pPlayer, Weap
 		OC2_LogPurchaseFailure(pPlayer->entindex(), logName, logCost, "not_allowed");
 		return nullptr;
 	}
+	if(OC2_GrenadeWeapon(weaponID)&&OC2_GrenadeCount(pPlayer)>=3){ClientPrint(pPlayer->pev,HUD_PRINTCENTER,u8"\u624b\u96f7\u6700\u591a\u643a\u5e26 3 \u9897");return nullptr;}
 	const bool fireGrenade = weaponID == WEAPON_MOLOTOV;
 	if (fireGrenade && pPlayer->m_iTeam != CT && pPlayer->m_iTeam != TERRORIST) return nullptr;
 	const bool incendiary = fireGrenade && pPlayer->m_iTeam == CT;
@@ -1916,6 +1921,7 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
 		// This is done here just in case.
 		if (g_pGameRules->IsFreezePeriod() || pPlayer->pev->deadflag != DEAD_NO)
 		{
+			OC2_BotControlTeam(pPlayer);
 			if (pPlayer->m_iTeam != UNASSIGNED && pPlayer->pev->deadflag == DEAD_NO)
 			{
 				if (pPlayer->Kill())
@@ -2124,6 +2130,7 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
 	}
 
 #ifdef REGAMEDLL_ADD
+	OC2_BotControlTeam(pPlayer);
 	if (!CSGameRules()->ShouldSkipShowMenu())
 #endif
 	{
@@ -2478,6 +2485,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
 	CBasePlayer *pPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pev);
 	if (OC2RemovedBuyCommand(pcmd)) return;
 	if (OC2_ItemsCommand(pPlayer,pcmd)) return;
+	if (OC2_BotControlCommand(pPlayer,pcmd)) return;
 	if (FStrEq(pcmd,"oc2_buymenu_open") || FStrEq(pcmd,"oc2_buymenu_close"))
 	{
 		pPlayer->SetBuyPresentationOpen(FStrEq(pcmd,"oc2_buymenu_open"));
@@ -3778,6 +3786,7 @@ void EXT_FUNC StartFrame()
 	}
 
 	EndFrame();
+	OC2_BotControlFrame();
 	OC2_ItemsFrame();
 }
 

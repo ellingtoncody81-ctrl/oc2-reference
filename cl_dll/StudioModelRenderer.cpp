@@ -17,6 +17,7 @@
 // for this code.
 #include <assert.h>
 #include "hud.h"
+#include "oc2_observer.h"
 #include "cl_util.h"
 #include "const.h"
 #include "com_model.h"
@@ -1513,6 +1514,7 @@ int CStudioModelRenderer::StudioDrawModel(int flags)
 		bool shield;
 		const int weapon = ViewModelReloadWeapon(m_pRenderModel,shield);
 		HUD_ApplyReloadAnimation(m_pCurrentEntity,weapon,shield,m_clTime);
+		OC2_ControlApplyAnimation(m_pCurrentEntity,HUD_GetWeapon(),m_clTime);
 	}
 
 	StudioSetUpTransform(0);

@@ -27,6 +27,7 @@
 */
 
 #include "precompiled.h"
+#include "oc2_bot_control.h"
 #include "oc2_weapon_pickup.h"
 #include "oc2_spec_stats.h"
 #include "oc2_inferno.h"
@@ -4217,6 +4218,7 @@ LINK_HOOK_CLASS_VOID_CHAIN(CBasePlayer, StartObserver, (Vector &vecPosition, Vec
 
 void EXT_FUNC CBasePlayer::__API_HOOK(StartObserver)(Vector &vecPosition, Vector &vecViewAngle)
 {
+ OC2_BotControlDeath(this);
 	// clear any clientside entities attached to this player
 	MESSAGE_BEGIN(MSG_PAS, SVC_TEMPENTITY, pev->origin);
 		WRITE_BYTE(TE_KILLPLAYERATTACHMENTS);
@@ -4774,6 +4776,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, PreThink)
 
 void EXT_FUNC CBasePlayer::__API_HOOK(PreThink)()
 {
+	if(OC2_BotParked(this))return;
 	OC2_SpecStatsParticipate(this);
 	// These buttons have changed this frame
 	int buttonsChanged = (m_afButtonLast ^ pev->button);
@@ -5402,6 +5405,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, PostThink)
 
 void EXT_FUNC CBasePlayer::__API_HOOK(PostThink)()
 {
+	if(OC2_BotParked(this))return;
 	// intermission or finale
 	if (g_pGameRules->IsGameOver())
 		goto pt_end;
@@ -5824,6 +5828,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, Spawn)
 
 void EXT_FUNC CBasePlayer::__API_HOOK(Spawn)()
 {
+	OC2_BotControlSpawn(this);
 	ResetBuyPresentation();
 	int i;
 	m_iClientBuyState = -1;
@@ -7326,6 +7331,7 @@ LINK_HOOK_CLASS_CHAIN(BOOL, CBasePlayer, AddPlayerItem, (CBasePlayerItem *pItem)
 // Add a weapon to the player (Item == Weapon == Selectable Object)
 BOOL EXT_FUNC CBasePlayer::__API_HOOK(AddPlayerItem)(CBasePlayerItem *pItem)
 {
+	if(OC2_GrenadeWeapon(pItem->m_iId)&&static_cast<CBasePlayerWeapon *>(pItem)->m_iDefaultAmmo>0&&OC2_GrenadeCount(this)>=3)return FALSE;
 	CBasePlayerItem *pInsert = m_rgpPlayerItems[pItem->iItemSlot()];
 	while (pInsert)
 	{
@@ -7461,7 +7467,7 @@ int EXT_FUNC CBasePlayer::__API_HOOK(GiveAmmo)(int iCount, const char *szName, i
 	if (i < 0 || i >= MAX_AMMO_SLOTS)
 		return -1;
 
-	int iAdd = Q_min(iCount, iMax - m_rgAmmo[i]);
+	int iAdd = Q_min(Q_min(iCount, iMax - m_rgAmmo[i]),OC2_GrenadeRoom(this,szName));
 	if (iAdd < 1)
 		return i;
 
@@ -8855,6 +8861,7 @@ LINK_HOOK_CLASS_VOID_CHAIN2(CBasePlayer, SwitchTeam)
 
 void CBasePlayer::__API_HOOK(SwitchTeam)()
 {
+ OC2_BotControlTeam(this);
 	ResetBuyPresentation();
 	int oldTeam;
 	char *szOldTeam;

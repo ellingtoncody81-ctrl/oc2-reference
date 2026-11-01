@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include "hud.h"
+#include "oc2_observer.h"
 #include "cl_util.h"
 #include "parsemsg.h"
 #include "triangleapi.h"
@@ -372,7 +373,7 @@ bool CHudScoreboard :: ShouldDrawScoreboard() const
 	if( m_bForceDraw )
 		return true;
 
-	if( m_bShowscoresHeld || gHUD.m_iIntermission )
+	if( m_bShowscoresHeld || OC2_ObserverStatsOpen() || gHUD.m_iIntermission )
 		return true;
 
 	if( cl_show_scoreboard_on_death && cl_show_scoreboard_on_death->value && gHUD.m_Health.m_iHealth <= 0 )

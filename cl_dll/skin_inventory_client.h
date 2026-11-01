@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+namespace oc2_accessories {struct WeaponConfig;}
 class CStudioModelRenderer;
 struct cl_entity_s;
 struct model_s;
@@ -13,6 +14,8 @@ int OC2_InventoryKnifeDefinition();
 int OC2_InventoryPlayerKnifeDefinition(int player);
 float OC2_InventoryKnifeDuration(int animation,float fallback);
 bool OC2_InventoryOwnAccessories(int weapon);
+bool OC2_InventoryInstanceAccessories(int weapon,oc2_accessories::WeaponConfig &config,unsigned &count);
+void OC2_InventoryPublishAccessories(int weapon,const oc2_accessories::WeaponConfig &config,unsigned count);
 model_s *OC2_InventoryPlayerModel(model_s *model,int player);
 // Returns 0 for legacy customization, -1 for removal, or the local pattern ID.
 int OC2_InventoryCharmSelection(int weapon);

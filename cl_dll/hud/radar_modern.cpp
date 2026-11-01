@@ -32,6 +32,7 @@ Measurements taken from the decompiled binary:
 #include "hud/radar_modern.h"
 #include "view_ads.h"		// V_CurrentADSWorldFOV: the cone must follow the scope
 #include "radar_fullmap_layout.h"
+#include "oc2_observer.h"
 #include "spectator_layout.h"
 #include "oc2_spectator_data.h"
 #include "match_ui.h"
@@ -2524,7 +2525,7 @@ int CHudRadarModern::Draw( float flTime )
 
 	m_iPlayerNum = gHUD.m_Scoreboard.m_iPlayerNum;
 	// Source's spectator modes use the square overview even with Tab released.
-	m_bFullMap = observing || gHUD.m_Scoreboard.ShouldDrawScoreboard();
+	m_bFullMap = (observing && OC2_ObserverFullMap()) || gHUD.m_Scoreboard.ShouldDrawScoreboard();
 
 	// The mobile build computes the centre as
 	//     centre = (cl_radar_pos_x + radius) - layoutBase

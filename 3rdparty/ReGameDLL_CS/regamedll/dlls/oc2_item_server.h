@@ -2,6 +2,9 @@
 class CBasePlayer;
 class CBasePlayerItem;
 void OC2_ItemsRegisterMessage();
+void OC2_ItemsKill(CBasePlayer *player);
+void OC2_ItemsControlGlove(CBasePlayer *player,CBasePlayer *bot);
+void OC2_ItemsRestoreBody(CBasePlayer *from,CBasePlayer *to);
 void OC2_ItemsPrecache();
 void OC2_ItemsClientConnected(CBasePlayer *player);
 void OC2_ItemsClientDisconnected(CBasePlayer *player);

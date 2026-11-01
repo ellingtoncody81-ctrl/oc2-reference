@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_bot_control.h"
 #include "oc2_weapon_pickup.h"
 #include "oc2_inferno.h"
 #include "oc2_item_server.h"
@@ -1430,6 +1431,7 @@ LINK_HOOK_CLASS_VOID_CHAIN(CBasePlayerWeapon, SendWeaponAnim, (int iAnim, int sk
 void EXT_FUNC CBasePlayerWeapon::__API_HOOK(SendWeaponAnim)(int iAnim, int skiplocal)
 {
 	m_pPlayer->pev->weaponanim = iAnim;
+	m_pPlayer->m_flOc2WeaponAnimStart=gpGlobals->time;
 
 #ifdef CLIENT_WEAPONS
 	if (skiplocal && ENGINE_CANSKIP(m_pPlayer->edict()))

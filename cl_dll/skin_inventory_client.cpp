@@ -83,6 +83,7 @@ bool catalogAttempted=false,configExists=false;
 std::string readError;
 cvar_t *enabled=nullptr,*knifeInfo=nullptr;
 std::map<int,oc2_item::Appearance> items;
+std::map<int,std::string> accessorySent;
 bool networkReady=false,resyncSent=false,itemSnapshotStarted=false;
 std::string sessionLevel,lastSent,queuedConfig;
 std::vector<std::string> upload;
@@ -145,6 +146,13 @@ int ItemMessage(const char *,int size,void *buffer)
  item.serial=reader.ReadLong();item.entity=reader.ReadShort();item.owner=reader.ReadByte();item.box=reader.ReadShort();item.weapon=reader.ReadByte();
  item.definition=reader.ReadShort();item.skin=reader.ReadLong();for(int &s:item.stickers)s=reader.ReadLong();
  item.originUserid=reader.ReadLong();item.flags=reader.ReadByte();
+ const int accessories=reader.ReadByte();item.accessoryReady=(accessories&4)!=0;
+ auto &w=item.accessory;w.weapon=item.weapon;w.stattrak=(accessories&1)!=0;w.charm=(accessories&2)!=0;
+ float *values[]={&w.statU,&w.statV,&w.charmU,&w.charmV,&w.amplitude,&w.length,&w.stiffness,&w.damping};
+ for(auto *v:values)*v=oc2_item::BitsFloat(reader.ReadLong());
+ w.sticker=reader.ReadLong();item.count=unsigned(reader.ReadLong());item.charm=reader.ReadLong();
+ if((accessories&~7)||item.count>oc2_accessories::kMaximumCount||item.charm<-1||
+    (item.accessoryReady&&(!oc2_accessories::Valid(w)&&item.weapon!=29)))return 1;
  if(item.serial<=0||item.entity<=0||item.owner>32||item.box<0||item.skin<0||item.definition<0||
     (oc2_accessories::Index(item.weapon)<0&&item.weapon!=29)||
     (item.flags&~(oc2_item::Active|oc2_item::BotOrigin|oc2_item::OriginOwner)))return 1;
@@ -702,6 +710,7 @@ void OC2_InventoryResetSession()
 {
  OC2_ResetWorldStickers();
  overlayLayouts.clear();
+ accessorySent.clear();
  items.clear();draws.clear();networkReady=false;resyncSent=false;itemSnapshotStarted=false;lastSent.clear();queuedConfig.clear();upload.clear();uploadIndex=0;
  playerGloves.fill(0);gloveNetworkReady=false;lastGloveSent.clear();gloveDraw=GloveDraw();gloveShaders.clear();
  corpseGloves.clear();worldGloveDraws.clear();
@@ -792,11 +801,33 @@ float OC2_InventoryKnifeDuration(int animation,float fallback)
 }
 int OC2_InventoryCharmSelection(int weapon)
 {
- ReadState();const WeaponState *state=Find(loadout,weapon);
+ ReadState();
+ const auto *instance=networkReady?PlayerItem(ViewPlayer(),weapon):nullptr;
+ if(instance&&instance->accessoryReady&&!OC2_InventoryOwnAccessories(weapon))return instance->charm;
+ const WeaponState *state=Find(loadout,weapon);
  if(!OC2_InventoryOwnAccessories(weapon))return -1;
  if(!Active()||!state)return 0;
  const Entry *entry=Resource(state->charm);
  return entry&&IsTransparent(*entry)?-1:state->charm;
+}
+bool OC2_InventoryInstanceAccessories(int weapon,oc2_accessories::WeaponConfig &config,unsigned &count)
+{
+ if(!networkReady)return false;
+ const auto *item=PlayerItem(ViewPlayer(),weapon);
+ const auto *local=gEngfuncs.GetLocalPlayer();
+ if(!item||!local||((item->flags&oc2_item::OriginOwner)&&!(item->flags&oc2_item::BotOrigin)&&ViewPlayer()==local->index)||!item->accessoryReady)return false;
+ config=item->accessory;count=item->count;return true;
+}
+void OC2_InventoryPublishAccessories(int weapon,const oc2_accessories::WeaponConfig &config,unsigned count)
+{
+ if(!OC2_InventoryOwnAccessories(weapon))return;
+ const auto *local=gEngfuncs.GetLocalPlayer();const auto *item=PlayerItem(local->index,weapon);
+ if(!item)return;
+ const auto *choice=Find(loadout,weapon);const int charm=choice?choice->charm:0;
+ std::ostringstream s;s<<"oc2_item_acc "<<item->serial<<' '<<weapon<<' '<<int(config.stattrak)<<' '<<config.statU<<' '<<config.statV<<' '<<int(config.charm)<<' '<<config.charmU<<' '<<config.charmV<<' '<<config.sticker<<' '<<config.amplitude<<' '<<config.length<<' '<<config.stiffness<<' '<<config.damping<<' '<<count<<' '<<charm;
+ auto &sent=accessorySent;
+ const std::string command=s.str();if(sent[item->serial]==command)return;
+ if(sent.size()>8192)sent.clear();sent[item->serial]=command;gEngfuncs.pfnServerCmd((command+"\n").c_str());
 }
 bool OC2_InventoryOwnAccessories(int weapon)
 {

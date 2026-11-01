@@ -168,7 +168,7 @@ struct Diagnostics
 void Dump()
 {
  ReadSettings(gEngfuncs.GetClientTime(),true);
- const int index=Index(diag.weapon);const unsigned count=index<0?0:counters.values[index];
+ const int index=Index(diag.weapon);const unsigned count=diag.count;
  gEngfuncs.Con_Printf("oc2accessory: weapon=%d stat=%d charm=%d drawn=%d count=%u stat_bone=%d charm_bone=%d stat_offset=%.6f charm_offset=%.6f pitch=%.6f yaw=%.6f sticker=%d revision=%u read_error=%d\n",
   diag.weapon,int(diag.statEnabled),int(diag.charmEnabled),diag.drawn,count,diag.statBone,diag.charmBone,
   diag.statOffset,diag.charmOffset,diag.pitch,diag.yaw,diag.sticker,diag.revision,int(readError));
@@ -819,7 +819,7 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
  if(charm&&!LoadSkin(longNeck))return;
  if(charm)diag.charmNeck=longNeck?.6f:.2f;
  const bool left=gHUD.cl_righthand&&gHUD.cl_righthand->value<=0;
- const unsigned count=counters.values[Index(frameWeapon)];
+ const unsigned count=diag.count;
  const int body=charm?0:static_cast<int>(left?ReverseDigits(count):count);
  const int slot=charm?1:0;
  // Resolve the configured point once in BeginAccessories, then use exactly
@@ -943,10 +943,13 @@ void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)
  const char *map=gEngfuncs.pfnGetLevelName();
  if(level!=(map?map:"")){OC2_AccessoriesVidInit();level=map?map:"";}
  ReadSettings(r.m_clTime);diag=Diagnostics();diag.weapon=weapon;frameWeapon=0;weaponSurface=nullptr;
- if(!OC2_InventoryOwnAccessories(weapon))return;
+ WeaponConfig instanceConfig;unsigned instanceCount=0;
+ const bool instance=OC2_InventoryInstanceAccessories(weapon,instanceConfig,instanceCount);
+ if(!instance&&!OC2_InventoryOwnAccessories(weapon))return;
  const bool left=gHUD.cl_righthand&&gHUD.cl_righthand->value<=0;
  WeaponConfig effective;
- const WeaponConfig *cfg=Find(settings,weapon);
+ const WeaponConfig *cfg=instance?&instanceConfig:Find(settings,weapon);
+ if(!instance&&cfg)OC2_InventoryPublishAccessories(weapon,*cfg,counters.values[Index(weapon)]);
  const int charmSelection=OC2_InventoryCharmSelection(weapon);
  if(cfg&&charmSelection)
  {
@@ -977,7 +980,7 @@ void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)
   const float u=slot?cfg->charmU:cfg->statU,v=slot?cfg->charmV:cfg->statV;
   geo::FindMount(*weaponSurface,u,v,motion.requested[slot]);
  }
- diag.statEnabled=cfg->stattrak;diag.charmEnabled=cfg->charm;diag.sticker=cfg->sticker;diag.count=counters.values[Index(weapon)];
+ diag.statEnabled=cfg->stattrak;diag.charmEnabled=cfg->charm;diag.sticker=cfg->sticker;diag.count=instance?instanceCount:counters.values[Index(weapon)];
 }
 void OC2_DrawAccessories(CStudioModelRenderer &r,alight_s &lighting,float *lightdir)
 {

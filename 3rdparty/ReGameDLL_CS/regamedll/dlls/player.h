@@ -728,6 +728,7 @@ public:
 public:
 	enum { MaxLocationLen = 32 };
 
+	float m_flOc2WeaponAnimStart = 0;
 	int random_seed;
 	unsigned short m_usPlayerBleed;
 	EntityHandle<CBasePlayer> m_hObserverTarget;

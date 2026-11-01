@@ -6,6 +6,8 @@
 //=============================================================================
 
 #include "hud.h"
+#include "oc2_observer.h"
+#include "com_weapons.h"
 #include "cl_util.h"
 #include <string.h>
 #include "strl.h"
@@ -46,6 +48,56 @@ extern vec3_t v_angles;		// last view angle
 extern vec3_t v_cl_angles;	// last client/mouse angle
 extern vec3_t v_sim_org;	// last sim origin
 
+namespace {
+int controlBot=0,controlReason=3;
+bool observerMap=true,observerStats=false;
+void ObserverStats(){if(!g_iUser1){gEngfuncs.pfnServerCmd("lastinv\n");return;}observerStats=!observerStats;}
+double controlStatusTime=-100;
+struct ControlPhase {int weapon=0,animation=0;double received=0,elapsed=0;float start=0;unsigned action=0;bool pending=false,bound=false;} controlPhase;
+int ControlMessage(const char *,int size,void *data) {
+ if(!data||size!=8)return 1;
+ BufferReader r("OC2Control",data,size);if(r.ReadByte()!=1)return 1;
+ const int op=r.ReadByte(),bot=r.ReadByte(),reason=r.ReadByte(),weapon=r.ReadByte(),animation=r.ReadByte(),elapsed=r.ReadShort();
+ if(bot>32||op>2||elapsed<0)return 1;
+ if(op==0){controlBot=bot;controlReason=reason;controlStatusTime=gEngfuncs.GetClientTime();}
+ else if(op==1){controlPhase=ControlPhase();controlPhase.weapon=weapon;controlPhase.animation=animation;controlPhase.elapsed=elapsed*.001;controlPhase.received=gEngfuncs.GetClientTime();controlPhase.pending=true;controlStatusTime=-100;}
+ else {controlPhase=ControlPhase();controlStatusTime=-100;}
+ return 1;
+}
+void ControlDump(){gEngfuncs.Con_Printf("oc2control_client: mode=%d target=%d bot=%d reason=%d phase_weapon=%d phase_anim=%d pending=%d bound=%d elapsed=%.3f\n",g_iUser1,g_iUser2,controlBot,controlReason,controlPhase.weapon,controlPhase.animation,controlPhase.pending,controlPhase.bound,controlPhase.elapsed);}
+}
+bool OC2_ObserverFullMap(){return observerMap;}
+bool OC2_ObserverStatsOpen(){return g_iUser1&&observerStats;}
+void OC2_ObserverResetInputs(){observerStats=false;observerMap=true;}
+void OC2_ObserverSelect(int key){
+ const int team=key<5?2:1,index=key%5;int at=0;
+ for(int slot=1;slot<=gEngfuncs.GetMaxClients()&&slot<=32;++slot){
+  hud_player_info_t info={};gEngfuncs.pfnGetPlayerInfo(slot,&info);
+  if(!info.name||!info.name[0]||g_PlayerExtraInfo[slot].teamnumber!=team)continue;
+  if(at++==index){char command[40];snprintf(command,sizeof(command),"spec_player %d\n",slot);gEngfuncs.pfnServerCmd(command);return;}
+ }
+}
+const char *OC2_ControlPrompt() {
+ if(!g_iUser1||gEngfuncs.GetClientTime()-controlStatusTime>2||controlBot!=g_iUser2)return "";
+ if(!controlReason){
+  static char text[160];const char *key=gEngfuncs.Key_LookupBinding?gEngfuncs.Key_LookupBinding("use"):nullptr;
+  if(!key&&gEngfuncs.Key_LookupBinding)key=gEngfuncs.Key_LookupBinding("+use");
+  snprintf(text,sizeof(text),u8"[ %s ] \u63a5\u7ba1\u673a\u5668\u4eba",key?key:"E");return text;
+ }
+ return controlReason==2?u8"\u5f53\u524d\u9636\u6bb5\u4e0d\u53ef\u63a5\u7ba1":controlReason==4?u8"\u673a\u5668\u4eba\u6b63\u5728\u4ea4\u4e92\uff0c\u6682\u4e0d\u53ef\u63a5\u7ba1":u8"\u4ec5\u53ef\u63a5\u7ba1\u5b58\u6d3b\u7684\u540c\u961f\u673a\u5668\u4eba";
+}
+void OC2_ControlApplyAnimation(cl_entity_s *view,int weapon,double time) {
+ auto &p=controlPhase;if(!view||!p.weapon)return;
+ if(p.pending){
+  if(time-p.received>2){p=ControlPhase();return;}
+  if(g_iUser1||weapon!=p.weapon||HUD_GetWeaponAnim()!=p.animation||view->curstate.sequence!=p.animation)return;
+  p.pending=false;p.bound=true;p.action=HUD_WeaponAnimationAction();p.start=float(time-p.elapsed-(gEngfuncs.GetClientTime()-p.received));
+ }
+ if(p.bound){
+  if(weapon!=p.weapon||view->curstate.sequence!=p.animation||HUD_WeaponAnimationAction()!=p.action){p=ControlPhase();return;}
+  view->curstate.animtime=p.start;
+ }
+}
 void SpectatorMode(void)
 {
 	if ( gEngfuncs.Cmd_Argc() <= 1 )
@@ -230,6 +282,9 @@ void HudSayText( void )
 //-----------------------------------------------------------------------------
 int CHudSpectator::Init()
 {
+ gEngfuncs.pfnHookUserMsg("OC2Control",ControlMessage);
+ gEngfuncs.pfnAddCommand("oc2_control_client_dump",ControlDump);
+ gEngfuncs.pfnAddCommand("lastinv",ObserverStats);
 	gHUD.AddHudElem(this);
 
 	m_iFlags |= HUD_DRAW | HUD_THINK;
@@ -466,6 +521,8 @@ void CHudSpectator::SetSpectatorStartPosition()
 //-----------------------------------------------------------------------------
 int CHudSpectator::VidInit()
 {
+ OC2_ObserverResetInputs();
+ controlPhase=ControlPhase();controlStatusTime=-100;
 	m_hsprPlayer		= SPR_Load("sprites/iplayer.spr");
 	m_hsprPlayerBlue	= SPR_Load("sprites/iplayerblue.spr");
 	m_hsprPlayerRed		= SPR_Load("sprites/iplayerred.spr");
@@ -806,104 +863,18 @@ void CHudSpectator::FindNextPlayer(bool bReverse)
 	iJumpSpectator = 1;
 }
 
-void CHudSpectator::HandleButtonsDown( int ButtonPressed )
+void CHudSpectator::HandleButtonsDown(int pressed)
 {
-	double time = gEngfuncs.GetClientTime();
-
-	int newMainMode		= g_iUser1;
-	int newInsetMode	= m_pip->value;
-
-	// gEngfuncs.Con_Printf(" HandleButtons:%i\n", ButtonPressed );
-	//	if ( !gViewPort )
-
-	//Not in intermission.
-	if ( gHUD.m_iIntermission )
-		return;
-
-	if ( !g_iUser1 )
-		return; // don't do anything if not in spectator mode
-
-	// don't handle buttons during normal demo playback
-	if ( gEngfuncs.pDemoAPI->IsPlayingback() && !gEngfuncs.IsSpectateOnly() )
-		return;
-	// Slow down mouse clicks.
-	if ( m_flNextObserverInput > time )
-		return;
-
-	// enable spectator screen
-	if ( ButtonPressed & IN_DUCK )
-	{
-		gHUD.m_SpectatorGui.UserCmd_ToggleSpectatorMenu();
-	}
-
-	//  'Use' changes inset window mode
-	if ( ButtonPressed & IN_USE )
-	{
-		newInsetMode = ToggleInset(true);
-	}
-
-	// if not in HLTV mode, buttons are handled server side
-	if ( gEngfuncs.IsSpectateOnly() )
-	{
-		// changing target or chase mode not in overviewmode without inset window
-
-		// Jump changes main window modes
-		if ( ButtonPressed & IN_JUMP )
-		{
-			if ( g_iUser1 == OBS_CHASE_LOCKED )
-				newMainMode = OBS_CHASE_FREE;
-
-			else if ( g_iUser1 == OBS_CHASE_FREE )
-				newMainMode = OBS_IN_EYE;
-
-			else if ( g_iUser1 == OBS_IN_EYE )
-				newMainMode = OBS_ROAMING;
-
-			else if ( g_iUser1 == OBS_ROAMING )
-				newMainMode = OBS_MAP_FREE;
-
-			else if ( g_iUser1 == OBS_MAP_FREE )
-				newMainMode = OBS_MAP_CHASE;
-
-			else
-				newMainMode = OBS_CHASE_FREE;	// don't use OBS_CHASE_LOCKED anymore
-		}
-
-		// Attack moves to the next player
-		if ( ButtonPressed & (IN_ATTACK | IN_ATTACK2) )
-		{
-			FindNextPlayer( (ButtonPressed & IN_ATTACK2) ? true:false );
-
-			if ( g_iUser1 == OBS_ROAMING )
-			{
-				gEngfuncs.SetViewAngles( vJumpAngles );
-				iJumpSpectator = 1;
-				gHUD.m_Health.m_iPlayerLastPointedAt = g_iUser2;
-				g_PlayerExtraInfo[g_iUser2].showhealth = gHUD.m_flTime + 3.0f;
-			}
-			// lease directed mode if player want to see another player
-			m_autoDirector->value = 0.0f;
-		}
-	}
-
-	SetModes(newMainMode, newInsetMode);
-
-	if ( g_iUser1 == OBS_MAP_FREE )
-	{
-		if ( ButtonPressed & IN_FORWARD )
-			m_zoomDelta =  0.01f;
-
-		if ( ButtonPressed & IN_BACK )
-			m_zoomDelta = -0.01f;
-		
-		if ( ButtonPressed & IN_MOVELEFT )
-			m_moveDelta = -12.0f;
-
-		if ( ButtonPressed & IN_MOVERIGHT )
-			m_moveDelta =  12.0f;
-	}
-
-	m_flNextObserverInput = time + 0.2;
+ if(!g_iUser1||gHUD.m_iIntermission)return;
+ if(gEngfuncs.pDemoAPI->IsPlayingback()&&!gEngfuncs.IsSpectateOnly())return;
+ const double now=gEngfuncs.GetClientTime();if(now<m_flNextObserverInput)return;
+ if(pressed&IN_DUCK)observerMap=!observerMap;
+ // No USE-to-PiP or old map-mode cycle. USE belongs to server takeover.
+ if(gEngfuncs.IsSpectateOnly()){
+  if(pressed&IN_JUMP)SetModes(g_iUser1==OBS_IN_EYE?OBS_CHASE_FREE:g_iUser1==OBS_CHASE_FREE?OBS_ROAMING:OBS_IN_EYE,INSET_OFF);
+  if(pressed&(IN_ATTACK|IN_ATTACK2))FindNextPlayer((pressed&IN_ATTACK2)!=0);
+ }
+ m_flNextObserverInput=now+.2;
 }
 
 void CHudSpectator::HandleButtonsUp( int ButtonPressed )
@@ -930,6 +901,8 @@ void CHudSpectator::SetModes(int iNewMainMode, int iNewInsetMode)
 	if ( iNewInsetMode == -1 )
 		iNewInsetMode = m_pip->value;
 
+ if(iNewMainMode!=OBS_IN_EYE&&iNewMainMode!=OBS_CHASE_FREE&&iNewMainMode!=OBS_ROAMING)iNewMainMode=OBS_IN_EYE;
+ iNewInsetMode=INSET_OFF;
 	// inset mode is handled only clients side
 	m_pip->value = iNewInsetMode;
 	

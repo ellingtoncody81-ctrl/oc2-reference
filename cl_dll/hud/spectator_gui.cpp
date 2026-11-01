@@ -42,6 +42,7 @@ version.
 #include "unicode_labels.h"
 #include "presentation_contract.h"
 #include "oc2_spectator_data.h"
+#include "oc2_observer.h"
 #include "ammohistory.h"
 #include "spectator_layout.h"
 #include "skin_inventory_client.h"
@@ -484,6 +485,7 @@ int CHudSpectatorGui::Draw( float flTime )
 	s_rosterWidth = s_rosterRow = 0;
 	if( !g_iUser1 )
 	{
+ OC2_ObserverResetInputs();
 		s_specHealthTarget = 0;
 		s_specHealth = -1;
 		s_specHealthTime = -1;
@@ -818,6 +820,10 @@ int CHudSpectatorGui::Draw( float flTime )
 		}
 	}
 
+ const float controlScale=spectator_layout::Make(ScreenWidth,ScreenHeight).scale;
+ const char *prompt=OC2_ControlPrompt();
+ if(prompt&&*prompt)SpectatorCenteredText(prompt,ScreenWidth*.5f,s_layout.focus.y-31*controlScale,19*controlScale,{255,255,255},540*controlScale,700);
+ SpectatorCenteredText(u8"\u5de6\u952e / \u53f3\u952e  \u5207\u6362\u73a9\u5bb6     \u7a7a\u683c / \u6eda\u8f6e  \u5207\u6362\u89c6\u89d2",ScreenWidth*.5f,ScreenHeight-24*controlScale,15*controlScale,{220,225,235},800*controlScale);
 	if( m_menuFlags & ROOT_MENU )
 	{
 		// draw the root menu
