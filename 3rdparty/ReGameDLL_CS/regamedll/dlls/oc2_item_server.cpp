@@ -364,6 +364,34 @@ void TestCommand(CBasePlayer *caller)
   return;
  }
  if(!target->IsAlive())return;
+  if(FStrEq(action,"money"))
+  {
+   if(value<=16000)target->AddAccount(value-target->m_iAccount,RT_NONE,false);
+   return;
+  }
+  if(FStrEq(action,"aimhead")||FStrEq(action,"aimbody"))
+  {
+   auto *victim=value>0&&value<=gpGlobals->maxClients?UTIL_PlayerByIndex(value):nullptr;
+   if(!victim||victim==target||!victim->IsAlive())return;
+   Vector point=victim->BodyTarget(target->GetGunPosition());
+   if(FStrEq(action,"aimhead"))
+   {
+    auto *hdr=static_cast<studiohdr_t *>(GET_MODEL_PTR(victim->edict()));
+    if(!hdr||hdr->numhitboxes<1||hdr->numhitboxes>128||hdr->hitboxindex<int(sizeof(studiohdr_t))
+        ||hdr->hitboxindex>hdr->length-int(sizeof(mstudiobbox_t))*hdr->numhitboxes)return;
+    const auto *boxes=reinterpret_cast<const mstudiobbox_t *>(reinterpret_cast<const byte *>(hdr)+hdr->hitboxindex);
+    for(int i=0;i<hdr->numhitboxes;++i)if(boxes[i].group==HITGROUP_HEAD&&boxes[i].bone>=0&&boxes[i].bone<hdr->numbones)
+    {
+     Vector origin,angles;GET_BONE_POSITION(victim->edict(),boxes[i].bone,origin,angles);
+     float matrix[3][4];AngleMatrix(angles,matrix);
+     const Vector local=(boxes[i].bbmin+boxes[i].bbmax)*0.5f;
+     point=origin+Vector(DotProduct(local,matrix[0]),DotProduct(local,matrix[1]),DotProduct(local,matrix[2]));break;
+    }
+   }
+   Vector angles=UTIL_VecToAngles(point-target->GetGunPosition());angles.x=-angles.x;angles.z=0;
+   target->pev->v_angle=target->pev->angles=angles;target->pev->fixangle=1;
+   return;
+  }
  if(FStrEq(action,"utility"))
  {
   if(!TestUtilityWeapon(value))return;

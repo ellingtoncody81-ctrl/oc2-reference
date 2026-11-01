@@ -229,18 +229,18 @@ void CMenuPanoramaPlay::Start()
     const char *cfg=EngFuncs::GetCvarString("lservercfgfile");
     if(cfg&&*cfg){char escaped[256];Com_EscapeCommand(escaped,cfg,sizeof(escaped));EngFuncs::ClientCmdF(true,"exec %s\n",escaped);}
     EngFuncs::PlayBackgroundTrack(nullptr,nullptr);
-    const int quota=m_difficulty?9:0,difficulty=Q_max(0,m_difficulty-2),zombie=m_difficulty==1;
+    const int quota=m_difficulty?10:0,difficulty=Q_max(0,m_difficulty-2),zombie=m_difficulty==1;
     // Reapply bot values after map/server cfg processing. The server registers
     // these cvars when its DLL loads; main-menu cvar writes alone lose them.
     EngFuncs::ClientCmdF(false,
-        "disconnect;menu_connectionprogress localserver;wait;wait;wait;maxplayers 10;latch;map %s;wait;wait;bot_quota_mode normal;bot_join_after_player 1;bot_mimic 0;bot_zombie %d;bot_difficulty %d;bot_quota %d\n",
+        "disconnect;menu_connectionprogress localserver;wait;wait;wait;maxplayers 10;latch;map %s;wait;wait;exec oc2_competitive.cfg;bot_quota_mode fill;bot_auto_vacate 0;bot_join_team any;bot_join_after_player 1;bot_mimic 0;bot_zombie %d;bot_difficulty %d;bot_quota %d\n",
         name.c_str(),zombie,difficulty,quota);
 }
 
 void CMenuPanoramaPlay::Dump()
 {
     Con_Printf("panorama_play: visible=%d installed=%u page=%d selected=%s difficulty=%d bot_quota=%d bot_zombie=%d bot_difficulty=%d\n",int(IsVisible()),unsigned(m_maps.size()),m_page,
-        m_selected>=0?m_maps[m_selected].name.c_str():"none",m_difficulty,m_difficulty?9:0,m_difficulty==1,Q_max(0,m_difficulty-2));
+        m_selected>=0?m_maps[m_selected].name.c_str():"none",m_difficulty,m_difficulty?10:0,m_difficulty==1,Q_max(0,m_difficulty-2));
     for(const auto &map:m_maps)Con_Printf("panorama_map: name=%s radar=%s overview=%s installed=1\n",map.name.c_str(),map.radar.c_str(),map.overview.c_str());
     for(int i=0;i<ItemCount();++i)
     {

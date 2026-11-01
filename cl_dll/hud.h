@@ -377,14 +377,14 @@ public:
 	CHudUserCmd(AvatarDump);
 private:
 	avatar_state::State m_state{};
-	int m_textures[13]{}; // T, CT, skull, ten resource-configured portraits
+	int m_textures[19]{}; // T, CT, seventeen AI portraits
+	int m_deadTextures[19]{}; // actual grayscale copies; death retains identity
 	int m_portraits[MAX_PLAYERS + 1]{};
 	unsigned int m_messages[3]{}; // TeamInfo, ScoreInfo, ScoreAttrib
 	float m_refreshTime = -1.0f;
 	cvar_t *m_enabled = nullptr;
 	cvar_t *m_position = nullptr;
 	cvar_t *m_showCount = nullptr;
-	void DrawTexture(int texture, int x, int y, int size, int brightness);
 };
 
 class CHudScoreboard: public CHudBase

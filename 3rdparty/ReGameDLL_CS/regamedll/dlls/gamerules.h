@@ -129,7 +129,7 @@ enum RewardAccount
 	REWARD_BOMB_EXPLODED            = 3250,
 	REWARD_CTS_WIN                  = 3000,
 	REWARD_TERRORISTS_WIN           = 3000,
-	REWARD_ALL_HOSTAGES_RESCUED     = 2500,
+	REWARD_ALL_HOSTAGES_RESCUED     = 2900,
 
 	// the end round was by the expiration time
 	REWARD_TARGET_BOMB_SAVED        = 3250,
@@ -142,7 +142,7 @@ enum RewardAccount
 	REWARD_LOSER_BONUS_MAX          = 3000,
 	REWARD_LOSER_BONUS_ADD          = 500,
 
-	REWARD_RESCUED_HOSTAGE          = 750,
+	REWARD_RESCUED_HOSTAGE          = 600,
 	REWARD_KILLED_ENEMY             = 300,
 	REWARD_KILLED_VIP               = 2500,
 	REWARD_VIP_HAVE_SELF_RESCUED    = 2500,

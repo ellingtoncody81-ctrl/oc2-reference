@@ -504,7 +504,13 @@ void SolveSkeleton(Body &body)
             body.joints[kChains[chain][0]].base, base, socket), socket.up * -1.0f);
         SolveCone(body, kChains[chain][0], kChains[chain][1], socketAxis, -0.85f);
         if (chain >= 2)
+        {
             SolveCone(body, kChains[chain][0], kChains[chain][1], pelvis.up * -1.0f, -0.77f);
+            // Limit lateral hip abduction to 35 degrees, independently of
+            // forward/backward flexion. Stay in the mass-weighted contact solver.
+            const Vector inward = pelvis.side * (chain == 2 ? 1.0f : -1.0f);
+            SolveCone(body, kChains[chain][0], kChains[chain][1], inward, -0.57357644f);
+        }
         SolveHinge(body, chain, socket);
     }
     const Vector spine = Unit(RotateFrame(body.joints[CHEST].base - body.joints[WAIST].base,

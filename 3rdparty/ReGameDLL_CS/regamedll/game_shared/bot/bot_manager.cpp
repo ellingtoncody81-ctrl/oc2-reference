@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_smoke.h"
 
 const char *GameEventName[NUM_GAME_EVENTS + 1] =
 {
@@ -312,6 +313,8 @@ void CBotManager::DestroyAllGrenades()
 // Return true if position is inside a smoke cloud
 bool CBotManager::IsInsideSmokeCloud(const Vector *pos)
 {
+	if (!pos) return false;
+	if (OC2_SmokeInside(*pos)) return true;
 	auto iter = m_activeGrenadeList.begin();
 	while (iter != m_activeGrenadeList.end())
 	{
@@ -331,7 +334,7 @@ bool CBotManager::IsInsideSmokeCloud(const Vector *pos)
 			iter++;
 		}
 
-		if (ag->GetID() == WEAPON_SMOKEGRENADE)
+		if (ag->GetID() == WEAPON_SMOKEGRENADE && !ag->IsOC2Smoke())
 		{
 			const Vector *smokeOrigin = ag->GetDetonationPosition();
 
@@ -349,6 +352,8 @@ bool CBotManager::IsInsideSmokeCloud(const Vector *pos)
 // If the overlap exceeds the threshold, the bot can't see through.
 bool CBotManager::IsLineBlockedBySmoke(const Vector *from, const Vector *to)
 {
+	if (!from || !to) return false;
+	if (OC2_SmokeBlocks(*from,*to)) return true;
 	const float smokeRadiusSq = smokeRadius * smokeRadius;
 
 	// distance along line of sight covered by smoke
@@ -377,7 +382,7 @@ bool CBotManager::IsLineBlockedBySmoke(const Vector *from, const Vector *to)
 			iter++;
 		}
 
-		if (ag->GetID() == WEAPON_SMOKEGRENADE)
+		if (ag->GetID() == WEAPON_SMOKEGRENADE && !ag->IsOC2Smoke())
 		{
 			const Vector *smokeOrigin = ag->GetDetonationPosition();
 
@@ -468,4 +473,9 @@ bool CBotManager::IsLineBlockedBySmoke(const Vector *from, const Vector *to)
 
 	// return true if the total length of smoke-covered line-of-sight is too much
 	return (totalSmokedLength > maxSmokedLength);
+}
+
+void CBotManager::MarkOC2Smoke(CGrenade *grenade)
+{
+	for(auto *ag:m_activeGrenadeList)if(ag->IsEntity(grenade))ag->MarkOC2Smoke();
 }

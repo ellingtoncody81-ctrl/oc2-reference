@@ -159,6 +159,20 @@ bool OC2_BotParked(CBasePlayer *p) {
  for(const auto &c:controls)if(c.active&&c.bot==p&&GETPLAYERUSERID(p->edict())==c.botUserid)return true;
  return false;
 }
+bool OC2_ControlledBot(CBasePlayer *p) {
+ if(!p)return false;
+ for(const auto &c:controls)if(c.active&&c.human==p&&GETPLAYERUSERID(p->edict())==c.userid)return true;
+ return false;
+}
+void OC2_BotControlTeamAward(int team,int amount) {
+ for(int i=1;i<=gpGlobals->maxClients;++i){
+  auto *p=UTIL_PlayerByIndex(i);
+  if(!UTIL_IsValidPlayer(p)||p->has_disconnected||p->m_iTeam!=team||OC2_BotParked(p))continue;
+  p->AddAccount(amount,RT_HOSTAGE_TOOK);
+  for(auto &c:controls)if(c.active&&c.human==p&&GETPLAYERUSERID(p->edict())==c.userid)
+   c.money=Q_max(0,Q_min(int(maxmoney.value),c.money+amount));
+ }
+}
 void OC2_BotControlRegister(){message=REG_USER_MSG("OC2Control",8);CVAR_REGISTER(&takeover);CVAR_REGISTER(&debug);}
 void OC2_BotControlReset(){for(auto &c:controls)c=Control();}
 void OC2_BotControlRound(){for(auto &c:controls)End(c,true);}

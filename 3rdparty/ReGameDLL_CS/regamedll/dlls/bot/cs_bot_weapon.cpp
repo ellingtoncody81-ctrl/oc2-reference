@@ -27,6 +27,8 @@
 */
 
 #include "precompiled.h"
+#include "oc2_bot_tactics.h"
+#include "oc2_bot_control.h"
 
 // Fire our active weapon towards our current enemy
 // NOTE: Aiming our weapon is handled in RunBotUpkeep()
@@ -487,6 +489,7 @@ void CCSBot::EquipKnife()
 	if (!IsUsingKnife())
 	{
 		CBasePlayerWeapon *pKnife = static_cast<CBasePlayerWeapon *>(m_rgpPlayerItems[KNIFE_SLOT]);
+		while(pKnife && pKnife->m_iId!=WEAPON_KNIFE)pKnife=static_cast<CBasePlayerWeapon *>(pKnife->m_pNext);
 		if (pKnife)
 		{
 			SelectItem(STRING(pKnife->pev->classname));
@@ -504,27 +507,7 @@ bool CCSBot::HasGrenade() const
 // Equip a grenade, return false if we cant
 bool CCSBot::EquipGrenade(bool noSmoke)
 {
-	// snipers don't use grenades
-	if (IsSniper())
-		return false;
-
-	if (IsUsingGrenade())
-		return true;
-
-	if (HasGrenade())
-	{
-		CBasePlayerWeapon *pGrenade = static_cast<CBasePlayerWeapon *>(m_rgpPlayerItems[GRENADE_SLOT]);
-		if (pGrenade)
-		{
-			if (noSmoke && pGrenade->m_iId == WEAPON_SMOKEGRENADE)
-				return false;
-
-			SelectItem(STRING(pGrenade->pev->classname));
-			return true;
-		}
-	}
-
-	return false;
+	return OC2_BotEquipUtility(this,noSmoke);
 }
 
 // Returns true if we have knife equipped
@@ -555,9 +538,7 @@ bool CCSBot::IsUsingGrenade() const
 	if (!pCurrentWeapon)
 		return false;
 
-	if (pCurrentWeapon->m_iId == WEAPON_SMOKEGRENADE
-		|| pCurrentWeapon->m_iId == WEAPON_FLASHBANG
-		|| pCurrentWeapon->m_iId == WEAPON_HEGRENADE)
+	if (OC2_GrenadeWeapon(pCurrentWeapon->m_iId))
 		return true;
 
 	return false;

@@ -19,10 +19,14 @@ constexpr float gunNameOffset = 96.0f;
 constexpr float grenadeNameOffset = 129.6f;
 constexpr float slotHeight = 16.0f;
 constexpr float slotOffset = 31.0f;
-constexpr float cardWidth = 468.0f;
+constexpr float cardSourceScale = 0.78f;
+constexpr float cardWidth = 768.0f * cardSourceScale;
 // OC2 card canvases are 768x268; preserve their actual aspect ratio.
 constexpr float cardHeight = cardWidth * (268.0f / 768.0f);
-constexpr float cardBottomMargin = 45.0f;
+// Anchor the visible settled cards, keeping the original deal animation intact.
+constexpr float cardAlphaBottom[] = {196.0f, 199.0f, 202.0f, 209.0f, 215.0f};
+// Keep the artwork's numeral band above the 80px bottom emblem.
+constexpr float cardBottomMargin = 80.0f;
 constexpr float cardCountHeight = 28.8f;
 constexpr float cardCountOffset = 66.0f;
 }

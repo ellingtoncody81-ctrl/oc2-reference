@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_economy.h"
 
 LINK_ENTITY_TO_CLASS(weapon_c4, CC4, CCSC4)
 
@@ -182,6 +183,7 @@ void CC4::PrimaryAttack()
 				Vector vBombAngles = Vector(0, 0, 0);
 #endif
 				CGrenade *pBomb = CGrenade::ShootSatchelCharge(m_pPlayer->pev, m_pPlayer->pev->origin, vBombAngles);
+				if (pBomb) m_pPlayer->AddAccount(oc2_economy::Plant, RT_NONE);
 
 				MESSAGE_BEGIN(MSG_SPEC, SVC_DIRECTOR);
 					WRITE_BYTE(9);

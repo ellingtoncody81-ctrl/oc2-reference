@@ -8,6 +8,7 @@
 #include "render_api.h"
 #include "match_ui.h"
 #include "hud_readability.h"
+#include "../../common/oc2_avatars.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -24,13 +25,16 @@ int TeamOf(const hud_player_info_t& info, int slot)
 
 int PortraitOf(int slot)
 {
-	// OC2 supplies the loadout_avatar setting and portraits 1..10. GoldSrc
-	// publishes the selection through userinfo; no OC2 game protocol is copied.
-	const char *value = gEngfuncs.PlayerInfo_ValueForKey(slot, "loadout_avatar");
+	hud_player_info_t info{};
+	GetPlayerInfo(slot, &info);
+	if (info.thisplayer) return oc2_avatars::Local;
+	// Server assigns bot portraits once per connection; all clients see one identity.
+	const char *value = gEngfuncs.PlayerInfo_ValueForKey(slot, "*oc2_avatar");
+	if (!value || !*value) value = gEngfuncs.PlayerInfo_ValueForKey(slot, "loadout_avatar");
 	if (!value || !*value) return 0;
 	char *end = nullptr;
 	const long index = strtol(value, &end, 10);
-	return end && !*end && index >= 1 && index <= 10 ? (int)index : 0;
+	return end && !*end && index >= 1 && index <= oc2_avatars::Count ? (int)index : 0;
 }
 
 void CenterText(int x, int y, const char *text, int r, int g, int b)
@@ -77,13 +81,16 @@ bool CHudAvatars::HasPlayers()
 int CHudAvatars::VidInit()
 {
 	if (!gRenderAPI.GL_LoadTexture) return 1;
-	const char *names[] = {"gfx/vgui/avatar_t.tga", "gfx/vgui/avatar_ct.tga", "gfx/vgui/avatar_dead.tga"};
-	for (int i = 0; i < 13; ++i)
+	const char *names[] = {"t", "ct"};
+	for (int i = 0; i < oc2_avatars::Textures; ++i)
 	{
 		char path[80];
-		if (i < 3) snprintf(path, sizeof(path), "%s", names[i]);
-		else snprintf(path, sizeof(path), "gfx/vgui/avatar/avatar_%d.tga", i - 2);
+		if (i < 2) snprintf(path, sizeof(path), "gfx/vgui/avatar_%s.tga", names[i]);
+		else snprintf(path, sizeof(path), "gfx/vgui/oc2_ai/avatar_%d.tga", i - 1);
 		m_textures[i] = match_ui::Texture(path);
+		if (i < 2) snprintf(path, sizeof(path), "gfx/vgui/oc2_ai/team_%s_gray.tga", names[i]);
+		else snprintf(path, sizeof(path), "gfx/vgui/oc2_ai/avatar_%d_gray.tga", i - 1);
+		m_deadTextures[i] = match_ui::Texture(path);
 	}
 	m_refreshTime = -1.0f;
 	return 1;
@@ -95,6 +102,7 @@ void CHudAvatars::Shutdown()
 	{
 		texture = 0;
 	}
+	for (int& texture : m_deadTextures) texture = 0;
 	InitHUDData();
 }
 
@@ -130,18 +138,13 @@ void CHudAvatars::Refresh(float time)
 	avatar_state::Update(m_state, snapshot);
 }
 
-void CHudAvatars::DrawTexture(int texture, int x, int y, int size, int brightness)
-{
-	match_ui::Picture(texture, x, y, size, size, {brightness, brightness, brightness}, true);
-}
-
 int CHudAvatars::AvatarTexture(int slot)
 {
 	if (slot < 1 || slot > MAX_PLAYERS) return 0;
 	Refresh(gHUD.m_flTime);
 	if (!m_state.players[slot].connected) return 0;
 	const int portrait = m_portraits[slot];
-	if (portrait && m_textures[portrait+2]) return m_textures[portrait+2];
+	if (portrait && m_textures[portrait+1]) return m_textures[portrait+1];
 	return m_state.players[slot].team == TEAM_CT ? m_textures[1]
 		: m_state.players[slot].team == TEAM_TERRORIST ? m_textures[0] : 0;
 }
@@ -154,24 +157,15 @@ void CHudAvatars::DrawPlayerAvatar(int slot, int x, int y, int size)
 	if (!player.connected) return;
 	const bool ct = player.team == TEAM_CT;
 	const int r = ct ? 115 : 220, g = ct ? 175 : 180, b = ct ? 225 : 95;
-	FillRGBABlend(x-1, y-1, size+2, size+2, r, g, b, player.local ? 255 : 125);
+	FillRGBABlend(x-1, y-1, size+2, size+2, player.dead ? 110 : r,
+		player.dead ? 110 : g, player.dead ? 110 : b, player.dead ? 90 : player.local ? 255 : 125);
 	FillRGBABlend(x, y, size, size, 14, 18, 24, 255);
 	const int portrait = m_portraits[slot];
-	const bool isPortrait = portrait && m_textures[portrait+2];
-	const int texture = isPortrait ? m_textures[portrait+2]
-		: (player.team == TEAM_CT ? m_textures[1] : player.team == TEAM_TERRORIST ? m_textures[0] : 0);
-	// CSGO hides the default team background on death and shows a skull;
-	// an identity portrait stays beneath it. Dimming here is a GoldSrc presentation choice.
-	if (!player.dead || isPortrait)
-	{
-		if (texture) DrawTexture(texture, x, y, size, player.dead ? 90 : 255);
-		else if (size >= gHUD.GetCharHeight()) CenterText(x + size/2, y, ct ? "CT" : player.team == TEAM_TERRORIST ? "T" : "?", r, g, b);
-	}
-	if (player.dead)
-	{
-		if (m_textures[2]) DrawTexture(m_textures[2], x, y, size, 255);
-		else CenterText(x + size/2, y, "X", 220, 220, 220);
-	}
+	const int index = portrait && m_textures[portrait+1] ? portrait+1 : ct ? 1 : 0;
+	const int texture = player.dead && m_deadTextures[index] ? m_deadTextures[index] : m_textures[index];
+	if (texture) match_ui::Picture(texture, x, y, size, size,
+		{255, 255, 255, player.dead ? 120 : 255}, true);
+	else if (size >= gHUD.GetCharHeight()) CenterText(x+size/2, y, ct ? "CT" : "T", r, g, b);
 }
 
 int CHudAvatars::Draw(float time)

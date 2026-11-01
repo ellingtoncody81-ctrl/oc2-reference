@@ -1,4 +1,6 @@
 #include "precompiled.h"
+#include "oc2_smoke.h"
+#include "oc2_economy.h"
 #include "oc2_inferno.h"
 
 TYPEDESCRIPTION CGrenade::m_SaveData[] =
@@ -61,7 +63,7 @@ void CGrenade::__API_HOOK(Explode)(TraceResult *pTrace, int bitsDamageType)
 	// can't traceline attack owner if this is set
 	pev->owner = nullptr;
 
-	RadiusFlash(pev->origin, pev, pevOwner, 4, CLASS_NONE, bitsDamageType);
+	RadiusFlash(pev->origin, pev, pevOwner, 3.0f, CLASS_NONE, bitsDamageType);
 
 	if (RANDOM_FLOAT(0, 1) < 0.5f)
 		UTIL_DecalTrace(pTrace, DECAL_SCORCH1);
@@ -298,7 +300,8 @@ void CGrenade::__API_HOOK(Explode3)(TraceResult *pTrace, int bitsDamageType)
 	}
 
 	pev->owner = nullptr;
-	RadiusDamage(pev, pevOwner, pev->dmg, CLASS_NONE, bitsDamageType);
+	OC2_SmokeBlast(pev->origin, pev->dmg);
+	::RadiusDamage(pev->origin, pev, pevOwner, pev->dmg, 350.0f, CLASS_NONE, bitsDamageType);
 
 	if (RANDOM_FLOAT(0, 1) < 0.5f)
 		UTIL_DecalTrace(pTrace, DECAL_SCORCH1);
@@ -493,6 +496,7 @@ void CGrenade::Smoke()
 
 void CGrenade::SG_Smoke()
 {
+	if (OC2_SmokeThink(this)) return;
 	int iMaxSmokePuffs = 100;
 	float flSmokeInterval;
 
@@ -592,8 +596,6 @@ void CGrenade::__API_HOOK(SG_Detonate)()
 		TheBots->AddGrenade(WEAPON_SMOKEGRENADE, this);
 	}
 
-	EMIT_SOUND(ENT(pev), CHAN_WEAPON, "weapons/sg_explode.wav", VOL_NORM, ATTN_NORM);
-
 	while ((pentFind = FIND_ENTITY_BY_CLASSNAME(pentFind, "grenade")))
 	{
 		if (FNullEnt(pentFind))
@@ -615,7 +617,15 @@ void CGrenade::__API_HOOK(SG_Detonate)()
 
 	m_bDetonated = true;
 	m_vSmokeDetonate = pev->origin;
-	OC2_InfernoSmokeDetonate(m_vSmokeDetonate);
+	if (OC2_SmokeCreate(this))
+	{
+		OC2_InfernoSmokeDetonate(m_vSmokeDetonate,true);
+		pev->nextthink = gpGlobals->time+0.1f;
+		SetThink(&CGrenade::SG_Smoke);
+		return;
+	}
+	OC2_InfernoSmokeDetonate(m_vSmokeDetonate,false);
+	EMIT_SOUND(ENT(pev), CHAN_WEAPON, "weapons/sg_explode.wav", VOL_NORM, ATTN_NORM);
 
 	int flags = 0;
 #ifdef REGAMEDLL_FIXES
@@ -866,7 +876,7 @@ void CGrenade::SG_TumbleThink()
 
 	if (pev->dmgtime <= gpGlobals->time)
 	{
-		if (pev->flags & FL_ONGROUND)
+		if ((pev->flags & FL_ONGROUND) && pev->velocity.LengthSquared() <= 0.01f)
 		{
 			SetThink(&CGrenade::SG_Detonate);
 		}
@@ -959,13 +969,13 @@ CGrenade *CGrenade::__API_HOOK(ShootTimed2)(entvars_t *pevOwner, VectorRef vecSt
 
 	pGrenade->m_bJustBlew = true;
 
-	pGrenade->pev->gravity = 0.55f;
+	pGrenade->pev->gravity = 0.4f;
 	pGrenade->pev->friction = 0.7f;
 
 	pGrenade->m_iTeam = iTeam;
 
 	SET_MODEL(ENT(pGrenade->pev), "models/w_hegrenade.mdl");
-	pGrenade->pev->dmg = 100.0f;
+	pGrenade->pev->dmg = 99.0f;
 
 	return pGrenade;
 }
@@ -1014,7 +1024,7 @@ CGrenade *CGrenade::__API_HOOK(ShootTimed)(entvars_t *pevOwner, VectorRef vecSta
 
 	pGrenade->m_bJustBlew = true;
 
-	pGrenade->pev->gravity = 0.5f;
+	pGrenade->pev->gravity = 0.4f;
 	pGrenade->pev->friction = 0.8f;
 
 	SET_MODEL(ENT(pGrenade->pev), "models/w_flashbang.mdl");
@@ -1155,6 +1165,7 @@ void CGrenade::__API_HOOK(DefuseBombEnd)(CBasePlayer *pPlayer, bool bDefused)
 
 #ifdef REGAMEDLL_FIXES
 			m_pBombDefuser->AddPoints(frags, TRUE);
+			m_pBombDefuser->AddAccount(oc2_economy::Defuse, RT_NONE);
 #else
 			m_pBombDefuser->pev->frags += frags;
 #endif
@@ -1373,7 +1384,7 @@ CGrenade *CGrenade::__API_HOOK(ShootSmokeGrenade)(entvars_t *pevOwner, VectorRef
 	pGrenade->pev->sequence = RANDOM_LONG(3, 6);
 	pGrenade->pev->framerate = 1.0f;
 	pGrenade->m_bJustBlew = true;
-	pGrenade->pev->gravity = 0.5f;
+	pGrenade->pev->gravity = 0.4f;
 	pGrenade->pev->friction = 0.8f;
 	pGrenade->m_SGSmoke = 0;
 

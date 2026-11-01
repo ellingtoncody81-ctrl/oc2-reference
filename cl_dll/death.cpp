@@ -337,7 +337,8 @@ void DrawKillCard(float time)
 	color.g += (int)((255-color.g)*flash);
 	color.b += (int)((255-color.b)*flash);
 	using namespace weapon_hud_layout;
-	const float cardTop = ScreenHeight-(cardHeight+cardBottomMargin)*scale;
+	static_assert(cardBottomMargin >= 80.0f, "Keep card numerals above the bottom emblem");
+	const float cardTop = ScreenHeight-(cardAlphaBottom[group-1]*cardSourceScale+cardBottomMargin)*scale;
 	if (texture) match_ui::Picture(texture,center-cardWidth*scale*0.5f,cardTop,cardWidth*scale,cardHeight*scale,color);
 	else
 	{
@@ -373,7 +374,8 @@ void HUD_KillFeedbackDump()
 	gEngfuncs.Con_Printf("killcardlayout: width=%.3f height=%.3f x=%.3f y=%.3f scale=%.5f frame=%d\n",
 		weapon_hud_layout::cardWidth*scale,weapon_hud_layout::cardHeight*scale,
 		(ScreenWidth-weapon_hud_layout::cardWidth*scale)*0.5f,
-		ScreenHeight-(weapon_hud_layout::cardHeight+weapon_hud_layout::cardBottomMargin)*scale,
+		ScreenHeight-(weapon_hud_layout::cardAlphaBottom[max(0,min(s_KillFeedback.round_kills,5)-1)]
+			*weapon_hud_layout::cardSourceScale+weapon_hud_layout::cardBottomMargin)*scale,
 		gHUD.m_flScale,kill_feedback::CardFrame(s_KillFeedback,gHUD.m_flTime));
 }
 
@@ -683,6 +685,11 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	event.victim_team = rgDeathNoticeList[i].bTeamKill ? event.killer_team : rgDeathNoticeList[i].victimTeam;
 	event.headshot = headshot != 0;
 	const bool confirmedKill = kill_feedback::OnDeath(s_KillFeedback,event);
+	if (confirmedKill && headshot)
+	{
+		PlaySound("player/headshot1.wav", 0.7f);
+		gEngfuncs.Con_DPrintf("oc2_headshot_feedback: killer=%d victim=%d\n",killer,victim);
+	}
 	OC2_AccessoryKill(weaponName,killer,victim,event.killer_team,event.victim_team);
 
 	// Find the sprite in the list

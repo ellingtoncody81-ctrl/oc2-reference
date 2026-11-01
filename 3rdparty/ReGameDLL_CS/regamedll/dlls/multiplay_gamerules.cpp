@@ -1,4 +1,6 @@
 #include "precompiled.h"
+#include "oc2_economy.h"
+#include "oc2_match_rules.h"
 #include "oc2_bot_control.h"
 #include "oc2_spec_stats.h"
 #include "oc2_inferno.h"
@@ -1308,7 +1310,7 @@ bool CHalfLifeMultiplay::Target_Defused(float tmDelay)
 	}
 #endif
 
-	m_iAccountCT += m_rgRewardAccountRules[RR_BOMB_DEFUSED];
+	m_iAccountCT += oc2_economy::TeamDefuse;
 	m_iAccountTerrorist += m_rgRewardAccountRules[RR_BOMB_PLANTED];
 
 	if (!m_bNeededPlayers)
@@ -1663,6 +1665,7 @@ LINK_HOOK_CLASS_VOID_CUSTOM_CHAIN2(CHalfLifeMultiplay, CSGameRules, RestartRound
 void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 {
 	OC2_BotControlRound();
+	const bool halfReset=OC2_MatchBeforeRound(this);
 	OC2_SpecStatsRound(m_bCompleteReset);
 	OC2_InfernoRoundReset();
 	// tell bots that the round is restarting
@@ -1825,6 +1828,7 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 	m_bRoundTerminating = false;
 
 	ReadMultiplayCvars();
+	OC2_MatchRoundReady(this);
 
 	float flAutoKickIdle = autokick_timeout.value;
 
@@ -1880,7 +1884,7 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 
 		if (hostage->pev->solid != SOLID_NOT)
 		{
-			acct_tmp += m_rgRewardAccountRules[RR_TOOK_HOSTAGE];
+			// Remaining hostages do not generate a competitive cash award.
 
 			if (hostage->pev->deadflag == DEAD_DEAD)
 			{
@@ -1891,63 +1895,10 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 		temp->RePosition();
 	}
 
-	// Scale up the loser bonus when teams fall into losing streaks
-	if (m_iRoundWinStatus == WINSTATUS_TERRORISTS)	// terrorists won
-	{
-		// check to see if they just broke a losing streak
-		if (m_iNumConsecutiveTerroristLoses > 1)
-		{
-			// this is the default losing bonus
-			m_iLoserBonus = m_rgRewardAccountRules[RR_LOSER_BONUS_MIN];
-		}
-
-		m_iNumConsecutiveTerroristLoses = 0;	// starting fresh
-		m_iNumConsecutiveCTLoses++;				// increment the number of wins the CTs have had
-	}
-	else if (m_iRoundWinStatus == WINSTATUS_CTS)
-	{
-		// check to see if they just broke a losing streak
-		if (m_iNumConsecutiveCTLoses > 1)
-		{
-			// this is the default losing bonus
-			m_iLoserBonus = m_rgRewardAccountRules[RR_LOSER_BONUS_MIN];
-		}
-
-		m_iNumConsecutiveCTLoses = 0;		// starting fresh
-		m_iNumConsecutiveTerroristLoses++;	// increment the number of wins the Terrorists have had
-	}
-
-	// check if the losing team is in a losing streak & that the loser bonus hasen't maxed out.
-	if (m_iNumConsecutiveTerroristLoses > 1 && m_iLoserBonus < m_rgRewardAccountRules[RR_LOSER_BONUS_MAX])
-	{
-		// help out the team in the losing streak
-		m_iLoserBonus += m_rgRewardAccountRules[RR_LOSER_BONUS_ADD];
-	}
-	else if (m_iNumConsecutiveCTLoses > 1 && m_iLoserBonus < m_rgRewardAccountRules[RR_LOSER_BONUS_MAX])
-	{
-		// help out the team in the losing streak
-		m_iLoserBonus += m_rgRewardAccountRules[RR_LOSER_BONUS_ADD];
-	}
-
-	// assign the wining and losing bonuses
-	if (m_iRoundWinStatus == WINSTATUS_TERRORISTS)	// terrorists won
-	{
-		m_iAccountTerrorist += acct_tmp;
-		m_iAccountCT += m_iLoserBonus;
-	}
-	else if (m_iRoundWinStatus == WINSTATUS_CTS)	// CT Won
-	{
-		m_iAccountCT += acct_tmp;
-
-		if (!m_bMapHasEscapeZone)
-		{
-			// only give them the bonus if this isn't an escape map
-			m_iAccountTerrorist += m_iLoserBonus;
-		}
-	}
+	OC2_EconomyRound(this, m_bCompleteReset || halfReset);
 
 	// Update CT account based on number of hostages rescued
-	m_iAccountCT += m_iHostagesRescued * m_rgRewardAccountRules[RR_RESCUED_HOSTAGE];
+	if(!halfReset)m_iAccountCT += m_iHostagesRescued * m_rgRewardAccountRules[RR_RESCUED_HOSTAGE];
 
 	// Update individual players accounts and respawn players
 
@@ -1978,6 +1929,17 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 	CleanUpMap();
 #endif
 
+	// Pay the completed round on its original teams before applying paired swaps.
+	if(!halfReset && !m_bCompleteReset)
+		for(int i=1;i<=gpGlobals->maxClients;++i)
+		{
+			auto *p=UTIL_PlayerByIndex(i);
+			if(!UTIL_IsValidPlayer(p)||p->has_disconnected||p->m_bReceivesNoMoneyNextRound)continue;
+			if(p->m_iTeam==CT)p->AddAccount(m_iAccountCT,RT_ROUND_BONUS);
+			else if(p->m_iTeam==TERRORIST)p->AddAccount(m_iAccountTerrorist,RT_ROUND_BONUS);
+		}
+	OC2_MatchApplyRequests(this);
+
 	// tell bots that the round is restarting
 	CBaseEntity *pEntity = nullptr;
 	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "player")))
@@ -2001,29 +1963,10 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 		}
 #endif
 
-		if (pPlayer->m_iTeam == CT)
+		if(pPlayer->m_iTeam==TERRORIST)
 		{
-			if (!pPlayer->m_bReceivesNoMoneyNextRound)
-			{
-				pPlayer->AddAccount(m_iAccountCT, RT_ROUND_BONUS);
-			}
-		}
-		else if (pPlayer->m_iTeam == TERRORIST)
-		{
-			// Add another potential escaper to the mix!
-			m_iNumEscapers++;
-
-			if (!pPlayer->m_bReceivesNoMoneyNextRound)
-			{
-				pPlayer->AddAccount(m_iAccountTerrorist, RT_ROUND_BONUS);
-			}
-
-			// If it's a prison scenario then remove the Ts guns
-			if (m_bMapHasEscapeZone)
-			{
-				// this will cause them to be reset with default weapons, armor, and items
-				pPlayer->m_bNotKilled = false;
-			}
+			++m_iNumEscapers;
+			if(m_bMapHasEscapeZone)pPlayer->m_bNotKilled=false;
 		}
 
 		if (pPlayer->m_iTeam != UNASSIGNED && pPlayer->m_iTeam != SPECTATOR)
@@ -2427,6 +2370,8 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(Think)()
 	if (CheckGameOver())
 		return;
 
+	if (OC2_MatchThink(this)) return;
+
 	// have we hit the timelimit?
 	if (CheckTimeLimit())
 		return;
@@ -2456,14 +2401,11 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(Think)()
 			MESSAGE_END();
 		}
 
-		// Check for the end of the round.
-		if (IsFreezePeriod())
+		// A terminated round cannot re-enter play when an old freeze timer expires.
+		if(!m_bRoundTerminating)
 		{
-			CheckFreezePeriodExpired();
-		}
-		else
-		{
-			CheckRoundTimeExpired();
+			if(IsFreezePeriod())CheckFreezePeriodExpired();
+			else CheckRoundTimeExpired();
 		}
 
 		if (m_flRestartRoundTime > 0.0f && m_flRestartRoundTime <= gpGlobals->time)
@@ -2696,6 +2638,7 @@ bool CHalfLifeMultiplay::CheckTimeLimit()
 
 bool CHalfLifeMultiplay::CheckMaxRounds()
 {
+	if(OC2_MatchEnabled())return false;
 	if (m_iMaxRounds != 0 && m_iTotalRoundsPlayed >= m_iMaxRounds)
 	{
 		ALERT(at_console, "Changing maps due to maximum rounds have been met\n");
@@ -2708,6 +2651,7 @@ bool CHalfLifeMultiplay::CheckMaxRounds()
 
 bool CHalfLifeMultiplay::CheckWinLimit()
 {
+	if(OC2_MatchEnabled())return false;
 	// has one team won the specified number of rounds?
 	if (m_iMaxRoundsWon != 0 && (m_iNumCTWins >= m_iMaxRoundsWon || m_iNumTerroristWins >= m_iMaxRoundsWon))
 	{
@@ -3931,6 +3875,7 @@ LINK_HOOK_CLASS_VOID_CUSTOM_CHAIN(CHalfLifeMultiplay, CSGameRules, PlayerKilled,
 // Someone/something killed this player
 void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(PlayerKilled)(CBasePlayer *pVictim, entvars_t *pKiller, entvars_t *pInflictor)
 {
+	const int killAward = OC2_KillAward(pKiller, pInflictor);
 	DeathNotice(pVictim, pKiller, pInflictor);
 #ifdef REGAMEDLL_FIXES
 	pVictim->pev->flags &= ~FL_FROZEN;
@@ -3978,6 +3923,7 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(PlayerKilled)(CBasePlayer *pVictim,
 	{
 		// Players lose a frag for killing themselves
 		pVictim->pev->frags -= 1;
+		OC2_SuicideAward(pVictim);
 	}
 	else if (peKiller && peKiller->IsPlayer())
 	{
@@ -3989,7 +3935,7 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(PlayerKilled)(CBasePlayer *pVictim,
 			// if a player dies by from teammate
 			pKiller->frags -= IPointsForKill(peKiller, pVictim);
 
-			killer->AddAccount(PAYBACK_FOR_KILLED_TEAMMATES, RT_TEAMMATES_KILLED);
+			killer->AddAccount(oc2_economy::TeamKill, RT_TEAMMATES_KILLED);
 			killer->m_iTeamKills++;
 			killer->m_bJustKilledTeammate = true;
 
@@ -4044,10 +3990,8 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(PlayerKilled)(CBasePlayer *pVictim,
 
 				UTIL_LogPrintf("\"%s<%i><%s><TERRORIST>\" triggered \"Assassinated_The_VIP\"\n", STRING(killer->pev->netname), GETPLAYERUSERID(killer->edict()), GETPLAYERAUTHID(killer->edict()));
 			}
-			else if (!pInflictor || !FClassnameIs(pInflictor, "weapon_zeus"))
-				// CS:GO weapon_taser_prefab kill award is zero. Identify the actual
-				// inflictor, so a later weapon switch cannot change this reward.
-				killer->AddAccount(REWARD_KILLED_ENEMY, RT_ENEMY_KILLED);
+			else if (killAward > 0)
+				killer->AddAccount(killAward, RT_ENEMY_KILLED);
 
 			if (!(killer->m_flDisplayHistory & DHF_ENEMY_KILLED))
 			{

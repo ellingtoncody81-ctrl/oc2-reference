@@ -2,7 +2,11 @@
 #include "oc2_bot_control.h"
 #include "oc2_spec_stats.h"
 #include "oc2_inferno.h"
+#include "oc2_smoke.h"
+#include "oc2_match_rules.h"
+#include "oc2_bot_tactics.h"
 #include "oc2_item_server.h"
+#include "../../../../common/oc2_avatars.h"
 
 int gmsgWeapPickup = 0;
 int gmsgHudText = 0;
@@ -254,6 +258,9 @@ void LinkUserMessages()
 	gmsgFireVariant   = REG_USER_MSG("FireVariant", 1); // Physical fire-grenade variant, independent of team.
 	OC2_ItemsRegisterMessage();
 	OC2_BotControlRegister();
+	OC2_SmokeRegister();
+	OC2_MatchRegister();
+	ADD_SERVER_COMMAND("oc2_bot_tactics_dump",OC2_BotTacticsDump);
 }
 
 void WriteSigonMessages()
@@ -647,6 +654,10 @@ void EXT_FUNC ClientPutInServer(edict_t *pEntity)
 	entvars_t *pev = &pEntity->v;
 	CBasePlayer *pPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pev);
 	OC2_ItemsClientConnected(pPlayer);
+	char avatar[8];
+	Q_snprintf(avatar, sizeof(avatar), "%d", (pev->flags & FL_FAKECLIENT)
+		? RANDOM_LONG(1, oc2_avatars::Count) : oc2_avatars::Local);
+	SET_CLIENT_KEY_VALUE(ENTINDEX(pEntity), GET_INFO_BUFFER(pEntity), "*oc2_avatar", avatar);
 
 	pPlayer->SetCustomDecalFrames(-1);
 	pPlayer->SetPrefsFromUserinfo(GET_INFO_BUFFER(pEntity));
@@ -2019,6 +2030,8 @@ BOOL EXT_FUNC __API_HOOK(HandleMenu_ChooseTeam)(CBasePlayer *pPlayer, int slot)
 	// If the code gets this far, the team is not TEAM_UNASSIGNED
 	// Player is switching to a new team (It is possible to switch to the
 	// same team just to choose a new appearance)
+	const int swapResult=OC2_MatchChooseTeam(pPlayer,team);
+	if(swapResult)return swapResult>0;
 	if (CSGameRules()->TeamFull(team))
 	{
 		// The specified team is full
@@ -2485,7 +2498,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
 	CBasePlayer *pPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pev);
 	if (OC2RemovedBuyCommand(pcmd)) return;
 	if (OC2_ItemsCommand(pPlayer,pcmd)) return;
-	if (OC2_BotControlCommand(pPlayer,pcmd)) return;
+	if (OC2_MatchCommand(pPlayer,pcmd) || OC2_BotControlCommand(pPlayer,pcmd)) return;
 	if (FStrEq(pcmd,"oc2_buymenu_open") || FStrEq(pcmd,"oc2_buymenu_close"))
 	{
 		pPlayer->SetBuyPresentationOpen(FStrEq(pcmd,"oc2_buymenu_open"));
@@ -3247,7 +3260,7 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
 			int slot = Q_atoi(parg1);
 			if (HandleMenu_ChooseTeam(pPlayer, slot))
 			{
-				if (slot == MENU_SLOT_TEAM_VIP || slot == MENU_SLOT_TEAM_SPECT || pPlayer->m_bIsVIP)
+				if (slot == MENU_SLOT_TEAM_VIP || slot == MENU_SLOT_TEAM_SPECT || pPlayer->m_bIsVIP || OC2_MatchTeamPending(pPlayer))
 				{
 #ifdef REGAMEDLL_FIXES
 					pPlayer->ResetMenu();
