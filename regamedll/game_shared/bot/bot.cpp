@@ -524,6 +524,7 @@ void CBot::PrintIfWatched(char *format, ...) const
 ActiveGrenade::ActiveGrenade(int weaponID, CGrenade *grenadeEntity)
 {
 	m_id = weaponID;
+	m_oc2Smoke = false;
 	m_entity = grenadeEntity;
 	m_detonationPosition = grenadeEntity->pev->origin;
 	m_dieTimestamp = 0;

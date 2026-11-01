@@ -224,6 +224,7 @@ public:
 		for (int i=0; i<m_count; ++i) if (m_cells[i].burning) ++count;
 		return count;
 	}
+	float Age() const { return gpGlobals->time-m_start; }
 	bool Nearest(const Vector &point, float &distance, Vector &fire) const
 	{
 		bool found=false;
@@ -639,7 +640,7 @@ void OC2_InfernoDump()
 	for (int i=0; i<kPools; ++i)
 	{
 		CBaseEntity *entity=s_pools[i];
-		if (entity) ALERT(at_console,"oc2fire: index=%d origin=%.3f/%.3f/%.3f\n",entity->entindex(),entity->pev->origin.x,entity->pev->origin.y,entity->pev->origin.z);
+		if (entity) ALERT(at_console,"oc2fire: index=%d origin=%.3f/%.3f/%.3f age=%.3f\n",entity->entindex(),entity->pev->origin.x,entity->pev->origin.y,entity->pev->origin.z,static_cast<COC2Inferno *>(entity)->Age());
 	}
 	for (const SmokeCloud &cloud:s_clouds)
 		if (cloud.active && cloud.end>gpGlobals->time)

@@ -196,8 +196,8 @@ void OC2_SmokeDump()
         ++active;
         float density = 0;
         for (const Puff &p : c.puffs) if (p.sprite) { ++puffs; density += Density(c,p); }
-        ALERT(at_console,"oc2smoke_cloud: index=%d age=%.3f density=%.3f origin=%.2f,%.2f,%.2f blocked=%d\n",
-            static_cast<CBaseEntity *>(c.grenade)->entindex(),gpGlobals->time-c.start,density/Puffs,
+        ALERT(at_console,"oc2smoke_cloud: index=%d serial=%d age=%.3f density=%.3f origin=%.2f,%.2f,%.2f blocked=%d\n",
+            static_cast<CBaseEntity *>(c.grenade)->entindex(),static_cast<CBaseEntity *>(c.grenade)->edict()->serialnumber,gpGlobals->time-c.start,density/Puffs,
             c.origin.x,c.origin.y,c.origin.z,OC2_SmokeBlocks(c.origin-Vector(250,0,0),c.origin+Vector(250,0,0)));
     }
     ALERT(at_console,"oc2smoke_state: enabled=%d clouds=%d puffs=%d blasts=%d lifetime=%.1f\n",OC2_SmokeEnabled(),active,puffs,blasts,Lifetime);
