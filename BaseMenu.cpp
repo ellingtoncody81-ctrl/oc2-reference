@@ -30,6 +30,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "FontManager.h"
 #include "cursor_type.h"
 #include "utflib.h"
+#include "../../common/oc2_crosshair.h"
+#include "menus/frontend/PanoramaModelView.h"
 
 cvar_t		*ui_showmodels;
 cvar_t		*ui_showclassmodels;
@@ -623,6 +625,10 @@ void UI_UpdateMenu( float flTime )
 {
 	if( !uiStatic.initialized )
 		return;
+	static bool previewWasConnected=false;
+	const bool connected=CL_IsActive();
+	if(connected&&!previewWasConnected)CMenuPanoramaModelView::ReleaseResources();
+	previewWasConnected=connected;
 
 	static bool loadStuff = true;
 
@@ -668,7 +674,10 @@ void UI_UpdateMenu( float flTime )
 		uiStatic.client.Update();
 
 	if( !uiStatic.menu.IsActive( ))
+	{
+		if( connected && !uiStatic.client.IsActive() ) CMenuPanoramaModelView::ReleaseResources();
 		return;
+	}
 
 	if( !EngFuncs::ClientInGame() && EngFuncs::GetCvarFloat( "cl_background" ) != 0.0f )
 		return;	// don't draw menu while level is loading
@@ -837,6 +846,7 @@ void UI_SetActiveMenu( int fActive )
 	{
 		UI_CloseMenu();
 		uiStatic.nextFrameActive = false; // don't call main menu next frame
+		if(CL_IsActive())CMenuPanoramaModelView::ReleaseResources();
 	}
 }
 
@@ -1173,6 +1183,7 @@ void UI_Init( void )
 	// Register before startup config.cfg runs; the first main-menu Show is later.
 	EngFuncs::CvarRegister( "cl_lobby_agent", "0", FCVAR_ARCHIVE );
 	EngFuncs::CvarRegister( "cl_lobby_weapon", "28", FCVAR_ARCHIVE );
+	for(const auto &v:oc2_crosshair::variables)EngFuncs::CvarRegister(v.name,v.value,FCVAR_ARCHIVE);
 
 	// show cl_predict dialog
 	EngFuncs::CvarRegister( "menu_mp_firsttime2", "1", FCVAR_ARCHIVE );

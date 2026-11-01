@@ -9,6 +9,28 @@
 #include <cstdio>
 #include <map>
 #include <tuple>
+#include <chrono>
+#include <array>
+
+namespace
+{
+using UIPerfClock=std::chrono::steady_clock;
+struct UIPerf {bool active=false;unsigned frames=0;double cpu=0;UIPerfClock::time_point previous{};std::array<double,2048> intervals{};} uiPerf;
+void InventoryPerfReset(){uiPerf=UIPerf();uiPerf.active=true;}
+void InventoryPerfDump()
+{
+ const unsigned n=std::min(uiPerf.frames>0?uiPerf.frames-1:0,unsigned(uiPerf.intervals.size()));
+ std::vector<double> values(uiPerf.intervals.begin(),uiPerf.intervals.begin()+n);std::sort(values.begin(),values.end());
+ double sum=0;for(double v:values)sum+=v;
+ Con_Printf("oc2_inventory_ui_perf: frames=%u mean_ms=%.6f p95_ms=%.6f cpu_ms=%.6f\n",n,n?sum/n:0,n?values[std::min(n-1,unsigned(n*.95))]:0,uiPerf.frames?uiPerf.cpu/uiPerf.frames:0);
+}
+struct UIPerfScope
+{
+ UIPerfClock::time_point started;
+ UIPerfScope(){if(uiPerf.active){started=UIPerfClock::now();if(uiPerf.frames)uiPerf.intervals[(uiPerf.frames-1)%uiPerf.intervals.size()]=std::chrono::duration<double,std::milli>(started-uiPerf.previous).count();uiPerf.previous=started;++uiPerf.frames;}}
+ ~UIPerfScope(){if(uiPerf.active)uiPerf.cpu+=std::chrono::duration<double,std::milli>(UIPerfClock::now()-started).count();}
+};
+}
 
 namespace
 {
@@ -654,6 +676,8 @@ void CMenuPanoramaInventory::Think()
 
 void CMenuPanoramaInventory::Draw()
 {
+    static bool registered=false;if(!registered){EngFuncs::Cmd_AddCommand("ui_inventory_perf_reset",InventoryPerfReset);EngFuncs::Cmd_AddCommand("ui_inventory_perf_dump",InventoryPerfDump);registered=true;}
+    UIPerfScope timer;
     const int w=uiStatic.width,right=Right(),rw=w-right-34;
     oc2_panorama::DrawBackground();
     Fill(64,0,w-64,96,PackRGBA(12,18,25,80));Fill(98,95,w-132,1,PackRGBA(190,206,218,80));
