@@ -23,4 +23,5 @@ void OC2_WeaponPhysicsFrame();
 void OC2_WeaponPhysicsDump(CWeaponBox *box = nullptr);
 bool OC2_WeaponPhysicsAimPoint(CWeaponBox *box, Vector &point, float offset = 0.0f);
 bool OC2_WeaponPhysicsIsAwake(CWeaponBox *box);
+void OC2_WeaponPhysicsStop(CWeaponBox *box);
 #endif

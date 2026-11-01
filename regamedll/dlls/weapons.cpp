@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_weapon_pickup.h"
 #include "oc2_inferno.h"
 #include "oc2_item_server.h"
 #include "wpn_shared/wpn_molotov.h"
@@ -2149,7 +2150,7 @@ bool CWeaponBox::GiveAmmoToPlayer(CBasePlayer *pPlayer, CBasePlayerWeapon *pWeap
 		m_rgAmmo[boxAmmo] = remaining;
 	else if (acquired != pWeapon)
 		pWeapon->m_iDefaultAmmo = remaining;
-	if (existing)
+	if (existing && !OC2_PickupUseDelivery(this,pPlayer))
 		EMIT_SOUND(pPlayer->edict(), CHAN_ITEM, "items/9mmclip1.wav", VOL_NORM, ATTN_NORM);
 	if (remaining > 0)
 		return false;
@@ -2161,7 +2162,7 @@ bool CWeaponBox::GiveAmmoToPlayer(CBasePlayer *pPlayer, CBasePlayerWeapon *pWeap
 // Try to add my contents to the toucher if the toucher is a player.
 void CWeaponBox::Touch(CBaseEntity *pOther)
 {
-	if (!(pev->flags & FL_ONGROUND))
+	if (!(pev->flags & FL_ONGROUND) && !(pOther && pOther->IsPlayer() && OC2_PickupUseDelivery(this,static_cast<CBasePlayer *>(pOther))))
 	{
 		return;
 	}
@@ -2179,6 +2180,7 @@ void CWeaponBox::Touch(CBaseEntity *pOther)
 	}
 
 	CBasePlayer *pPlayer = static_cast<CBasePlayer *>(pOther);
+	if(!OC2_PickupCanTouch(this,pPlayer))return;
 
 	if (pPlayer->m_bIsVIP || pPlayer->m_bShieldDrawn)
 		return;
@@ -2218,79 +2220,7 @@ void CWeaponBox::Touch(CBaseEntity *pOther)
 				return;
 #endif
 
-			if (FClassnameIs(pItem->pev, "weapon_c4"))
-			{
-#ifdef REGAMEDLL_FIXES
-				if (pPlayer->m_iTeam != TERRORIST)
-					return;
-#else
-				if (pPlayer->m_iTeam != TERRORIST || pPlayer->pev->deadflag != DEAD_NO)
-					return;
-#endif
-
-				if (pPlayer->m_bShowHints && !(pPlayer->m_flDisplayHistory & DHF_BOMB_RETRIEVED))
-				{
-					pPlayer->m_flDisplayHistory |= DHF_BOMB_RETRIEVED;
-					pPlayer->HintMessage("#Hint_you_have_the_bomb");
-				}
-				else
-					ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Got_bomb");
-
-				UTIL_LogPrintf("\"%s<%i><%s><TERRORIST>\" triggered \"Got_The_Bomb\"\n",
-					STRING(pPlayer->pev->netname),
-					GETPLAYERUSERID(pPlayer->edict()),
-					GETPLAYERAUTHID(pPlayer->edict()));
-
-				g_pGameRules->m_bBombDropped = FALSE;
-
-				MESSAGE_BEGIN(MSG_SPEC, SVC_DIRECTOR);
-					WRITE_BYTE(9);
-					WRITE_BYTE(DRC_CMD_EVENT);
-					WRITE_SHORT(ENTINDEX(pPlayer->edict()));
-					WRITE_SHORT(ENTINDEX(edict()));
-					WRITE_LONG(6);
-				MESSAGE_END();
-
-				pPlayer->m_bHasC4 = true;
-				pPlayer->pev->body = 1;
-				pPlayer->SetBombIcon(FALSE);
-
-				CBaseEntity *pEntity = nullptr;
-				while ((pEntity = UTIL_FindEntityByClassname(pEntity, "player")))
-				{
-					if (FNullEnt(pEntity->edict()))
-						break;
-
-					if (!pEntity->IsPlayer())
-						continue;
-
-					if (pEntity->IsDormant())
-						continue;
-
-					CBasePlayer *pTempPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pEntity->pev);
-
-					if (pTempPlayer->pev->deadflag == DEAD_NO && pTempPlayer->m_iTeam == TERRORIST)
-					{
-						if (pTempPlayer != pPlayer)
-						{
-							ClientPrint(pTempPlayer->pev, HUD_PRINTCENTER, "#Game_bomb_pickup", STRING(pPlayer->pev->netname));
-						}
-
-						MESSAGE_BEGIN(MSG_ONE, gmsgBombPickup, nullptr, pTempPlayer->pev);
-						MESSAGE_END();
-					}
-				}
-
-				if (TheCSBots())
-				{
-					TheCSBots()->SetLooseBomb(nullptr);
-				}
-
-				if (TheBots)
-				{
-					TheBots->OnEvent(EVENT_BOMB_PICKED_UP, pPlayer);
-				}
-			}
+			if(pItem->m_iId==WEAPON_C4 && pPlayer->m_iTeam!=TERRORIST)return;
 
 			if (i >= PRIMARY_WEAPON_SLOT && i <= PISTOL_SLOT && pPlayer->m_rgpPlayerItems[i])
 			{
@@ -2380,19 +2310,98 @@ void CWeaponBox::Touch(CBaseEntity *pOther)
 				if (pPlayer->AddPlayerItem(pItem))
 				{
 					pItem->AttachToPlayer(pPlayer);
+					if (FClassnameIs(pItem->pev, "weapon_c4"))
+					{
+		#ifdef REGAMEDLL_FIXES
+						if (pPlayer->m_iTeam != TERRORIST)
+							return;
+		#else
+						if (pPlayer->m_iTeam != TERRORIST || pPlayer->pev->deadflag != DEAD_NO)
+							return;
+		#endif
+
+						if (pPlayer->m_bShowHints && !(pPlayer->m_flDisplayHistory & DHF_BOMB_RETRIEVED))
+						{
+							pPlayer->m_flDisplayHistory |= DHF_BOMB_RETRIEVED;
+							pPlayer->HintMessage("#Hint_you_have_the_bomb");
+						}
+						else
+							ClientPrint(pPlayer->pev, HUD_PRINTCENTER, "#Got_bomb");
+
+						UTIL_LogPrintf("\"%s<%i><%s><TERRORIST>\" triggered \"Got_The_Bomb\"\n",
+							STRING(pPlayer->pev->netname),
+							GETPLAYERUSERID(pPlayer->edict()),
+							GETPLAYERAUTHID(pPlayer->edict()));
+
+						g_pGameRules->m_bBombDropped = FALSE;
+
+						MESSAGE_BEGIN(MSG_SPEC, SVC_DIRECTOR);
+							WRITE_BYTE(9);
+							WRITE_BYTE(DRC_CMD_EVENT);
+							WRITE_SHORT(ENTINDEX(pPlayer->edict()));
+							WRITE_SHORT(ENTINDEX(edict()));
+							WRITE_LONG(6);
+						MESSAGE_END();
+
+						pPlayer->m_bHasC4 = true;
+						pPlayer->pev->body = 1;
+						pPlayer->SetBombIcon(FALSE);
+
+						CBaseEntity *pEntity = nullptr;
+						while ((pEntity = UTIL_FindEntityByClassname(pEntity, "player")))
+						{
+							if (FNullEnt(pEntity->edict()))
+								break;
+
+							if (!pEntity->IsPlayer())
+								continue;
+
+							if (pEntity->IsDormant())
+								continue;
+
+							CBasePlayer *pTempPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pEntity->pev);
+
+							if (pTempPlayer->pev->deadflag == DEAD_NO && pTempPlayer->m_iTeam == TERRORIST)
+							{
+								if (pTempPlayer != pPlayer)
+								{
+									ClientPrint(pTempPlayer->pev, HUD_PRINTCENTER, "#Game_bomb_pickup", STRING(pPlayer->pev->netname));
+								}
+
+								MESSAGE_BEGIN(MSG_ONE, gmsgBombPickup, nullptr, pTempPlayer->pev);
+								MESSAGE_END();
+							}
+						}
+
+						if (TheCSBots())
+						{
+							TheCSBots()->SetLooseBomb(nullptr);
+						}
+
+						if (TheBots)
+						{
+							TheBots->OnEvent(EVENT_BOMB_PICKED_UP, pPlayer);
+						}
+					}
 #ifdef REGAMEDLL_FIXES
 					givenItem = pItem;
 #else
 					givenItem = true;
 #endif
 				}
+				else
+				{
+					bRemove=false;pPrev=pItem;pItem=pNext;continue;
+				}
+
 
 				// unlink this weapon from the box
 				if (pPrev)
 					pPrev->m_pNext = pNext;
 				else
-					m_rgpPlayerItems[i] = pItem = pNext;
+					m_rgpPlayerItems[i] = pNext;
 
+				pItem=pNext;
 				continue;
 			}
 
@@ -2430,15 +2439,17 @@ void CWeaponBox::Touch(CBaseEntity *pOther)
 
 	if (givenItem)
 	{
-		EMIT_SOUND(ENT(pPlayer->pev), CHAN_ITEM, "items/gunpickup2.wav", VOL_NORM, ATTN_NORM);
-		// Purchase cue evidence: a weapon taken from a weaponbox is a pickup.
-		OC2_LogPurchaseSound(pPlayer->entindex(), "pickup", STRING(pev->classname), 0);
+		if(!OC2_PickupUseDelivery(this,pPlayer))
+		{
+			EMIT_SOUND(ENT(pPlayer->pev), CHAN_ITEM, "items/gunpickup2.wav", VOL_NORM, ATTN_NORM);
+			OC2_LogPurchaseSound(pPlayer->entindex(), "pickup", STRING(pev->classname), 0);
+		}
 
 #ifdef REGAMEDLL_FIXES
 		// BUGBUG: weaponbox links gun to player, then ammo is given
 		// so FShouldSwitchWeapon's CanHolster (which checks ammo) check inside AddPlayerItem
 		// return FALSE, causing an unarmed player to not deploy any weaponbox grenade
-		if (pPlayer->m_pActiveItem != givenItem && CSGameRules()->FShouldSwitchWeapon(pPlayer, givenItem))
+		if (!OC2_PickupDeferSwitch(pPlayer) && pPlayer->m_pActiveItem != givenItem && CSGameRules()->FShouldSwitchWeapon(pPlayer, givenItem))
 		{
 			// This re-check is done after ammo is given
 			// so it ensures player properly deploys grenade from floor

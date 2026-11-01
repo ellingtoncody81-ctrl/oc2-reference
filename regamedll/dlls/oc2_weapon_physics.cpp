@@ -706,6 +706,11 @@ bool OC2_WeaponPhysicsAimPoint(CWeaponBox *box, Vector &point, float offset)
 
 bool OC2_WeaponPhysicsIsAwake(CWeaponBox *box) { return Find(box) != nullptr; }
 
+void OC2_WeaponPhysicsStop(CWeaponBox *box)
+{
+ for(size_t i=0;i<awake.size();)if(awake[i].handle==box)awake.erase(awake.begin()+i);else ++i;
+}
+
 void OC2_WeaponPhysicsFrame()
 {
 	Init();

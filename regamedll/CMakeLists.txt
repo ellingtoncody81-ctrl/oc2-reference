@@ -262,6 +262,7 @@ set(GAMEDLL_SRCS
 	"dlls/weapons.cpp"
 	"dlls/oc2_item_server.cpp"
 	"dlls/oc2_weapon_physics.cpp"
+	"dlls/oc2_weapon_pickup.cpp"
 	"dlls/weapontype.cpp"
 	"dlls/world.cpp"
 	"dlls/API/CAPI_Impl.cpp"

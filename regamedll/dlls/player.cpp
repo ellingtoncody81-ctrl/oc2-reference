@@ -27,6 +27,7 @@
 */
 
 #include "precompiled.h"
+#include "oc2_weapon_pickup.h"
 #include "oc2_spec_stats.h"
 #include "oc2_inferno.h"
 #include "wpn_shared/wpn_molotov.h"
@@ -1381,6 +1382,7 @@ CWeaponBox *EXT_FUNC __API_HOOK(CreateWeaponBox)(CBasePlayerItem *pItem, CBasePl
 			packed->m_iDefaultAmmo = 0;
 			--pPlayerOwner->m_rgAmmo[grenadeAmmo];
 			pWeaponBox->SetModel(modelName);
+			OC2_PickupDropped(pWeaponBox,pPlayerOwner);
 			return pWeaponBox;
 		}
 
@@ -1441,6 +1443,7 @@ CWeaponBox *EXT_FUNC __API_HOOK(CreateWeaponBox)(CBasePlayerItem *pItem, CBasePl
 		pWeaponBox->SetModel(modelName);
 	}
 
+	if(pWeaponBox)OC2_PickupDropped(pWeaponBox,pPlayerOwner);
 	return pWeaponBox;
 }
 
@@ -4467,6 +4470,7 @@ void CBasePlayer::PlayerUse()
 	caps = iClosestCaps;
 #endif
 	pObject = pClosest;
+	if(CVAR_GET_FLOAT("oc2_pickup_debug") && (m_afButtonPressed&IN_USE))ALERT(at_console,"oc2pickup_use: object=%s caps=%d\n",pObject?STRING(pObject->pev->classname):"none",caps);
 
 	// Found an object
 	if (pObject)
@@ -4503,6 +4507,7 @@ void CBasePlayer::PlayerUse()
 	}
 	else if (m_afButtonPressed & IN_USE)
 	{
+		if(OC2_PickupTryUse(this))return;
 		UseEmpty();
 	}
 }
@@ -7361,7 +7366,7 @@ BOOL EXT_FUNC CBasePlayer::__API_HOOK(AddPlayerItem)(CBasePlayerItem *pItem)
 			pev->gamestate = HITGROUP_SHIELD_ENABLED;
 
 		// should we switch to this item?
-		if (g_pGameRules->FShouldSwitchWeapon(this, pItem))
+		if (!OC2_PickupDeferSwitch(this) && g_pGameRules->FShouldSwitchWeapon(this, pItem))
 		{
 			if (!m_bShieldDrawn)
 			{
