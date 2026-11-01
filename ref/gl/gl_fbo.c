@@ -16,6 +16,7 @@ GNU General Public License for more details.
 #include "gl_local.h"
 
 #if !XASH_GLES || !XASH_GL_STATIC
+static void GL_OC2PreviewClear( void );
 static void GL_FreeRenderTarget( gl_rendertarget_t *target )
 {
 	if( target->fbo )
@@ -322,6 +323,7 @@ binds the surface 3D passes draw into
 */
 void GL_BindSceneTarget( void )
 {
+	if( GL_OC2PreviewActive() ){GL_OC2PreviewViewport();return;}
 	if( !GL_RenderTargetsActive( ))
 		return;
 
@@ -412,4 +414,145 @@ void GL_PresentScreenTarget( void )
 	}
 }
 
+// Private, versioned front-end cache. No readback or disk thumbnails: each
+// static card is rendered once into RGBA, then composited over the current UI.
+#define OC2_PREVIEW_SLOTS 96
+#define OC2_PREVIEW_BUDGET (64u * 1024u * 1024u)
+typedef struct
+{
+	unsigned key, used, bytes;
+	int texture, width, height;
+} oc2_preview_slot_t;
+static oc2_preview_slot_t oc2_slots[OC2_PREVIEW_SLOTS];
+static gl_rendertarget_t oc2_target;
+static qboolean oc2_preview_active;
+static unsigned oc2_use, oc2_bytes, oc2_hits, oc2_builds;
+static GLint oc2_previous_fbo;
+
+qboolean GL_OC2PreviewActive( void ) { return oc2_preview_active; }
+void GL_OC2PreviewViewport( void )
+{
+	pglBindFramebuffer( GL_FRAMEBUFFER, oc2_target.fbo );
+	pglViewport( 0, 0, oc2_target.width, oc2_target.height );
+}
+static void GL_OC2PreviewDrop( oc2_preview_slot_t *slot )
+{
+	if( slot->texture ) GL_FreeTexture( slot->texture );
+	oc2_bytes -= slot->bytes;
+	memset( slot, 0, sizeof( *slot ));
+}
+static void GL_OC2PreviewRelease( unsigned key )
+{
+	for( int i = 0; i < OC2_PREVIEW_SLOTS; ++i )
+		if( oc2_slots[i].key == key ) GL_OC2PreviewDrop( &oc2_slots[i] );
+}
+static void GL_OC2PreviewClear( void )
+{
+	for( int i = 0; i < OC2_PREVIEW_SLOTS; ++i ) GL_OC2PreviewDrop( &oc2_slots[i] );
+	GL_FreeRenderTarget( &oc2_target );
+	oc2_preview_active = false;
+}
+void GL_OC2PreviewShutdown( void ) { GL_OC2PreviewClear(); }
+static int GL_OC2PreviewDraw( unsigned key, int x, int y, int width, int height )
+{
+	for( int i = 0; i < OC2_PREVIEW_SLOTS; ++i )
+	{
+		oc2_preview_slot_t *slot = &oc2_slots[i];
+		if( slot->key != key || slot->width != width || slot->height != height ) continue;
+		slot->used = ++oc2_use; ++oc2_hits;
+		R_Set2DMode( true );
+		pglEnable( GL_BLEND );
+		pglBlendFunc( GL_ONE, GL_ONE_MINUS_SRC_ALPHA );
+		pglColor4f( 1, 1, 1, 1 );
+		R_DrawStretchPic( x, y, width, height, 0, 1, 1, 0, slot->texture );
+		pglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+		return 1;
+	}
+	return 0;
+}
+static int GL_OC2PreviewBegin( int width, int height )
+{
+	if( oc2_preview_active || width < 1 || height < 1 || width > 2048 || height > 2048 ||
+		!GL_Support( GL_FRAMEBUFFER_OBJECT_EXT )) return 0;
+	pglGetIntegerv( GL_FRAMEBUFFER_BINDING, &oc2_previous_fbo );
+	if( oc2_target.width != width || oc2_target.height != height )
+	{
+		GL_FreeRenderTarget( &oc2_target );
+		if( !GL_CreateRenderTarget( &oc2_target, "#oc2_preview_target", width, height, 0, RT_DEPTH ))
+		{
+			pglBindFramebuffer( GL_FRAMEBUFFER, oc2_previous_fbo );
+			return 0;
+		}
+	}
+	oc2_preview_active = true;
+	GL_OC2PreviewViewport();
+	return 1;
+}
+static int GL_OC2PreviewEnd( unsigned key )
+{
+	int empty = -1, texture = 0;
+	unsigned bytes = oc2_target.width * oc2_target.height * 4u;
+	char name[64];
+	if( !oc2_preview_active ) return 0;
+	GL_OC2PreviewRelease( key );
+	for(;;)
+	{
+		int oldest = 0;
+		for( int i = 0; i < OC2_PREVIEW_SLOTS; ++i )
+		{
+			if( !oc2_slots[i].key ) empty = i;
+			if( oc2_slots[i].used < oc2_slots[oldest].used ) oldest = i;
+		}
+		if( empty >= 0 && oc2_bytes + bytes <= OC2_PREVIEW_BUDGET ) break;
+		if( !oc2_slots[oldest].key )
+		{
+			for( int i = 0; i < OC2_PREVIEW_SLOTS; ++i ) if( oc2_slots[i].key &&
+				(!oc2_slots[oldest].key || oc2_slots[i].used < oc2_slots[oldest].used )) oldest = i;
+		}
+		if( !oc2_slots[oldest].key ) break;
+		GL_OC2PreviewDrop( &oc2_slots[oldest] );
+	}
+	if( empty >= 0 && bytes <= OC2_PREVIEW_BUDGET )
+	{
+		Q_snprintf( name, sizeof( name ), "#oc2_thumbnail/%u", key );
+		texture = GL_CreateTexture( name, oc2_target.width, oc2_target.height, NULL, TF_NOMIPMAP|TF_CLAMP|TF_HAS_ALPHA );
+		if( texture )
+		{
+			GL_Bind( XASH_TEXTURE0, texture );
+			pglCopyTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, 0, 0, oc2_target.width, oc2_target.height );
+			oc2_preview_slot_t *slot = &oc2_slots[empty];
+			slot->key = key; slot->used = ++oc2_use; slot->texture = texture;
+			slot->width = oc2_target.width; slot->height = oc2_target.height;
+			slot->bytes = bytes; oc2_bytes += bytes; ++oc2_builds;
+		}
+	}
+	oc2_preview_active = false;
+	pglBindFramebuffer( GL_FRAMEBUFFER, oc2_previous_fbo );
+	return texture != 0;
+}
+static void GL_OC2PreviewStats( void )
+{
+	gEngfuncs.Con_Printf( "oc2_thumbnail_cache: bytes=%u budget=%u hits=%u builds=%u\n", oc2_bytes, OC2_PREVIEW_BUDGET, oc2_hits, oc2_builds );
+}
+typedef struct
+{
+	unsigned version;
+	int (*Draw)( unsigned, int, int, int, int );
+	int (*Begin)( int, int );
+	int (*End)( unsigned );
+	void (*Release)( unsigned );
+	void (*Clear)( void );
+	void (*Stats)( void );
+} oc2_thumbnail_ref_api_t;
+EXPORT void *R_GetOC2ThumbnailAPI( void );
+EXPORT void *R_GetOC2ThumbnailAPI( void )
+{
+	static oc2_thumbnail_ref_api_t api = { 1, GL_OC2PreviewDraw, GL_OC2PreviewBegin, GL_OC2PreviewEnd,
+		GL_OC2PreviewRelease, GL_OC2PreviewClear, GL_OC2PreviewStats };
+	return &api;
+}
+#else
+qboolean GL_OC2PreviewActive( void ) { return false; }
+void GL_OC2PreviewViewport( void ) {}
+void GL_OC2PreviewShutdown( void ) {}
 #endif // !XASH_GLES || !XASH_GL_STATIC

@@ -2304,7 +2304,10 @@ void CL_ParseUserMessage( sizebuf_t *msg, int svc_num, connprotocol_t proto )
 
 	if( clgame.msg[i].func )
 	{
+		const double perfStart=Host_PerfNow();
 		clgame.msg[i].func( clgame.msg[i].name, iSize, pbuf );
+		const double elapsed=(Host_PerfNow()-perfStart)*1000;
+		if(perfStart>0&&elapsed>=4)Con_Printf("hostperf_message: name=%s ms=%.4f\n",clgame.msg[i].name,elapsed);
 
 #ifdef HACKS_RELATED_HLMODS
 		// run final credits for Half-Life because hl1 doesn't have call END_SECTION

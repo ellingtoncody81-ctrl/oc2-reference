@@ -123,6 +123,8 @@ typedef struct
 CVAR_DEFINE_AUTO( r_studio_sort_textures, "0", FCVAR_GLCONFIG, "change draw order for additive meshes" );
 CVAR_DEFINE_AUTO( r_studio_drawelements, "1", FCVAR_GLCONFIG, "use glDrawElements for studiomodels" );
 CVAR_DEFINE_AUTO( r_studio_arraychunks, "1", 0, "split oversized studio meshes into array batches" );
+CVAR_DEFINE_AUTO( r_studio_meshcache, "1", 0, "cache validated studio topology" );
+CVAR_DEFINE_AUTO( r_studio_perf_cold, "0", 0, "log expensive cold appearance work" );
 CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model renderer instead of the one provided by client library (debugging)" );
 static cvar_t			*cl_righthand = NULL;
 
@@ -147,6 +149,8 @@ R_StudioInit
 */
 void R_StudioInit( void )
 {
+	if( CVAR_CHECK_SENTINEL( &r_studio_meshcache ))gEngfuncs.Cvar_RegisterVariable( &r_studio_meshcache );
+	if( CVAR_CHECK_SENTINEL( &r_studio_perf_cold ))gEngfuncs.Cvar_RegisterVariable( &r_studio_perf_cold );
 	// CVAR_DEFINE_AUTO declares the convar but does not register it.
 	// Register here so its default is applied before studio models are drawn.
 	if( CVAR_CHECK_SENTINEL( &r_studio_arraychunks ))
@@ -1453,12 +1457,15 @@ static void R_LightLambert( vec4_t light[MAX_LOCALLIGHTS], const vec3_t normal, 
 	}
 }
 
+static byte oc2_studio_normal_colors[MAXSTUDIOVERTS][3];
+static qboolean oc2_studio_normal_colors_ready;
 static void R_StudioSetColorArray( short *ptricmds, vec3_t *pstudionorms, byte *color )
 {
 	float	*lv = (float *)g_studio.lightvalues[ptricmds[1]];
 
 	color[3] = tr.blend * 255;
-	R_LightLambert( g_studio.lightpos[ptricmds[0]], pstudionorms[ptricmds[1]], lv, color );
+	if(oc2_studio_normal_colors_ready)memcpy(color,oc2_studio_normal_colors[ptricmds[1]],3);
+	else R_LightLambert( g_studio.lightpos[ptricmds[0]], pstudionorms[ptricmds[1]], lv, color );
 }
 
 static void R_StudioSetColorBegin( short *ptricmds, vec3_t *pstudionorms )
@@ -1987,8 +1994,11 @@ static int R_StudioPlanArrayChunk( const short *commands, const short *end, cons
 	}
 }
 
+#include "gl_studio_meshcache.h"
 static void R_StudioSubmitMesh( short *ptricmds, vec3_t *pstudionorms, float s, float t, float shellscale, int tesslevel )
 {
+	if( tesslevel<=0 && r_studio_meshcache.value && r_studio_drawelements.value && r_studio_arraychunks.value &&
+		R_StudioSubmitCached(ptricmds,pstudionorms,s,t,shellscale))return;
 	int arrayBudget = tesslevel <= 0 && r_studio_drawelements.value ? R_StudioMeshArrayBudget( ptricmds ) : 0;
 	if( arrayBudget < 0 ) return;
 	if( tesslevel <= 0 && r_studio_drawelements.value && ( arrayBudget > 0 || r_studio_arraychunks.value ))
@@ -2044,12 +2054,18 @@ R_StudioDrawPoints
 
 ===============
 */
+#include "gl_studio_perf.h"
 static void R_StudioDrawPoints( void )
 {
+	const int savedCull = glState.faceCull;
 	float		shellscale = 0.0f;
 	qboolean		need_sort = false;
 
-	if( !m_pStudioHeader ) return;
+	if( !m_pStudioHeader || !m_pSubModel || m_pSubModel->nummesh <= 0 ) return;
+	oc2_studio_normal_colors_ready=false;
+	oc2_studio_perf_t *profile=R_StudioPerfModel();
+	double perfTime=profile?gEngfuncs.pfnTime():0;
+	if(profile){++profile->calls;profile->vertices+=m_pSubModel->numverts;}
 
 
 	g_studio.numverts = g_studio.numelems = 0;
@@ -2098,6 +2114,7 @@ static void R_StudioDrawPoints( void )
 			R_LightStrength( pvertbone[i], pstudioverts[i], g_studio.lightpos[i] );
 	}
 
+	if(profile){double now=gEngfuncs.pfnTime();profile->transform+=(now-perfTime)*1000;perfTime=now;}
 	// generate shared normals for properly scaling glowing shell
 	if( RI.currententity->curstate.renderfx == kRenderFxGlowShell )
 	{
@@ -2149,7 +2166,15 @@ static void R_StudioDrawPoints( void )
 		// resort opaque and translucent meshes draw order
 		qsort( g_studio.meshes, m_pSubModel->nummesh, sizeof( sortedmesh_t ), R_StudioMeshCompare );
 	}
+	// Without local lights, RGB depends only on the current normal's light
+	// value. Quantize once per normal; alpha remains live for each material.
+	if(!g_studio.numlocallights&&k<=MAXSTUDIOVERTS)
+	{
+		for(int i=0;i<k;++i)VectorScale(g_studio.lightvalues[i],255.0f,oc2_studio_normal_colors[i]);
+		oc2_studio_normal_colors_ready=true;
+	}
 
+	if(profile){double now=gEngfuncs.pfnTime();profile->lighting+=(now-perfTime)*1000;perfTime=now;}
 	// NOTE: rewind normals at start
 	pstudionorms = (vec3_t *)((byte *)m_pStudioHeader + m_pSubModel->normindex);
 
@@ -2165,7 +2190,7 @@ static void R_StudioDrawPoints( void )
 		if( R_AllowFlipViewModel( RI.currententity ))
 		{
 			tr.fFlipViewModel = true;
-			GL_Cull( GL_NONE );
+			GL_Cull( RI.currentmodel && !Q_strncmp( RI.currentmodel->name, "models/attachments/oc2_sticker_charm", 35 ) ? GL_BACK : GL_NONE );
 		}
 		else
 		{
@@ -2223,8 +2248,12 @@ static void R_StudioDrawPoints( void )
 		}
 
 		r_stats.c_studio_polys += pmesh->numtris;
+		if(profile)profile->triangles+=pmesh->numtris;
 		tr.blend = oldblend;
 	}
+	GL_Cull( savedCull );
+	oc2_studio_normal_colors_ready=false;
+	if(profile)profile->submit+=(gEngfuncs.pfnTime()-perfTime)*1000;
 }
 
 /*
@@ -3653,6 +3682,7 @@ Mod_StudioLoadTextures
 */
 void Mod_StudioLoadTextures( model_t *mod, void *data )
 {
+	R_StudioInvalidateMeshCache((const studiohdr_t *)data);
 	studiohdr_t	*phdr = (studiohdr_t *)data;
 
 	if( !phdr )
@@ -3673,6 +3703,7 @@ Mod_StudioUnloadTextures
 */
 void Mod_StudioUnloadTextures( void *data )
 {
+	R_StudioInvalidateMeshCache((const studiohdr_t *)data);
 	studiohdr_t	*phdr = (studiohdr_t *)data;
 
 	if( !phdr )
@@ -3699,6 +3730,8 @@ qboolean R_StudioFillAPI( engine_studio_api_t *api, r_studio_interface_t *pDefau
 	if( CVAR_CHECK_SENTINEL( &r_viewmodel_projection_debug ))
 		gEngfuncs.Cvar_RegisterVariable( &r_viewmodel_projection_debug );
 	gEngfuncs.Cmd_AddCommand( "viewmodel_projection_dump", R_DumpViewModelProjection, "show actual weapon FOV and world projection restoration" );
+	gEngfuncs.Cmd_AddCommand( "r_studio_perf_reset", R_StudioPerfReset_f, "start bounded model timings" );
+	gEngfuncs.Cmd_AddCommand( "r_studio_perf_dump", R_StudioPerfDump_f, "stop and summarize model timings" );
 	cl_righthand = gEngfuncs.pfnGetCvarPointer( "cl_righthand" );
 
 	api->GetCurrentEntity        = pfnGetCurrentEntity;

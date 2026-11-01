@@ -3933,29 +3933,39 @@ void Host_ClientFrame( void )
 	// the incoming messages have been read
 	if( !SV_Active( )) CL_SendCommand ();
 
+	double perfStart = Host_PerfNow();
 	clgame.dllFuncs.pfnFrame( host.frametime );
+	Host_PerfAdd( 14, perfStart );
 
 	// remember last received framenum
 	CL_SetLastUpdate ();
 
 	// read updates from server
+	perfStart = Host_PerfNow();
 	CL_ReadPackets ();
+	Host_PerfAdd( 13, perfStart );
 
 	// do prediction again in case we got
 	// a new portion updates from server
+	perfStart = Host_PerfNow();
 	CL_RedoPrediction ();
+	Host_PerfAdd( 6, perfStart );
 
 	// update voice
 	Voice_Idle( host.frametime );
 
 	// emit visible entities
+	perfStart = Host_PerfNow();
 	CL_EmitEntities ();
+	Host_PerfAdd( 5, perfStart );
 
 	// in case we lost connection
 	CL_CheckForResend ();
 
 	// procssing resources on handle
+	perfStart = Host_PerfNow();
 	while( CL_RequestMissingResources( ));
+	Host_PerfAdd( 15, perfStart );
 
 	// handle thirdperson camera
 	CL_MoveThirdpersonCamera();
@@ -3967,10 +3977,14 @@ void Host_ClientFrame( void )
 	VID_CheckChanges();
 
 	// update the screen
+	perfStart = Host_PerfNow();
 	SCR_UpdateScreen ();
+	Host_PerfAdd( 4, perfStart );
 
 	// update audio
+	perfStart = Host_PerfNow();
 	SND_UpdateSound ();
+	Host_PerfAdd( 12, perfStart );
 
 	// play avi-files
 	SCR_RunCinematic ();

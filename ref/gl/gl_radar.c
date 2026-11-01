@@ -23,6 +23,7 @@ GNU General Public License for more details.
 */
 
 #include "gl_local.h"
+#include "gl_radar_blur.h"
 
 // not every GL profile this renderer builds against exposes the read-buffer
 // selector, but the constant itself is fixed by the spec
@@ -52,10 +53,15 @@ static qboolean b_radar_has_params;
 // resolution of the blur sample buffer, owned by the command layer
 // (see engine/client/dll_int/cl_radar.c); defaults to 64 if unset
 convar_t *cl_radar_blur_resolution;
+#include "gl_radar_gpu.h"
 
 void GL_SetRadarBlurCvar( convar_t *cv )
 {
 	cl_radar_blur_resolution = cv;
+#if !XASH_GLES && !XASH_GL_STATIC
+	if(CVAR_CHECK_SENTINEL(&r_radar_gpu))gEngfuncs.Cvar_RegisterVariable(&r_radar_gpu);
+	gEngfuncs.Cmd_AddCommand("r_radar_gpu_test",GL_RadarGPUTest_f,"compare actual GPU radar pixels with CPU blur");
+#endif
 }/*
 ====================
 GL_ApplyBoxBlur
@@ -70,11 +76,6 @@ does, and it shows up as slight darkening on bright edges.
 int GL_ApplyBoxBlur( const byte *src, byte *dst, int width, int height, int radius )
 {
 	byte *tmp;
-	int x, y, i;
-	int rsum, gsum, bsum, asum, n;
-	int x0, x1, y0, y1;
-	const byte *p;
-	byte *o;
 
 	if( radius < 1 )
 		return radius;
@@ -99,74 +100,7 @@ int GL_ApplyBoxBlur( const byte *src, byte *dst, int width, int height, int radi
 	if( !tmp )
 		return radius;
 
-	// ---- pass 1: horizontal
-	for( y = 0; y < height; y++ )
-	{
-		const byte *const_row = src + (size_t)y * width * 4;
-
-		for( x = 0; x < width; x++ )
-		{
-			x0 = x - radius; if( x0 < 0 ) x0 = 0;
-			x1 = x + radius; if( x1 > width - 1 ) x1 = width - 1;
-
-			o = tmp + ((size_t)y * width + x) * 4;
-
-			if( x1 < x0 )
-			{
-				o[0] = o[1] = o[2] = o[3] = 0;
-				continue;
-			}
-
-			rsum = gsum = bsum = asum = n = 0;
-			p = const_row + (size_t)x0 * 4;
-			for( i = x0; i <= x1; i++, p += 4 )
-			{
-				rsum += p[0];
-				gsum += p[1];
-				bsum += p[2];
-				asum += p[3];
-				n++;
-			}
-
-			o[0] = rsum / n;
-			o[1] = gsum / n;
-			o[2] = bsum / n;
-			o[3] = asum / n;
-		}
-	}
-
-	// ---- pass 2: vertical
-	for( y = 0; y < height; y++ )
-	{
-		y0 = y - radius; if( y0 < 0 ) y0 = 0;
-		y1 = y + radius; if( y1 > height - 1 ) y1 = height - 1;
-
-		for( x = 0; x < width; x++ )
-		{
-			o = dst + ((size_t)y * width + x) * 4;
-
-			if( y1 < y0 )
-			{
-				o[0] = o[1] = o[2] = o[3] = 0;
-				continue;
-			}
-
-			rsum = gsum = bsum = asum = n = 0;
-			p = tmp + ((size_t)y0 * width + x) * 4;			for( i = y0; i <= y1; i++, p += (size_t)width * 4 )
-			{
-				rsum += p[0];
-				gsum += p[1];
-				bsum += p[2];
-				asum += p[3];
-				n++;
-			}
-
-			o[0] = rsum / n;
-			o[1] = gsum / n;
-			o[2] = bsum / n;
-			o[3] = asum / n;
-		}
-	}
+	GL_RadarBoxBlurRGBA( src, dst, tmp, width, height, radius );
 
 	// tmp is the pool-owned scratch, kept for the next capture
 	return radius;
@@ -301,11 +235,6 @@ void GL_CaptureRadarBackground( void )
 	if( scr_w < 1 || scr_h < 1 )
 		return;
 
-	bufsize = (size_t)res * res * 4;
-	buf = (byte *)Mem_Malloc( r_radar_pool, bufsize );
-	if( !buf )
-		return;
-
 	// centre on the radar, then clamp into the framebuffer
 	x = cx - res / 2;
 	y = scr_h - cy - res / 2;
@@ -328,6 +257,20 @@ void GL_CaptureRadarBackground( void )
 		}
 	}
 
+	if(GL_RadarGPUProcess(x,y,res,radius,NULL,NULL))
+	{
+#if !XASH_GLES && !XASH_GL_STATIC
+		++radarGPUCaptures;
+#endif
+		i_radar_rect[0]=x;i_radar_rect[1]=scr_h-y-res;i_radar_rect[2]=i_radar_rect[3]=res;
+		return;
+	}
+#if !XASH_GLES && !XASH_GL_STATIC
+	++radarCPUFallbacks;radarGPUSize=0;
+#endif
+	bufsize = (size_t)res * res * 4;
+	buf = (byte *)Mem_Malloc( r_radar_pool, bufsize );
+	if( !buf )return;
 	// with render targets off the scene is the window, so read the back
 	// buffer; with them on, the FBO's colour attachment 0 is already the
 	// read buffer and asking for GL_BACK is an error
@@ -431,6 +374,7 @@ GL_FreeRadarCapture
 */
 void GL_FreeRadarCapture( void )
 {
+	GL_RadarGPUFree();
 	if( p_radar_pixels )
 	{
 		Mem_Free( p_radar_pixels );

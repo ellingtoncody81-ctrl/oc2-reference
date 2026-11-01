@@ -299,6 +299,11 @@ static void R_Clear( int bitMask )
 	else pglClearColor( 0.5f, 0.5f, 0.5f, 1.0f );
 
 	int bits = GL_DEPTH_BUFFER_BIT;
+	if( GL_OC2PreviewActive() )
+	{
+		pglClearColor( 0, 0, 0, 0 );
+		bits |= GL_COLOR_BUFFER_BIT;
+	}
 
 	if( glState.stencilEnabled )
 		bits |= GL_STENCIL_BUFFER_BIT;
@@ -541,7 +546,9 @@ void R_SetupGL( qboolean set_gl_state )
 
 	if( !set_gl_state ) return;
 
-	if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ))
+	if( GL_OC2PreviewActive() )
+		GL_OC2PreviewViewport();
+	else if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ))
 	{
 		int scene_width, scene_height;
 

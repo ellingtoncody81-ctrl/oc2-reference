@@ -38,6 +38,7 @@ GNU General Public License for more details.
 #include "tests.h"
 #include "library.h"
 #include "platform/platform.h"
+#include "host_perf.h"
 
 host_parm_t host;	// host parms
 static jmp_buf return_from_main_buf;
@@ -661,6 +662,9 @@ void Host_Frame( double time )
 		return;
 
 	double t1 = Platform_DoubleTime();
+	const qboolean measuring = host_perf_active;
+	const unsigned generation = host_perf_generation;
+	if( measuring ) memset( host_perf_current, 0, sizeof( host_perf_current ));
 
 	if( host.framecount == 0 )
 		Con_DPrintf( "Time to first frame: %.3f seconds\n", t1 - host.starttime );
@@ -668,13 +672,27 @@ void Host_Frame( double time )
 	Host_InputFrame ();  // input frame
 	Host_ClientBegin (); // begin client
 	Host_GetCommands (); // dedicated in
+	Host_PerfAdd( 1, measuring ? t1 : 0 );
+	double phase = Host_PerfNow();
 	Host_ServerFrame (); // server frame
+	Host_PerfAdd( 2, phase ); phase = Host_PerfNow();
 	Host_ClientFrame (); // client frame
+	Host_PerfAdd( 3, phase );
 	HTTP_Run();			 // both server and client
 	XRcon_Frame();
 
 	host.framecount++;
 	host.pureframetime = Platform_DoubleTime() - t1;
+	if( measuring && host_perf_active && generation == host_perf_generation )
+	{
+		if( host_perf_previous && host_perf_count < HOST_PERF_CAPACITY )
+		{
+			host_perf_current[0] = (t1 - host_perf_previous) * 1000.0;
+			host_perf_current[7] = host.pureframetime * 1000.0;
+			memcpy( host_perf_samples[host_perf_count++], host_perf_current, sizeof( host_perf_current ));
+		}
+		host_perf_previous = t1;
+	}
 }
 
 /*
@@ -1121,6 +1139,8 @@ static void Host_InitCommon( int argc, char **argv, const char *progname, qboole
 	host.bugcomp = Host_CheckBugcomp();
 
 	Cmd_AddCommand( "memlist", Mem_Stats_f, "prints memory pool information" );
+	Cmd_AddCommand( "host_perf_reset", Host_PerfReset_f, "start bounded frame timings" );
+	Cmd_AddCommand( "host_perf_dump", Host_PerfDump_f, "stop and summarize frame timings" );
 
 #if !XASH_DEDICATED
 	Cmd_AddRestrictedCommand( "host_writeconfig", Host_WriteConfig, "save current configuration" );

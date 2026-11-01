@@ -278,7 +278,15 @@ static uint Image_DXTCalcSize( const char *name, dds_t *hdr, size_t filesize )
 		// if mipcount > 1
 		buffsize = Image_DXTCalcMipmapSize( hdr );
 	}
-	else if( hdr->dwFlags & ( DDS_LINEARSIZE|DDS_PITCH ))
+	else if( hdr->dwFlags & DDS_PITCH )
+	{
+		// PITCH is one scanline, never the complete allocation. The renderer
+		// uploads width * height pixels; accepting a row-sized buffer overreads.
+		if( !ImageCompressed( image.type ) && hdr->dwLinearSize != Image_ComputeSize( image.type, hdr->dwWidth, 1, 1 ))
+			return 0; // padded rows require an explicit unpack/repack path
+		buffsize = Image_DXTCalcMipmapSize( hdr );
+	}
+	else if( hdr->dwFlags & DDS_LINEARSIZE )
 	{
 		// just in case (no need, really)
 		buffsize = hdr->dwLinearSize;
@@ -288,6 +296,8 @@ static uint Image_DXTCalcSize( const char *name, dds_t *hdr, size_t filesize )
 		// pretty solution for microsoft bug
 		buffsize = Image_DXTCalcMipmapSize( hdr );
 	}
+	if( buffsize < Image_DXTCalcMipmapSize( hdr ))
+		return 0;
 
 	if( filesize != buffsize ) // main check
 	{

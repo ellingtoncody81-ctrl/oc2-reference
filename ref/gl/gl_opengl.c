@@ -1384,6 +1384,8 @@ void R_Shutdown( void )
 
 	GL_RemoveCommands();
 	GL_FreeRenderTargets();
+	GL_OC2PreviewShutdown();
+	R_StudioClearMeshCache();
 	R_ShutdownImages();
 #if !XASH_GLES && !XASH_GL_STATIC
 	GL2_ShimShutdown();

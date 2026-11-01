@@ -589,6 +589,8 @@ void Host_WriteConfig( void );
 void Host_Error( const char *error, ... ) FORMAT_CHECK( 1 );
 void Host_ValidateEngineFeatures( uint32_t mask, uint32_t features );
 void Host_Frame( double time );
+double Host_PerfNow( void );
+void Host_PerfAdd( int stage, double start );
 void Host_Credits( void );
 void Host_ExitInMain( void ) NORETURN;
 

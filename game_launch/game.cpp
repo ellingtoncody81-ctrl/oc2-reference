@@ -162,6 +162,7 @@ static void Sys_ChangeGame( const char *progname )
 static int Sys_Start( void )
 {
 	int ret;
+	const char *game = XASH_GAMEDIR;
 
 #if XASH_SAILFISH
 	const char *home = getenv( "HOME" );
@@ -173,7 +174,7 @@ static int Sys_Start( void )
 #endif // XASH_SAILFISH
 
 	Sys_LoadEngine();
-	ret = Host_Main( szArgc, szArgv, XASH_GAMEDIR, 0, XASH_DISABLE_MENU_CHANGEGAME ? NULL : Sys_ChangeGame );
+	ret = Host_Main( szArgc, szArgv, game, 0, XASH_DISABLE_MENU_CHANGEGAME ? NULL : Sys_ChangeGame );
 	Sys_UnloadEngine();
 
 	return ret;
@@ -192,25 +193,55 @@ int __stdcall WinMain( HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR cmdLine, int 
 {
 	LPWSTR* lpArgv;
 	int ret, i;
+	wchar_t executable[32768];
+	DWORD length = GetModuleFileNameW( NULL, executable, sizeof( executable ) / sizeof( executable[0] ));
+	if( !length || length >= sizeof( executable ) / sizeof( executable[0] ))
+		Launch_Error( "Cannot locate the game executable." );
+	wchar_t *slash = wcsrchr( executable, L'\\' );
+	if( slash ) *slash = L'\0';
+	if( !slash || !SetCurrentDirectoryW( executable ))
+		Launch_Error( "Cannot open the game directory: %s", GetStringLastError() );
 
 	lpArgv = CommandLineToArgvW( GetCommandLineW(), &szArgc );
 	szArgv = ( char** )malloc( (szArgc + 1) * sizeof( char* ));
 
 	for( i = 0; i < szArgc; ++i )
 	{
-		size_t size = wcslen(lpArgv[i]) + 1;
-
-		// just in case, allocate some more memory
-		szArgv[i] = ( char * )malloc( size * sizeof( wchar_t ));
-		wcstombs( szArgv[i], lpArgv[i], size );
+		int size = WideCharToMultiByte( CP_UTF8, 0, lpArgv[i], -1, NULL, 0, NULL, NULL );
+		szArgv[i] = ( char * )malloc( size );
+		if( !szArgv[i] || !WideCharToMultiByte( CP_UTF8, 0, lpArgv[i], -1, szArgv[i], size, NULL, NULL ))
+			Launch_Error( "Cannot decode launch arguments." );
 	}
 	szArgv[szArgc] = 0;
 
 	LocalFree( lpArgv );
+	if( szArgc == 1 )
+	{
+		char **args = (char **)realloc( szArgv, 4 * sizeof(char *) );
+		if( !args ) Launch_Error( "Cannot allocate launch arguments." );
+		szArgv = args;szArgv[1] = (char *)malloc( 5 );
+		if( !szArgv[1] ) Launch_Error( "Cannot allocate launch arguments." );
+		strcpy( szArgv[1], "-log" );szArgv[2] = _strdup( "-console" );
+		if( !szArgv[2] ) Launch_Error( "Cannot allocate launch arguments." );
+		szArgv[3] = NULL;szArgc = 3;
+	}
+	bool gameSpecified = false;
+	for( i = 1; i < szArgc; ++i ) if( !_stricmp( szArgv[i], "-game" )) gameSpecified = true;
+	if( !gameSpecified && ( GetFileAttributesW( L"cstrike\\gameinfo.txt" ) != INVALID_FILE_ATTRIBUTES ||
+		GetFileAttributesW( L"cstrike\\liblist.gam" ) != INVALID_FILE_ATTRIBUTES ))
+	{
+		// Keep Valve as the base game so valve.rc and fallback engine assets
+		// remain available; select OC2 through the engine's normal mod argument.
+		char **args = (char **)realloc( szArgv, (szArgc + 3) * sizeof(char *) );
+		if( !args ) Launch_Error( "Cannot allocate game selection." );
+		szArgv = args;szArgv[szArgc] = _strdup( "-game" );szArgv[szArgc+1] = _strdup( "cstrike" );
+		if( !szArgv[szArgc] || !szArgv[szArgc+1] ) Launch_Error( "Cannot allocate game selection." );
+		szArgc += 2;szArgv[szArgc] = NULL;
+	}
 
 	ret = Sys_Start();
 
-	for( ; i < szArgc; ++i )
+	for( i = 0; i < szArgc; ++i )
 		free( szArgv[i] );
 	free( szArgv );
 

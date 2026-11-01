@@ -1317,10 +1317,16 @@ void CL_EmitEntities( void )
 	CL_LinkPacketEntities ( &cl.frames[cl.parsecountmod] );
 
 	// link custom user temp entities
+	double perfStart=Host_PerfNow();
 	clgame.dllFuncs.pfnCreateEntities();
+	double elapsed=(Host_PerfNow()-perfStart)*1000;
+	if(perfStart>0&&elapsed>=4)Con_Printf("hostperf_emit: name=create ms=%.4f\n",elapsed);
 
 	// evaluate temp entities
+	perfStart=Host_PerfNow();
 	CL_TempEntUpdate ();
+	elapsed=(Host_PerfNow()-perfStart)*1000;
+	if(perfStart>0&&elapsed>=4)Con_Printf("hostperf_emit: name=temp ms=%.4f\n",elapsed);
 
 	// fire events (client and server)
 	CL_FireEvents ();

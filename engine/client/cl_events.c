@@ -228,7 +228,10 @@ static qboolean CL_FireEvent( event_info_t *ei, int slot )
 			if( ev->func )
 			{
 				CL_DescribeEvent( ei, slot );
+				const double perfStart=Host_PerfNow();
 				ev->func( &ei->args );
+				const double elapsed=(Host_PerfNow()-perfStart)*1000;
+				if(perfStart>0&&elapsed>=4)Con_Printf("hostperf_event: name=%s ms=%.4f\n",name,elapsed);
 				return true;
 			}
 

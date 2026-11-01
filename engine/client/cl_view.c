@@ -532,6 +532,7 @@ V_PostRender
 */
 void V_PostRender( void )
 {
+	double perfStart;
 	qboolean		draw_2d = false;
 	qboolean		flash_after_ui = false;
 
@@ -541,7 +542,9 @@ void V_PostRender( void )
 	// Sample the radar backdrop while the buffer holds the 3D scene and
 	// nothing else. After this the HUD goes on top, and there is no later
 	// point in the frame where the radar is not in its own capture.
+	perfStart=Host_PerfNow();
 	CL_RadarCapturePending();
+	Host_PerfAdd( 8, perfStart );perfStart=Host_PerfNow();
 
 	if( cls.state == ca_active && cls.signon == SIGNONS && cls.scrshot_action != scrshot_mapshot )
 	{
@@ -590,9 +593,12 @@ void V_PostRender( void )
 		CL_DrawScreenFade();
 
 	SCR_MakeScreenShot();
+	Host_PerfAdd( 9, perfStart );
 	ref.dllFuncs.R_AllowFog( true );
 	Platform_SetTimer( 0.0f );
+	perfStart=Host_PerfNow();
 	ref.dllFuncs.R_EndFrame();
+	Host_PerfAdd( 10, perfStart );
 
 	V_CheckGammaEnd();
 }

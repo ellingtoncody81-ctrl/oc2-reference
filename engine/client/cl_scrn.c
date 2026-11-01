@@ -785,7 +785,11 @@ void SCR_UpdateScreen( void )
 		break;
 	case ca_active:
 		Con_RunConsole ();
+		{
+		double perfStart=Host_PerfNow();
 		V_RenderView();
+		Host_PerfAdd( 11, perfStart );
+		}
 		break;
 	case ca_cinematic:
 		SCR_DrawCinematic();

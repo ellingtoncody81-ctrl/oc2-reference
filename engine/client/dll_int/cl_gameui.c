@@ -1364,12 +1364,73 @@ static void UI_PreviewSetScene( int active )
 	gameui.modelPreviewScene = active != 0;
 }
 
+typedef struct
+{
+	unsigned version;
+	int (*Draw)( unsigned, int, int, int, int );
+	int (*Begin)( int, int );
+	int (*End)( unsigned );
+	void (*Release)( unsigned );
+	void (*Clear)( void );
+	void (*Stats)( void );
+} ui_thumbnail_ref_api_t;
+static ui_thumbnail_ref_api_t *UI_ThumbnailRef( void )
+{
+	typedef void *(*get_api_t)( void );
+	get_api_t get = ref.hInstance ? (get_api_t)COM_GetProcAddress( ref.hInstance, "R_GetOC2ThumbnailAPI" ) : NULL;
+	ui_thumbnail_ref_api_t *api = get ? get() : NULL;
+	return api && api->version == 1 ? api : NULL;
+}
+static int UI_ThumbnailDraw( unsigned key, int x, int y, int width, int height )
+{
+	ui_thumbnail_ref_api_t *api = UI_ThumbnailRef();
+	return api ? api->Draw( key, x, y, width, height ) : 0;
+}
+static int UI_ThumbnailRender( unsigned key, const ref_viewpass_t *view )
+{
+	ui_thumbnail_ref_api_t *api = UI_ThumbnailRef();
+	int cached = 0;
+	if( !view || !api || !api->Begin( view->viewport[2], view->viewport[3] ))
+	{
+		pfnRenderScene( view );
+		return 0;
+	}
+	ref_viewpass_t copy = *view;
+	copy.flags = 0;
+	ref.dllFuncs.R_Set2DMode( false );
+	GL_RenderFrame( &copy );
+	cached = api->End( key );
+	ref.dllFuncs.R_Set2DMode( true );
+	ref.dllFuncs.R_PopScene();
+	if( cached ) api->Draw( key, view->viewport[0], view->viewport[1], view->viewport[2], view->viewport[3] );
+	return cached;
+}
+static void UI_ThumbnailRelease( unsigned key )
+{
+	ui_thumbnail_ref_api_t *api = UI_ThumbnailRef();
+	if( api ) api->Release( key );
+}
+static void UI_ThumbnailStats( void )
+{
+	ui_thumbnail_ref_api_t *api = UI_ThumbnailRef();
+	if( api ) api->Stats();
+}
 static void *UI_GetNativeObject( const char *name )
 {
+	static struct
+	{
+		unsigned version;
+		int (*Draw)( unsigned, int, int, int, int );
+		int (*Render)( unsigned, const ref_viewpass_t * );
+		void (*Release)( unsigned );
+		void (*Stats)( void );
+	} thumbnail = { 1, UI_ThumbnailDraw, UI_ThumbnailRender, UI_ThumbnailRelease, UI_ThumbnailStats };
 	static ui_model_preview_api_t preview = { 2, UI_PreviewStudioHeader, UI_PreviewLoadTexture,
 		UI_PreviewFreeTexture, UI_PreviewOwnTexture, UI_PreviewSetTransform, UI_PreviewSetScene };
 	if( name && !Q_strcmp( name, "OC2ModelPreview002" ))
 		return &preview;
+	if( name && !Q_strcmp( name, "OC2Thumbnail001" ) && UI_ThumbnailRef() )
+		return &thumbnail;
 	return Sys_GetNativeObject( name );
 }
 
