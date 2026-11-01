@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_weapon_pickup.h"
 #include "oc2_item_server.h"
 #include "oc2_weapon_physics.h"
 #include "../../../../common/oc2_skin_inventory.h"
@@ -393,7 +394,21 @@ void TestCommand(CBasePlayer *caller)
   if(FNullEnt(edict)||!FClassnameIs(&edict->v,"weaponbox"))return;
   auto *entity=CBaseEntity::Instance(edict);
   Vector point;
-  if(!entity||!OC2_WeaponPhysicsAimPoint(static_cast<CWeaponBox *>(entity),point))return;
+   if(!entity)return;
+   if(!OC2_WeaponPhysicsAimPoint(static_cast<CWeaponBox *>(entity),point))
+   {
+    // C4 is deliberately excluded from bullet physics; aim its real Studio
+    // hitbox here for local test camera placement only.
+    auto *box=static_cast<CWeaponBox *>(entity);
+    auto *hdr=static_cast<studiohdr_t *>(GET_MODEL_PTR(box->edict()));
+    if(!box->m_bIsBomb||!hdr||hdr->numhitboxes<1||hdr->numhitboxes>128||hdr->hitboxindex<int(sizeof(studiohdr_t))||hdr->hitboxindex>hdr->length-int(sizeof(mstudiobbox_t))*hdr->numhitboxes)return;
+    const auto *hitbox=reinterpret_cast<const mstudiobbox_t *>(reinterpret_cast<const byte *>(hdr)+hdr->hitboxindex);
+    if(hitbox->bone<0||hitbox->bone>=hdr->numbones)return;
+    Vector origin,angles;GET_BONE_POSITION(box->edict(),hitbox->bone,origin,angles);
+    float matrix[3][4];AngleMatrix(angles,matrix);
+    const Vector local=(hitbox->bbmin+hitbox->bbmax)*.5f;
+    point=origin+Vector(DotProduct(local,matrix[0]),DotProduct(local,matrix[1]),DotProduct(local,matrix[2]));
+   }
   Vector angles=UTIL_VecToAngles(point-target->GetGunPosition());
   angles.x=-angles.x;angles.z=0;
   target->pev->v_angle=target->pev->angles=angles;
@@ -460,7 +475,7 @@ void TestCommand(CBasePlayer *caller)
  else
  {
   if(value!=WEAPON_KNIFE&&oc2_accessories::Index(value)<0&&
-     !(FStrEq(action,"select")&&TestUtilityWeapon(value)))return;
+     !TestUtilityWeapon(value))return;
   const auto *info=GetWeaponInfo(value);
   if(!info||!info->entityName)return;
   if(FStrEq(action,"give"))
@@ -561,6 +576,7 @@ void OC2_ItemsAcquire(CBasePlayerItem *item,CBasePlayer *player)
 void OC2_ItemsFrame()
 {
  OC2_WeaponPhysicsFrame();
+ OC2_PickupFrame();
  Publish();
  PublishCarry();
  for(int i=1;i<=gpGlobals->maxClients&&i<=32;++i)

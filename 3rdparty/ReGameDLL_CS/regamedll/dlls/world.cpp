@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_weapon_pickup.h"
 
 edict_t *g_pBodyQueueHead;
 CGlobalState gGlobalState;
@@ -334,6 +335,7 @@ void CWorld::Precache()
 
 	// player picks up a gun.
 	PRECACHE_SOUND("items/gunpickup2.wav");
+	OC2_PickupPrecache();
 
 	// dead bodies hitting the ground (animation events)
 	PRECACHE_SOUND("common/bodydrop3.wav");
