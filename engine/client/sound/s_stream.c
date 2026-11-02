@@ -17,6 +17,7 @@ GNU General Public License for more details.
 #include "sound.h"
 #include "client.h"
 #include "soundlib.h"
+#include "music_async.h"
 
 static struct
 {
@@ -49,6 +50,7 @@ void S_PrintBackgroundTrackState( void )
 	else if( s_bgTrack.loopName[0] )
 		Con_Printf( "%s [loop]\n", s_bgTrack.loopName );
 	else Con_Printf( "not playing\n" );
+	BGM_Dump();
 }
 
 /*
@@ -116,18 +118,21 @@ void S_StartBackgroundTrack( const char *introTrack, const char *mainTrack, int 
 		s_bgTrack.loopName[0] = '\0';
 	else Q_strncpy( s_bgTrack.loopName, mainTrack, sizeof( s_bgTrack.loopName ));
 
-	// open stream
-	s_bgTrack.stream = FS_OpenStream( introTrack );
+	// MP3 music owns an independent decoder/output path on SDL2. Other
+	// formats and unavailable secondary devices keep the native stream path.
+	const qboolean independent=BGM_Start(introTrack,mainTrack,position);
+	if(!independent)s_bgTrack.stream = FS_OpenStream( introTrack );
 
 	Q_strncpy( s_bgTrack.current, introTrack, sizeof( s_bgTrack.current ));
 	memset( &musicfade, 0, sizeof( musicfade )); // clear any soundfade
 	s_bgTrack.source = cls.key_dest;
 
-	if( position != 0 )
+	if( !independent && position != 0 )
 	{
 		// restore message, update song position
 		FS_SetStreamPos( s_bgTrack.stream, position );
 	}
+	if(independent)S_StreamBackgroundTrack();
 }
 
 /*
@@ -138,11 +143,11 @@ S_StopBackgroundTrack
 void S_StopBackgroundTrack( void )
 {
 	snd.stream_paused = false;
+	BGM_Stop();
 
 	if( !snd.initialized ) return;
-	if( !s_bgTrack.stream ) return;
 
-	FS_FreeStream( s_bgTrack.stream );
+	if(s_bgTrack.stream)FS_FreeStream( s_bgTrack.stream );
 	memset( &s_bgTrack, 0, sizeof( s_bgTrack ));
 	memset( &musicfade, 0, sizeof( musicfade ));
 }
@@ -156,6 +161,12 @@ fade the music out during specified time, then stop it
 */
 void S_FadeOutBackgroundTrack( float seconds )
 {
+	if(BGM_Active())
+	{
+		if(!isfinite(seconds)||seconds<=0)S_StopBackgroundTrack();
+		else BGM_Fade(seconds);
+		return;
+	}
 	if( !s_bgTrack.stream )
 		return;
 
@@ -177,6 +188,7 @@ S_StreamSetPause
 void S_StreamSetPause( int pause )
 {
 	snd.stream_paused = pause;
+	if(BGM_Active())S_StreamBackgroundTrack();
 }
 
 /*
@@ -188,7 +200,7 @@ save\restore code
 */
 qboolean S_StreamGetCurrentState( char *currentTrack, size_t currentTrackSize, char *loopTrack, size_t loopTrackSize, int *position )
 {
-	if( !s_bgTrack.stream )
+	if( !s_bgTrack.stream && !BGM_Active() )
 		return false; // not active
 
 	if( currentTrack )
@@ -205,7 +217,8 @@ qboolean S_StreamGetCurrentState( char *currentTrack, size_t currentTrackSize, c
 		else Q_strncpy( loopTrack, "*", loopTrackSize ); // no track
 	}
 
-	if( position )
+	if(BGM_Active())BGM_Current(currentTrack,currentTrackSize,position);
+	else if( position )
 		*position = FS_GetStreamPos( s_bgTrack.stream );
 
 	return true;
@@ -219,6 +232,20 @@ S_StreamBackgroundTrack
 void S_StreamBackgroundTrack( void )
 {
 	byte	raw[MAX_RAW_SAMPLES];
+	if(BGM_Active())
+	{
+		if(BGM_Finished()){S_StopBackgroundTrack();return;}
+		qboolean paused=!snd.initialized||snd.streaming||!s_musicvolume.value||cl.paused||snd.stream_paused;
+		if(!cl.background)
+		{
+			if(s_bgTrack.source==key_game&&cls.key_dest==key_menu)paused=true;
+			if(s_bgTrack.source==key_menu&&cls.key_dest!=key_menu)paused=true;
+		}
+		else if(cls.key_dest==key_console)paused=true;
+		BGM_Update(S_GetMusicVolume(),paused);
+		BGM_Current(s_bgTrack.current,sizeof(s_bgTrack.current),NULL);
+		return;
+	}
 
 	if( !snd.initialized || !s_bgTrack.stream || snd.streaming )
 		return;
@@ -315,6 +342,7 @@ void S_StartStreaming( void )
 	if( !snd.initialized ) return;
 	// begin streaming movie soundtrack
 	snd.streaming = true;
+	if(BGM_Active())BGM_Update(0,true);
 }
 
 /*
@@ -326,4 +354,5 @@ void S_StopStreaming( void )
 {
 	if( !snd.initialized ) return;
 	snd.streaming = false;
+	if(BGM_Active())S_StreamBackgroundTrack();
 }

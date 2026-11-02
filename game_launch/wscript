@@ -22,9 +22,14 @@ def configure(conf):
 
 def build(bld):
 	source = ['game.cpp']
+	linkflags = []
 
 	if bld.env.DEST_OS == 'win32':
 		source += ['game.rc']
+		# HD assets can exceed the default 2 GiB x86 address space. Let a
+		# 64-bit Windows host expose the full 4 GiB without changing the ABI.
+		if bld.env.DEST_CPU == 'x86':
+			linkflags += ['/LARGEADDRESSAWARE'] if bld.env.COMPILER_CC == 'msvc' else ['-Wl,--large-address-aware']
 
 	# Half-Life 25th anniversary update doesn't have server library explicitly linked to libm
 	if bld.env.DEST_OS == 'linux':
@@ -34,6 +39,7 @@ def build(bld):
 		target   = 'xash3d', # hl.exe
 		use      = 'sdk_includes DL USER32 SHELL32 werror yy_thunks',
 		rpath    = bld.env.DEFAULT_RPATH,
+		linkflags = linkflags,
 		install_path = bld.env.BINDIR,
 		subsystem = bld.env.MSVC_SUBSYSTEM
 	)

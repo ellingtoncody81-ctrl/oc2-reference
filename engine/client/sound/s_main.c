@@ -15,6 +15,7 @@ GNU General Public License for more details.
 
 #include "common.h"
 #include "sound.h"
+#include "music_async.h"
 #include "client.h"
 #include "con_nprint.h"
 #include "pm_local.h"
@@ -2004,6 +2005,9 @@ qboolean S_Init( void )
 	Cmd_AddCommand( "stopsound", S_StopSound_f, "stop all sounds" );
 	// HLU SDK have command with the same name
 	Cmd_AddCommandWithFlags( "music", S_Music_f, "starting a background track", CMD_OVERRIDABLE );
+#if XASH_SDL == 2
+	Cmd_AddCommand("bgm_debug_stall",BGM_DebugStall,"developer-only main-thread stall for independent music validation");
+#endif
 	Cmd_AddCommand( "soundlist", S_SoundList_f, "display loaded sounds" );
 	Cmd_AddCommand( "s_info", S_SoundInfo_f, "print sound system information" );
 	Cmd_AddCommand( "s_fade", S_Fade_f, "fade all sounds then stop all" );
@@ -2045,10 +2049,14 @@ S_Shutdown
 void S_Shutdown( void )
 {
 	if( !snd.initialized ) return;
+	S_StopBackgroundTrack();
 
 	Cmd_RemoveCommand( "play" );
 	Cmd_RemoveCommand( "playvol" );
 	Cmd_RemoveCommand( "stopsound" );
+#if XASH_SDL == 2
+	Cmd_RemoveCommand("bgm_debug_stall");
+#endif
 	if( Cmd_Exists( "music" ))
 		Cmd_RemoveCommand( "music" );
 	Cmd_RemoveCommand( "soundlist" );

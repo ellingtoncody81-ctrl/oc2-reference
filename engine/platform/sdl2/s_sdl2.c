@@ -17,6 +17,7 @@ GNU General Public License for more details.
 #include "platform.h"
 #include "sound.h"
 #include "voice.h"
+#include "sound/music_async.h"
 
 #include <SDL.h>
 #include <stdlib.h>
@@ -207,6 +208,7 @@ Reset the sound device for exiting
 */
 void SNDDMA_Shutdown( void )
 {
+	BGM_Stop();
 	Con_Printf( "Shutting down audio.\n" );
 	snd.initialized = false;
 
@@ -238,6 +240,7 @@ void SNDDMA_Activate( qboolean active )
 {
 	if( !snd.initialized )
 		return;
+	BGM_Activate(active);
 
 	SDL_PauseAudioDevice( sdl_dev, !active );
 }
