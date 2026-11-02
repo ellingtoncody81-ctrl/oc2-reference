@@ -1,6 +1,7 @@
 #pragma once
 #include "SkinInventory.h"
 #include "../../../../common/oc2_skin_profiles.h"
+#include "../../../../common/oc2_mount_defaults.h"
 #include <chrono>
 #include <fstream>
 #include <iterator>
@@ -16,7 +17,9 @@ struct State
  oc2_profiles::Config profiles;
  oc2_inventory::Config loadout=oc2_inventory::DefaultConfig();
  oc2_accessories::Config accessories=oc2_accessories::DefaultConfig();
- SavedFile profileFile,loadoutFile,accessoryFile;
+ oc2_mount_defaults::Config mountDefaults;
+ oc2_accessories::Config defaultAccessories=oc2_accessories::DefaultConfig();
+ SavedFile profileFile,loadoutFile,accessoryFile,mountFile;
 };
 inline bool ReadSaved(const char *path,SavedFile &file,std::string &error)
 {
@@ -30,7 +33,10 @@ inline bool Load(State &out,std::string &error)
  State state;
  if(!ReadSaved(oc2_inventory::kConfigPath,state.loadoutFile,error)||
     !ReadSaved(oc2_accessories::kConfigPath,state.accessoryFile,error)||
-    !ReadSaved(oc2_profiles::kConfigPath,state.profileFile,error))return false;
+    !ReadSaved(oc2_profiles::kConfigPath,state.profileFile,error)||
+    !ReadSaved(oc2_mount_defaults::kPath,state.mountFile,error))return false;
+ if(state.mountFile.exists&&!oc2_mount_defaults::Parse(state.mountFile.text,state.mountDefaults,error))return false;
+ state.defaultAccessories=oc2_mount_defaults::Apply(state.mountDefaults);state.accessories=state.defaultAccessories;
  if(state.loadoutFile.exists&&!oc2_inventory::ParseConfig(state.loadoutFile.text,state.loadout,error))return false;
  if(state.accessoryFile.exists&&!oc2_accessories::ParseConfig(state.accessoryFile.text.c_str(),state.accessories,error))return false;
  if(state.profileFile.exists&&!oc2_profiles::ParseConfig(state.profileFile.text,state.profiles,error))return false;
@@ -38,7 +44,7 @@ inline bool Load(State &out,std::string &error)
  out=state;error.clear();return true;
 }
 inline oc2_profiles::Profile Resolve(const State &state,int weapon,int skin)
-{ return oc2_profiles::Resolve(state.profiles,state.loadout,state.accessories,weapon,skin); }
+{ return oc2_profiles::Resolve(state.profiles,state.loadout,state.accessories,weapon,skin,&state.defaultAccessories); }
 inline bool IsEquipped(const State &state,int weapon,int skin)
 { const auto *w=oc2_inventory::Find(state.loadout,weapon);return w&&w->skin==skin; }
 
@@ -123,11 +129,17 @@ inline bool SaveChanges(std::vector<Change> &changes,std::string &error)
   "Inventory save was interrupted; reopen the inventory before editing again.";
  return false;
 }
-inline bool Persist(State &state,bool project,std::string &error)
+inline bool Persist(State &state,bool project,std::string &error,const oc2_accessories::WeaponConfig *defaults=nullptr)
 {
  state.profiles.revision=oc2_profiles::NextRevision(state.profiles.revision);
  std::vector<Change> changes;
  changes.emplace_back(oc2_profiles::kConfigPath,state.profileFile,oc2_profiles::SerializeConfig(state.profiles));
+ if(defaults)
+ {
+  if(!oc2_mount_defaults::Put(state.mountDefaults,*defaults)){error="Invalid shared mount layout";return false;}
+  state.mountDefaults.revision=oc2_profiles::NextRevision(state.mountDefaults.revision);
+  changes.emplace_back(oc2_mount_defaults::kPath,state.mountFile,oc2_mount_defaults::Serialize(state.mountDefaults));
+ }
  if(project)
  {
   state.loadout.revision=oc2_profiles::NextRevision(state.loadout.revision);
@@ -137,7 +149,7 @@ inline bool Persist(State &state,bool project,std::string &error)
  }
  return SaveChanges(changes,error);
 }
-inline bool SaveProfile(const oc2_profiles::Profile &profile,const oc2_inventory::Catalog &catalog,std::string &error)
+inline bool SaveProfile(const oc2_profiles::Profile &profile,const oc2_inventory::Catalog &catalog,std::string &error,bool shareDefaults=false)
 {
  if(!oc2_profiles::Validate(profile,catalog,error))return false;
  State state;if(!Load(state,error))return false;
@@ -145,7 +157,7 @@ inline bool SaveProfile(const oc2_profiles::Profile &profile,const oc2_inventory
  const bool active=IsEquipped(state,profile.appearance.weapon,profile.appearance.skin);
  if(active&&!oc2_profiles::Project(profile,state.loadout,state.accessories))
   {error="Skin customization could not be equipped.";return false;}
- return Persist(state,active,error);
+ return Persist(state,active,error,shareDefaults?&profile.accessories:nullptr);
 }
 inline bool EquipProfile(int weapon,int skin,const oc2_inventory::Catalog &catalog,std::string &error)
 {

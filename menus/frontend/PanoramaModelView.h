@@ -32,6 +32,8 @@ public:
     void SetInteractive(bool interactive);
     void ReloadConfiguration();
     void ResetView();
+    void RotateView(float yaw,float pitch);
+    void ZoomView(float factor);
     void Dump(const char *tag) const;
     void DumpStyle(const char *surface,int index) const;
     void VidInit() override;
