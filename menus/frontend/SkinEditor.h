@@ -337,7 +337,7 @@ private:
             else if(!m_stickerOnly&&!m_charmOnly)m_tabs[i].SetRect(98+i*((uiStatic.width-182)/6+10),112,(uiStatic.width-182)/6,42);
         }
         m_accessoryButton.SetVisibility(!m_knife&&!m_stickerOnly&&!m_charmOnly&&m_tab==0);
-        m_default.SetText(DefaultLabel());m_default.colorBase=Selection()==0?Accent():Ink();
+        m_default.SetVisibility(m_tab!=5);m_default.SetText(DefaultLabel());m_default.colorBase=Selection()==0?Accent():Ink();
         m_clear.SetVisibility(!m_knife&&m_tab!=0);m_clear.colorBase=Selection()==-1?Accent():Ink();
         m_clear.SetText(m_tab==5?u8"卸下挂件":u8"卸下贴纸");
         m_previous.SetGrayed(m_page==0);m_next.SetGrayed(m_page+1>=Pages());m_apply.SetGrayed(!m_catalogValid||!m_configValid);
