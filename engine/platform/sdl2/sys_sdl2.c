@@ -127,6 +127,14 @@ void SDLash_Init( void )
 		SDL_setenv( "SDL_GAMECONTROLLER_IGNORE_DEVICES", "0x28DE/0x11FF", 1 );
 	}
 
+	// The menu fields accept committed UTF-8 but do not render SDL_TEXTEDITING.
+	// Let Windows IMEs display their own composition and candidate windows.
+#ifdef SDL_HINT_IME_INTERNAL_EDITING
+	SDL_SetHint( SDL_HINT_IME_INTERNAL_EDITING, "1" );
+#endif
+#ifdef SDL_HINT_IME_SHOW_UI
+	SDL_SetHint( SDL_HINT_IME_SHOW_UI, "1" );
+#endif
 	if( SDL_Init( SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_EVENTS ) )
 	{
 		Sys_Warn( "SDL_Init failed: %s", SDL_GetError() );
