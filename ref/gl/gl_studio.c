@@ -125,6 +125,20 @@ CVAR_DEFINE_AUTO( r_studio_drawelements, "1", FCVAR_GLCONFIG, "use glDrawElement
 CVAR_DEFINE_AUTO( r_studio_arraychunks, "1", 0, "split oversized studio meshes into array batches" );
 CVAR_DEFINE_AUTO( r_studio_meshcache, "1", 0, "cache validated studio topology" );
 CVAR_DEFINE_AUTO( r_studio_perf_cold, "0", 0, "log expensive cold appearance work" );
+CVAR_DEFINE_AUTO( r_studio_charm_decal, "1", 0, "stabilize charm artwork at depth-buffer precision limits" );
+static unsigned int charm_decal_draws, charm_decal_biased;
+
+static qboolean R_StudioCharmArtwork( const model_t *model, const mstudiotexture_t *texture )
+{
+	return model && !Q_strncmp( model->name, "models/attachments/oc2_sticker_charm", 35 )
+		&& !Q_strcmp( texture->name, "charm_sticker.bmp" );
+}
+
+static void R_StudioCharmDecalDump_f( void )
+{
+	gEngfuncs.Con_Printf( "studio_charm_decal: enabled=%d draws=%u biased=%u stack=%d factor=0 units=-2\n",
+		r_studio_charm_decal.value != 0, charm_decal_draws, charm_decal_biased, glState.num_polyoffsets );
+}
 CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model renderer instead of the one provided by client library (debugging)" );
 static cvar_t			*cl_righthand = NULL;
 
@@ -151,6 +165,7 @@ void R_StudioInit( void )
 {
 	if( CVAR_CHECK_SENTINEL( &r_studio_meshcache ))gEngfuncs.Cvar_RegisterVariable( &r_studio_meshcache );
 	if( CVAR_CHECK_SENTINEL( &r_studio_perf_cold ))gEngfuncs.Cvar_RegisterVariable( &r_studio_perf_cold );
+	if( CVAR_CHECK_SENTINEL( &r_studio_charm_decal ))gEngfuncs.Cvar_RegisterVariable( &r_studio_charm_decal );
 	// CVAR_DEFINE_AUTO declares the convar but does not register it.
 	// Register here so its default is applied before studio models are drawn.
 	if( CVAR_CHECK_SENTINEL( &r_studio_arraychunks ))
@@ -2236,7 +2251,16 @@ static void R_StudioDrawPoints( void )
 
 		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
 
+		const qboolean artwork = R_StudioCharmArtwork( RI.currentmodel, &ptexture[pskinref[pmesh->skinref]] );
+		const qboolean bias = artwork && r_studio_charm_decal.value != 0;
+		if( artwork ) ++charm_decal_draws;
+		// Artwork already sits outside its case. Keep two depth-buffer units of
+		// separation when a grazing view rounds those distinct planes together.
+		// No slope bias: it can become excessive edge-on. Retain depth testing,
+		// alpha masking, the fixed mounting root and real foreground occlusion.
+		if( bias ) { GL_PushPolygonOffset( 0.0f, -2.0f ); ++charm_decal_biased; }
 		R_StudioSubmitMesh( ptricmds, pstudionorms, s, t, shellscale, 0 );
+		if( bias ) GL_PopPolygonOffset();
 
 		if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
 		{
@@ -3741,6 +3765,7 @@ qboolean R_StudioFillAPI( engine_studio_api_t *api, r_studio_interface_t *pDefau
 	gEngfuncs.Cmd_AddCommand( "viewmodel_projection_dump", R_DumpViewModelProjection, "show actual weapon FOV and world projection restoration" );
 	gEngfuncs.Cmd_AddCommand( "r_studio_perf_reset", R_StudioPerfReset_f, "start bounded model timings" );
 	gEngfuncs.Cmd_AddCommand( "r_studio_perf_dump", R_StudioPerfDump_f, "stop and summarize model timings" );
+	gEngfuncs.Cmd_AddCommand( "r_studio_charm_decal_dump", R_StudioCharmDecalDump_f, "inspect charm artwork depth stabilization" );
 	cl_righthand = gEngfuncs.pfnGetCvarPointer( "cl_righthand" );
 
 	api->GetCurrentEntity        = pfnGetCurrentEntity;
