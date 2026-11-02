@@ -3632,6 +3632,28 @@ void EXT_FUNC CBasePlayer::__API_HOOK(AddAccount)(int amount, RewardType type, b
 			WRITE_LONG(m_iAccount);
 			WRITE_BYTE(bTrackChange);
 		MESSAGE_END();
+		// As in CS:GO AddAccountAward: the reason is a server event, independent
+		// of the clamped wallet delta. Never infer a kill reward on the client.
+		if(bTrackChange && amount && !IsBot())
+		{
+			const char *reason=nullptr;
+			switch(type)
+			{
+			case RT_ENEMY_KILLED:reason="#OC2_Cash_Enemy";break;
+			case RT_TEAMMATES_KILLED:reason="#OC2_Cash_Teammate";break;
+			case RT_HOSTAGE_KILLED:reason="#OC2_Cash_HostagePenalty";break;
+			case RT_HOSTAGE_TOOK:reason="#OC2_Cash_HostageTake";break;
+			case RT_HOSTAGE_RESCUED:reason="#OC2_Cash_HostageRescue";break;
+			case RT_ROUND_BONUS:reason="#OC2_Cash_Round";break;
+			default:break;
+			}
+			if(reason)
+			{
+				char value[48];const long long magnitude=amount<0?-static_cast<long long>(amount):amount;
+				Q_snprintf(value,sizeof(value),"%s$%lld",amount<0?"-":"+",magnitude);
+				ClientPrint(pev,HUD_PRINTTALK,reason,value);
+			}
+		}
 	}
 }
 #else
@@ -4901,6 +4923,9 @@ void EXT_FUNC CBasePlayer::__API_HOOK(PreThink)()
 		return;
 	}
 
+	// The HUD enters the death camera immediately, before PFLAG_OBSERVER.
+	// Keep the roster current through dying and any pending respawn interval.
+	if(pev->deadflag>=DEAD_DYING && GetObserverMode()!=OBS_NONE && !IsBot())Observer_SendSnapshot();
 	if (pev->deadflag >= DEAD_DYING && pev->deadflag != DEAD_RESPAWNABLE)
 	{
 		PlayerDeathThink();

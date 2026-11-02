@@ -576,7 +576,11 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Observer_Think)()
 	OC2_BotControlStatus(this);
 	Observer_CheckTarget();
 	Observer_CheckProperties();
+	Observer_SendSnapshot();
+}
 
+void CBasePlayer::Observer_SendSnapshot()
+{
 	// A private, target-tagged snapshot. Limit updates per observer to 10 Hz.
 	static float nextUpdate[33] = {};
 	static int lastTarget[33] = {};
@@ -622,20 +626,23 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Observer_Think)()
 			MESSAGE_END();
 		}
 	}
-	// Stagger player rows to keep each observer's unreliable datagram bounded.
+	// Up to ten rows fit the normal 5v5 roster in one bounded datagram.
+	// Empty/restricted slots consume scan work, never the transmission budget.
 	static float nextRows[33] = {};
 	static int nextSlot[33] = {};
 	if (nextRows[observer] <= gpGlobals->time || nextRows[observer] > gpGlobals->time + 0.3f)
 	{
 		nextRows[observer] = gpGlobals->time + 0.1f;
 		const bool allTeams = GetForceCamera(this) == CAMERA_MODE_SPEC_ANYONE || m_iTeam == SPECTATOR;
-		for (int n = 0; n < 8 && n < gpGlobals->maxClients; ++n)
+		int sent = 0;
+		for (int n = 0; n < 32 && n < gpGlobals->maxClients && sent < 10; ++n)
 		{
 			if (++nextSlot[observer] > gpGlobals->maxClients || nextSlot[observer] > 32) nextSlot[observer] = 1;
 			const int i = nextSlot[observer];
 			CBasePlayer *p = UTIL_PlayerByIndex(i);
 			if (!p || p->has_disconnected || (p->m_iTeam != TERRORIST && p->m_iTeam != CT) ||
 				(!allTeams && p->m_iTeam != m_iTeam)) continue;
+			++sent;
 			const bool alive = p->IsAlive();
 			CBasePlayerItem *fire = alive ? p->GetItemById(WEAPON_MOLOTOV) : nullptr;
 			int equip = alive ? ((p->m_bHasDefuser ? 1 : 0) | (p->m_bHasC4 ? 2 : 0) |

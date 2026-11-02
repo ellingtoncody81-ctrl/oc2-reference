@@ -209,6 +209,8 @@ void CMolotovGrenade::EmitThrow()
 	// Explicit GoldSrc adapter: base throw velocity750; no local econ schema.
 	const Vector velocity = forward*(675.0f*(0.3f+0.7f*strength)) + m_pPlayer->pev->velocity*1.25f;
 	CGrenade *projectile = m_pPlayer->ThrowGrenade(this, source, velocity, 2.0f);
+	const bool validAmmo = m_iPrimaryAmmoType >= 0 && m_iPrimaryAmmoType < MAX_AMMO_SLOTS;
+	const int before = validAmmo ? m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] : 0;
 	if (projectile)
 	{
 		if (m_iPrimaryAmmoType >= 0 && m_iPrimaryAmmoType < MAX_AMMO_SLOTS && m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] > 0)
@@ -216,6 +218,10 @@ void CMolotovGrenade::EmitThrow()
 		m_pPlayer->SetAnimation(PLAYER_ATTACK1);
 		m_pPlayer->Radio("%!MRAD_FIREINHOLE", "#Fire_in_the_hole");
 	}
+	if (CVAR_GET_FLOAT("developer")>0)
+		ALERT(at_console,"oc2throw: t=%.6f player=%d userid=%d id=%d strength=%.6f created=%d before=%d after=%d incendiary=%d\n",
+			gpGlobals->time,m_pPlayer->entindex(),GETPLAYERUSERID(m_pPlayer->edict()),m_iId,strength,
+			projectile?projectile->entindex():0,before,validAmmo?m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType]:0,int((m_iWeaponState&INCENDIARY_STATE)!=0));
 	m_flStartThrow = 0;
 	m_flReleaseThrow = -2;
 	m_flNextPrimaryAttack = m_flNextSecondaryAttack = m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 0.65f;
