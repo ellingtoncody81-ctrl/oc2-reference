@@ -7,6 +7,12 @@ namespace hud_message_zh {
 struct Entry { const char *key, *text, *english; };
 inline const Entry *Entries(size_t &count) {
     static const Entry entries[] = {
+        {"OC2_Cash_Enemy", "^2%s1：击杀敌人的奖励。", "Cash award for eliminating an enemy"},
+        {"OC2_Cash_Teammate", "^1%s1：击杀队友的惩罚。", "Cash penalty for killing a teammate"},
+        {"OC2_Cash_HostagePenalty", "^1%s1：伤害人质的惩罚。", "Cash penalty for harming a hostage"},
+        {"OC2_Cash_HostageTake", "^2%s1：接走人质的奖励。", "Cash award for taking a hostage"},
+        {"OC2_Cash_HostageRescue", "^2%s1：救援人质的奖励。", "Cash award for rescuing a hostage"},
+        {"OC2_Cash_Round", "^2%s1：回合收入。", "Round income"},
         {"Target_Bombed", "目标已被炸毁！", "Target Successfully Bombed!"},
         {"VIP_Escaped", "VIP 已成功逃脱！", "The VIP has escaped!"},
         {"VIP_Assassinated", "VIP 已被击毙！", "VIP has been assassinated!"},

@@ -1103,6 +1103,8 @@ int UI_VidInit( void )
 	uiStatic.background->VidInit();
 
 	uiStatic.menu.VidInit( calledOnce );
+	extern void UI_OC2BuyMenu_Precache();
+	UI_OC2BuyMenu_Precache();
 
 	if( !calledOnce ) calledOnce = true;
 

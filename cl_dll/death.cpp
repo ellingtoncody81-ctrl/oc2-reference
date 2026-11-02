@@ -40,6 +40,7 @@ float color[3];
 struct DeathNoticeItem {
 	char szKiller[MAX_PLAYER_NAME_LENGTH*2];
 	char szVictim[MAX_PLAYER_NAME_LENGTH*2];
+	char szAssister[MAX_PLAYER_NAME_LENGTH*2];
 	int iId;	// the index number of the associated sprite
 	bool bSuicide;
 	bool bTeamKill;
@@ -48,7 +49,7 @@ struct DeathNoticeItem {
 	float *KillerColor;
 	float *VictimColor;
 	int iHeadShotId;
-	int killerTeam, victimTeam;
+	int killerTeam, victimTeam, assisterTeam;
 	bool localKiller, localVictim, localAssister;
 	int killerIndex, victimIndex, assisterIndex;
 	char weaponResource[64]; // fixed directory plus an ASCII-validated resource name
@@ -184,10 +185,22 @@ void DeathNoticeDump()
 	for (int i=0;i<MAX_DEATHNOTICES && rgDeathNoticeList[i].iId;++i)
 	{
 		const auto &item=rgDeathNoticeList[i];
-		gEngfuncs.Con_Printf("deathnotice: index=%d killer=%d victim=%d local_killer=%d local_victim=%d assister=%d local_assister=%d border=%d path=%s sprite=%d expires=%.3f\n",
+		gEngfuncs.Con_Printf("deathnotice: index=%d killer=%d victim=%d local_killer=%d local_victim=%d assister=%d local_assister=%d border=%d path=%s sprite=%d expires=%.3f assister_name=\"%s\"\n",
 			i,item.killerIndex,item.victimIndex,int(item.localKiller),int(item.localVictim),item.assisterIndex,int(item.localAssister),
-			int(item.localKiller || item.localVictim || item.localAssister),item.weaponResource,item.iId,item.flDisplayTime);
+			int(item.localKiller || item.localVictim || item.localAssister),item.weaponResource,item.iId,item.flDisplayTime,item.szAssister);
 	}
+}
+
+std::string SpectatorNoticeName(const char *name);
+float NoticeNameWidth(const char *text, float height)
+{
+	return g_pMenu && hud_unicode::LabelFont(height)>0 ? hud_unicode::FixedLabelWidth(text,height) : match_ui::TextWidth(text,height);
+}
+void NoticeName(const char *text, float x, float y, float height, match_ui::Color color, float width)
+{
+	if (width <= 0) return;
+	if (g_pMenu && hud_unicode::LabelFont(height)>0) hud_unicode::FixedLabel(text,x,y,height,color,false,width);
+	else match_ui::Text(text,x,y,height,color,false,width);
 }
 
 void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int headshot, float time)
@@ -199,12 +212,18 @@ void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int heads
 	const float weaponW = NoticeIconWidth(item.weaponResource,id,scale), weaponH = 33.0f*scale;
 	const float iconW = 33.0f*scale, padding = 6.0f*scale;
 	const float textH = 28.0f*scale;
-	const float maxName = min(240.0f*scale, ScreenWidth*0.24f);
-	const float killerW = item.bSuicide ? 0.0f : min(maxName,match_ui::TextWidth(item.szKiller,textH));
-	const float victimW = item.bNonPlayerKill ? 0.0f : min(maxName,match_ui::TextWidth(item.szVictim,textH));
-	const float width = killerW+victimW+weaponW+padding*2
+	const std::string killer=SpectatorNoticeName(item.szKiller), victim=SpectatorNoticeName(item.szVictim), assister=SpectatorNoticeName(item.szAssister);
+	const bool hasAssister = !item.bSuicide && !assister.empty();
+	const float plusW = hasAssister ? NoticeNameWidth(" + ",textH) : 0.0f;
+	const float fixed = weaponW+padding*2+plusW
 		+ (item.bSuicide ? 0.0f : padding) + (item.bNonPlayerKill ? 0.0f : padding)
 		+ (item.iHeadShotId ? iconW+padding : 0.0f);
+	const int names = int(!item.bSuicide)+int(!item.bNonPlayerKill)+int(hasAssister);
+	const float maxName = names ? max(0.0f,min(240.0f*scale,(ScreenWidth-64.0f*scale-fixed)/names)) : 0.0f;
+	const float killerW = item.bSuicide ? 0.0f : min(maxName,NoticeNameWidth(killer.c_str(),textH));
+	const float victimW = item.bNonPlayerKill ? 0.0f : min(maxName,NoticeNameWidth(victim.c_str(),textH));
+	const float assisterW = hasAssister ? min(maxName,NoticeNameWidth(assister.c_str(),textH)) : 0.0f;
+	const float width = fixed+killerW+victimW+assisterW;
 	const float x = ScreenWidth-32.0f*scale-width;
 	const float y = std::floor(ScreenHeight/480.0f*32.0f+0.5f)+50.0f*scale+row*(70.0f/1.5f)*scale;
 	// The queue remains bounded at 15; tiny viewports draw only complete rows.
@@ -220,8 +239,17 @@ void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int heads
 	float cursor = x+padding;
 	if (!item.bSuicide)
 	{
-		match_ui::Text(item.szKiller,cursor,y+(weaponH-textH)*0.5f+4.0f*scale,textH,killerColor,false,maxName);
-		cursor += killerW+padding;
+		NoticeName(killer.c_str(),cursor,y+(weaponH-textH)*0.5f+4.0f*scale,textH,killerColor,maxName);
+		cursor += killerW;
+		if (hasAssister)
+		{
+			NoticeName(" + ",cursor,y+(weaponH-textH)*0.5f+4.0f*scale,textH,iconColor,plusW);
+			cursor += plusW;
+			auto assisterColor=NoticeNameColor(item.assisterTeam);assisterColor.a=alpha;
+			NoticeName(assister.c_str(),cursor,y+(weaponH-textH)*0.5f+4.0f*scale,textH,assisterColor,maxName);
+			cursor += assisterW;
+		}
+		cursor += padding;
 	}
 	if (!match_ui::Silhouette(item.weaponResource,cursor,y+4.0f*scale,weaponW,weaponH,iconColor,NoticeIconFlips(item.weaponResource)))
 	{
@@ -244,7 +272,7 @@ void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int heads
 		cursor += iconW;
 	}
 	if (!item.bNonPlayerKill)
-		match_ui::Text(item.szVictim,cursor+padding,y+(weaponH-textH)*0.5f+4.0f*scale,textH,victimColor,false,maxName);
+		NoticeName(victim.c_str(),cursor+padding,y+(weaponH-textH)*0.5f+4.0f*scale,textH,victimColor,maxName);
 }
 
 std::string SpectatorNoticeName(const char *name)
@@ -274,14 +302,18 @@ void DrawSpectatorNotice(const DeathNoticeItem& item, int row, int skull, int he
 	const bool hasVictim = !item.bNonPlayerKill;
 	const std::string killer = SpectatorNoticeName(item.szKiller);
 	const std::string victim = SpectatorNoticeName(item.szVictim);
+	const std::string assister = SpectatorNoticeName(item.szAssister);
+	const bool hasAssister = hasKiller && !assister.empty();
 	const bool unicode = g_pMenu && hud_unicode::LabelFont(textH) > 0;
-	const float fixed = 2.0f*padding+weaponW+(hasKiller ? gap : 0.0f)
+	const float plusW = hasAssister ? (unicode ? hud_unicode::FixedLabelWidth(" + ",textH) : match_ui::TextWidth(" + ",textH)) : 0.0f;
+	const float fixed = 2.0f*padding+weaponW+plusW+(hasKiller ? gap : 0.0f)
 		+(hasVictim ? gap : 0.0f)+(item.iHeadShotId ? gap+headW : 0.0f);
-	const int names = int(hasKiller)+int(hasVictim);
+	const int names = int(hasKiller)+int(hasVictim)+int(hasAssister);
 	const float maxName = names ? max(0.0f,min(200.0f*scale,(ScreenWidth-2.0f*margin-fixed)/names)) : 0.0f;
 	const float killerW = hasKiller ? min(maxName,unicode ? hud_unicode::FixedLabelWidth(killer.c_str(),textH) : match_ui::TextWidth(killer.c_str(),textH)) : 0.0f;
 	const float victimW = hasVictim ? min(maxName,unicode ? hud_unicode::FixedLabelWidth(victim.c_str(),textH) : match_ui::TextWidth(victim.c_str(),textH)) : 0.0f;
-	const float width = fixed+killerW+victimW;
+	const float assisterW = hasAssister ? min(maxName,unicode ? hud_unicode::FixedLabelWidth(assister.c_str(),textH) : match_ui::TextWidth(assister.c_str(),textH)) : 0.0f;
+	const float width = fixed+killerW+victimW+assisterW;
 	const float x = ScreenWidth-margin-width;
 	const float y = ScreenHeight*0.08f+row*(height+4.0f*scale);
 	if (x < 0 || y+height > ScreenHeight) return;
@@ -296,7 +328,18 @@ void DrawSpectatorNotice(const DeathNoticeItem& item, int row, int skull, int he
 	{
 		if (unicode) hud_unicode::FixedLabel(killer.c_str(),cursor,y+(height-textH)*0.5f,textH,killerColor,false,maxName);
 		else match_ui::Text(killer.c_str(),cursor,y+(height-textH)*0.5f,textH,killerColor,false,maxName);
-		cursor += killerW+gap;
+		cursor += killerW;
+		if (hasAssister)
+		{
+			if (unicode) hud_unicode::FixedLabel(" + ",cursor,y+(height-textH)*0.5f,textH,iconColor);
+			else match_ui::Text(" + ",cursor,y+(height-textH)*0.5f,textH,iconColor);
+			cursor += plusW;
+			auto assisterColor=TeamColor(item.assisterTeam);assisterColor.a=alpha;
+			if (unicode) hud_unicode::FixedLabel(assister.c_str(),cursor,y+(height-textH)*0.5f,textH,assisterColor,false,maxName);
+			else match_ui::Text(assister.c_str(),cursor,y+(height-textH)*0.5f,textH,assisterColor,false,maxName);
+			cursor += assisterW;
+		}
+		cursor += gap;
 	}
 	if (!match_ui::Silhouette(item.weaponResource,cursor,y+(height-iconH)*0.5f,weaponW,iconH,iconColor,NoticeIconFlips(item.weaponResource)))
 	{
@@ -431,6 +474,8 @@ void CHudDeathNotice::Reset()
 
 int CHudDeathNotice::MsgFunc_HudRound(const char *pszName, int iSize, void *pbuf)
 {
+	extern void OC2_MatchNoticeRound();
+	OC2_MatchNoticeRound();
 	oc2_hostage::RoundReset();
 	// GoldSrc bridge for CS:GO CCSPlayer::RoundRespawn (cs_player.cpp:8363-8364).
 	kill_feedback::ResetRound(s_KillFeedback);
@@ -461,6 +506,23 @@ int CHudDeathNotice :: VidInit( void )
 {
 	m_HUD_d_skull = gHUD.GetSpriteIndex( "d_skull" );
 	m_HUD_d_headshot = gHUD.GetSpriteIndex("d_headshot");
+	// Fixed combat icons belong to map loading, not the first death or takeover.
+	static const char *tokens[]={"ak47","aug","awp","deagle","elite","famas","fiveseven",
+		"g3sg1","galil","glock18","m249","m3","m4a1","mac10","mp7","p228","p90",
+		"scout","sg550","sg552","tmp","ump45","usp","xm1014","zeus","knife","knife_t",
+		"hegrenade","flashbang","smokegrenade","molotov","incendiary","c4","worldspawn"};
+	for (const char *token:tokens)
+	{
+		char path[96];snprintf(path,sizeof(path),"gfx/vgui/death/d_%s.tga",token);match_ui::SilhouetteBounds(path);
+		if (strcmp(token,"worldspawn")) {snprintf(path,sizeof(path),"gfx/weaponlist/weapon_%s.tga",token);match_ui::SilhouetteBounds(path);}
+	}
+	for (const auto &knife:oc2_knife_icons::entries)
+	{
+		char path[96];snprintf(path,sizeof(path),"gfx/vgui/death/d_%s.tga",knife.deathToken);match_ui::SilhouetteBounds(path);
+		snprintf(path,sizeof(path),"gfx/weaponlist/weapon_%s.tga",knife.panelToken);match_ui::SilhouetteBounds(path);
+	}
+	match_ui::SilhouetteBounds("gfx/vgui/death/headshot.tga");
+	match_ui::SilhouetteBounds("gfx/weaponlist/defuser.tga");
 
 	return 1;
 }
@@ -627,6 +689,10 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	//if (gViewPort)
 		//gViewPort->GetAllPlayersInfo();
 	gHUD.m_Scoreboard.GetAllPlayersInfo();
+	const int assister = rgDeathNoticeList[i].assisterIndex;
+	if (assister >= 1 && assister <= MAX_PLAYERS && g_PlayerInfoList[assister].name)
+		strlcpy(rgDeathNoticeList[i].szAssister,g_PlayerInfoList[assister].name,sizeof(rgDeathNoticeList[i].szAssister));
+	rgDeathNoticeList[i].assisterTeam = PlayerTeam(assister);
 
 	// Get the Killer's name
 	const char *killer_name = NULL;

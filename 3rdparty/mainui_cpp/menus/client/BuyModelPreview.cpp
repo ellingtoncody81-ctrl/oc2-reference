@@ -449,6 +449,17 @@ static bool DrawPresentation(int team, int weaponId, int x, int y, int width, in
 
 bool OC2_DrawBuyPreview(int team,int weaponId,int x,int y,int width,int height)
 {return DrawPresentation(team,weaponId,x,y,width,height,PresentationMode::Shop);}
+void OC2_PrecacheBuyModels()
+{
+	if(!EngFuncs::engfuncs.pfnSetModel || !EngFuncs::engfuncs.COM_LoadFile)return;
+	const char *paths[]={kTActor,kCTActor,kWeapons,kM249Full,kGloves};
+	ModelMetadata *metadata[]={&s_tMetadata,&s_ctMetadata,&s_weaponMetadata,&s_m249Metadata,&s_gloveMetadata};
+	for(int i=0;i<5;++i)
+	{
+		cl_entity_t entity={};EngFuncs::SetModel(&entity,paths[i]);
+		LoadMetadata(paths[i],*metadata[i]);
+	}
+}
 bool OC2_DrawLobbyPreview(int team,int weaponId,int x,int y,int width,int height)
 {return DrawPresentation(team,weaponId,x,y,width,height,PresentationMode::Lobby);}
 bool OC2_DrawTeamPreview(int team,int weaponId,int x,int y,int width,int height)

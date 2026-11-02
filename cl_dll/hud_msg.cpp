@@ -102,6 +102,10 @@ int CHud :: MsgFunc_ViewMode( const char *pszName, int iSize, void *pbuf )
 int CHud :: MsgFunc_InitHUD( const char *pszName, int iSize, void *pbuf )
 {
 	OC2_InventoryResetSession();
+	// Server map models are now final. Earlier VidInit runs before Xash purges
+	// its studio cache and before the new level name becomes available.
+	OC2_PrecacheMatchModels();
+	if(g_pMenu)g_pMenu->PrecacheMatch();
 	// prepare all hud data
 	HUDLIST *pList = m_pHudList;
 

@@ -397,6 +397,7 @@ void LocalTriangles(std::vector<geo::Triangle>& triangles,const geo::Frame& fram
 bool FullCharmGun()
 {
  if(charmGun.fullReady)return true;
+ OC2ColdTimer cold("charm_collider",charmGun.header?charmGun.header->name:nullptr);
  std::vector<geo::Triangle> gun;
  const auto& source=charmGun.sources.front();
  if(!geo::ReadStudioTriangles(*source.mesh,source.body,source.skin,
@@ -454,6 +455,7 @@ bool BeginCharmGun(CStudioModelRenderer& r,const geo::Frame& frame)
  diag.charmHostOnly=allowed!=nullptr;diag.charmHostRoot=hostRoot;diag.charmHostBones=allowed?int(allowed->size()):0;
  if(charmGun.header!=r.m_pStudioHeader||charmGun.body!=body||charmGun.skin!=skin||charmGun.hostRoot!=hostRoot||charmGun.allowedBones!=assembly)
  {
+  OC2ColdTimer cold("charm_geometry",r.m_pRenderModel?r.m_pRenderModel->name:nullptr);
   charmGun=CharmGunScene();charmGun.header=r.m_pStudioHeader;charmGun.body=body;charmGun.skin=skin;
   charmGun.hostRoot=hostRoot;if(allowed)charmGun.allowedBones=*allowed;
   if(!geo::BuildPoseGeometry(weaponSurface->studio,body,skin,charmGun.geometry,false,
@@ -799,6 +801,7 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
 
 void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool charm)
 {
+ OC2ColdTimer cold(charm?"view_charm":"view_counter",r.m_pRenderModel?r.m_pRenderModel->name:nullptr);
  const auto drawStart=std::chrono::steady_clock::now();
  const float u=charm?frameConfig.charmU:frameConfig.statU,v=charm?frameConfig.charmV:frameConfig.statV;
  geo::Mount mount=motion.requested[charm?1:0];
@@ -830,6 +833,7 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
  Placement selected=EvaluatePlacement(r,header,base,body,charm,left,mount);
  if(charm)
  {
+  OC2ColdTimer solve("view_charm_solve",r.m_pRenderModel?r.m_pRenderModel->name:nullptr);
   selected=ConstrainCharm(r,header,base,body,left,std::move(selected));
    PosePlacement(r,header,base,body,true,left,selected,true);
   if(charmVerify&&charmVerify->value!=0)
@@ -925,14 +929,24 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
 
 void OC2_AccessoriesVidInit()
 {
+ const char *map=gEngfuncs.pfnGetLevelName();level=map?map:"";
  ResetCharmCollisionStats();runCharmFailures=runCharmBlocked=0;
  mounts.clear();meshes.clear();stickerTextures.clear();weaponSurface=nullptr;
  contactSamples.clear();addonBind.clear();charmGun=CharmGunScene();
  skinAttempted=skinValid=false;skinVariant=-1;joints.clear();carriers.clear();swing=geo::SwingState();motion=Motion();
  frameWeapon=0;diag=Diagnostics();nextRead=-1;lastTime=-1;
 }
+void OC2_PrecacheAccessoryMounts(model_s *model)
+{
+ if(!model||model->type!=mod_studio)return;
+ auto *header=static_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(model));
+ if(!header||mounts.count(header))return;
+ geo::MountCache cache;geo::BuildMountCache(header,cache);
+ mounts.emplace(header,std::move(cache));
+}
 void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)
 {
+ OC2ColdTimer cold("view_accessory_begin",r.m_pRenderModel?r.m_pRenderModel->name:nullptr);
  CpuScope timer;
  if(nativePerf.active)
  {

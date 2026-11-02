@@ -467,6 +467,7 @@ public:
 	CBasePlayer *Observer_IsValidTarget(int iPlayerIndex, bool bSameTeam);
 	void Disconnect();
 	void Observer_Think();
+	void Observer_SendSnapshot();
 	void Observer_HandleButtons();
 	void Observer_SetMode(int iMode);
 	void Observer_CheckTarget();

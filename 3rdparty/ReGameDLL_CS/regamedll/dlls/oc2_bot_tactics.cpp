@@ -9,9 +9,10 @@
 
 namespace
 {
-struct Plan { int userid=0,id=0,phase=0; Vector target,aim; float next=0,start=0,hold=0,strength=1; };
+struct Plan { int userid=0,id=0,phase=0,threatUser=0; Vector target,aim; float next=0,cooldown=0,start=0,hold=0,strength=1; };
 Plan plans[33];
 int purchases=0,throws=0,cancels=0,zeusUses=0;
+int decisions=0,noOptions=0,unsafe=0,blockedArc=0,chanceSkipped=0,started=0;
 CBasePlayerWeapon *Find(CCSBot *bot,int id,int slot)
 {
     for(auto *item=bot->m_rgpPlayerItems[slot];item;item=item->m_pNext)
@@ -97,12 +98,13 @@ void Cancel(CCSBot *bot,Plan &p)
 {
     bot->ClearPrimaryAttack();bot->ClearLookAt();
     bot->StopRapidFire();
-    bot->EquipBestWeapon(MUST_EQUIP);p.phase=0;p.next=gpGlobals->time+3;++cancels;
+    bot->EquipBestWeapon(MUST_EQUIP);p.phase=0;p.cooldown=gpGlobals->time+3;++cancels;
 }
 }
 void OC2_BotTacticsReset()
 {
     for(auto &p:plans)p={};purchases=throws=cancels=zeusUses=0;
+    decisions=noOptions=unsafe=blockedArc=chanceSkipped=started=0;
 }
 void OC2_BotBuyUtility(CCSBot *bot)
 {
@@ -150,14 +152,14 @@ bool OC2_BotUtilityUpdate(CCSBot *bot,CBasePlayer *threat)
     {
         bot->StopRapidFire();bot->ClearPrimaryAttack();bot->ClearMovement();bot->StopAiming();
         bot->SetLookAt("AvoidOwnFlash",&p.aim,PRIORITY_UNINTERRUPTABLE,2,false,3);
-        if(gpGlobals->time-p.start>=1.7f){p.phase=0;p.next=gpGlobals->time+8;bot->ClearLookAt();}
+        if(gpGlobals->time-p.start>=1.7f){p.phase=0;p.cooldown=gpGlobals->time+8;bot->ClearLookAt();}
         return true;
     }
     if(p.phase)
     {
         if(active && active->m_iId==p.id && active->m_flReleaseThrow==-2)
         {
-            bot->ClearPrimaryAttack();bot->m_isWaitingToTossGrenade=false;p.phase=0;p.next=gpGlobals->time+8;++throws;
+            bot->ClearPrimaryAttack();bot->m_isWaitingToTossGrenade=false;p.phase=0;p.cooldown=gpGlobals->time+8;++throws;
             if(p.id==WEAPON_FLASHBANG){p.phase=4;p.start=gpGlobals->time;p.aim=bot->EyePosition()+(bot->EyePosition()-p.target).Normalize()*500;bot->ClearLookAt();}
             return true;
         }
@@ -172,7 +174,9 @@ bool OC2_BotUtilityUpdate(CCSBot *bot,CBasePlayer *threat)
         if(active->m_flStartThrow>0)
         {
             if(p.hold==0)p.hold=gpGlobals->time;
-            if(gpGlobals->time-p.hold>=0.5f && fabsf(active->m_flLastFire/1024-p.strength)<.025f
+            // Timed grenades encode strength in 1/1024 units; fire grenades store 0..1.
+            const float strength=active->m_iId==WEAPON_MOLOTOV?active->m_flLastFire:active->m_flLastFire/1024;
+            if(gpGlobals->time-p.hold>=0.5f && fabsf(strength-p.strength)<.025f
                 && bot->m_lookAtSpotState==CCSBot::LOOK_AT_SPOT)
             {bot->ClearPrimaryAttack();p.phase=3;}
             else {bot->PrimaryAttack();if(p.strength==.5f)bot->SecondaryAttack();}
@@ -208,10 +212,17 @@ bool OC2_BotUtilityUpdate(CCSBot *bot,CBasePlayer *threat)
         }
         return true;
     }
+    // Recognition is delayed and stores an entity handle, not a visible-position
+    // snapshot. Recheck before reading its current location for a new plan.
+    if(threat && (!UTIL_IsValidPlayer(threat)||threat->has_disconnected||!threat->IsAlive()
+        ||threat->m_iTeam==bot->m_iTeam))threat=nullptr;
+    const int threatUser=threat?GETPLAYERUSERID(threat->edict()):0;
+    const bool newThreat=threatUser && threatUser!=p.threatUser;
     // Zeus is an opportunistic close-range weapon; never a substitute for a knife.
     const float enemyRange=threat?(threat->pev->origin-bot->pev->origin).Length():99999;
     auto *zeus=Find(bot,WEAPON_TASER,KNIFE_SLOT);
     if(threat && zeus && enemyRange<150 && threat->pev->health<=100
+        && bot->IsVisible(threat,CHECK_FOV)
         && ClearLine(bot->EyePosition(),threat->BodyTarget(bot->EyePosition()),bot)
         && !OC2_SmokeBlocks(bot->EyePosition(),threat->EyePosition()))
     {
@@ -220,34 +231,47 @@ bool OC2_BotUtilityUpdate(CCSBot *bot,CBasePlayer *threat)
         if(bot->GetActiveWeapon()==zeus)return false;
     }
     else if(active && active->m_iId==WEAPON_TASER){bot->StopRapidFire();bot->ClearPrimaryAttack();bot->EquipBestWeapon(MUST_EQUIP);}
-    if(gpGlobals->time<p.next || !TheCSBots()->AllowGrenades() || bot->IsReloading())return false;
-    p.next=gpGlobals->time+RANDOM_FLOAT(1,2);
+    if(gpGlobals->time<p.cooldown || (!newThreat && gpGlobals->time<p.next)
+        || !TheCSBots()->AllowGrenades() || bot->IsReloading())return false;
+    p.next=gpGlobals->time+.25f;++decisions;
+    if(threatUser)p.threatUser=threatUser;
+    if(threat && !bot->IsVisible(threat,CHECK_FOV))threat=nullptr;
     int options[4],count=0;Vector targets[4];
     Vector fire;
     const bool nearbyFire=OC2_InfernoNearest(bot->pev->origin,700,&fire)
         && ClearLine(bot->EyePosition(),fire+Vector(0,0,20),bot);
-    if(threat && enemyRange<350 && !nearbyFire)return false;
+    bool advancing=false;
+    if(threat && enemyRange>=600 && bot->HasPath() && bot->m_pathIndex>=0 && bot->m_pathIndex<bot->m_pathLength)
+    {
+        const Vector step=bot->m_path[bot->m_pathIndex].pos-bot->pev->origin;
+        advancing=step.LengthSquared()>40*40 && DotProduct(step.Normalize(),(threat->pev->origin-bot->pev->origin).Normalize())>.5f;
+    }
     if(Find(bot,WEAPON_SMOKEGRENADE,GRENADE_SLOT))
     {
         if(nearbyFire){options[count]=WEAPON_SMOKEGRENADE;targets[count++]=fire;}
-        else if(threat && (bot->pev->health<45 || (bot->m_iTeam==CT && bot->GetGameState()->IsBombPlanted())))
+        else if(threat && (bot->pev->health<45 || advancing || (bot->m_iTeam==CT && bot->GetGameState()->IsBombPlanted())))
         {options[count]=WEAPON_SMOKEGRENADE;targets[count++]=bot->pev->origin+(threat->pev->origin-bot->pev->origin)*0.65f;}
     }
-    if(threat && enemyRange<=950 && !OC2_SmokeBlocks(bot->EyePosition(),threat->EyePosition()))
+    if(threat && enemyRange>=350 && enemyRange<=950 && !OC2_SmokeBlocks(bot->EyePosition(),threat->EyePosition()))
         for(int id:{WEAPON_HEGRENADE,WEAPON_FLASHBANG,WEAPON_MOLOTOV})
             if(Find(bot,id,GRENADE_SLOT)){options[count]=id;targets[count++]=threat->pev->origin;}
-    if(!count || RANDOM_LONG(0,99)>=65)return false;
+    if(!count){++noOptions;return false;}
     const int first=RANDOM_LONG(0,count-1);
     for(int j=0;j<count;++j)
     {
         const int index=(first+j)%count,id=options[index];Vector aim,landing;
-        if(!GroundTarget(bot,targets[index],landing)||!Safe(bot,id,landing))continue;
+        if(!GroundTarget(bot,targets[index],landing)||!Safe(bot,id,landing)){++unsafe;continue;}
         // Medium throws reduce the overshoot after a fast first ground bounce.
         float strength=(landing-bot->pev->origin).Length2D()<=650?.5f:1;
         if(!BallisticAim(bot,landing,aim,id==WEAPON_SMOKEGRENADE,strength))
-        {strength=1;if(!BallisticAim(bot,landing,aim,id==WEAPON_SMOKEGRENADE,strength))continue;}
+        {strength=1;if(!BallisticAim(bot,landing,aim,id==WEAPON_SMOKEGRENADE,strength)){++blockedArc;continue;}}
         auto *w=Find(bot,id,GRENADE_SLOT);if(!w)continue;
+        p.next=gpGlobals->time+RANDOM_FLOAT(1,2);
+        if(!(nearbyFire && id==WEAPON_SMOKEGRENADE) && RANDOM_LONG(0,99)>=65){++chanceSkipped;return false;}
         p.id=id;p.target=landing;p.aim=aim;p.start=gpGlobals->time;p.hold=0;p.strength=strength;p.phase=1;
+        ++started;
+        if(CVAR_GET_FLOAT("developer")>0)ALERT(at_console,"oc2tactic_plan: t=%.3f player=%d userid=%d id=%d strength=%.3f target=%.1f,%.1f,%.1f\n",
+            gpGlobals->time,bot->entindex(),userid,id,strength,landing.x,landing.y,landing.z);
         bot->StopRapidFire();bot->StopAiming();bot->ClearPrimaryAttack();bot->SelectItem(STRING(w->pev->classname));
         bot->ClearMovement();bot->m_isWaitingToTossGrenade=true;
         return true;
@@ -256,7 +280,8 @@ bool OC2_BotUtilityUpdate(CCSBot *bot,CBasePlayer *threat)
 }
 void OC2_BotTacticsDump()
 {
-    ALERT(at_console,"oc2tactics: purchases=%d throws=%d cancels=%d zeus=%d\n",purchases,throws,cancels,zeusUses);
+    ALERT(at_console,"oc2tactics: purchases=%d throws=%d cancels=%d zeus=%d decisions=%d no_options=%d unsafe=%d blocked_arc=%d chance_skipped=%d started=%d\n",
+        purchases,throws,cancels,zeusUses,decisions,noOptions,unsafe,blockedArc,chanceSkipped,started);
     for(int i=1;i<33;++i)if(plans[i].userid)
         ALERT(at_console,"oc2tactic: player=%d userid=%d phase=%d weapon=%d next=%.3f target=%.1f,%.1f,%.1f\n",i,plans[i].userid,plans[i].phase,plans[i].id,plans[i].next,plans[i].target.x,plans[i].target.y,plans[i].target.z);
     for(int i=1;i<=gpGlobals->maxClients;++i)

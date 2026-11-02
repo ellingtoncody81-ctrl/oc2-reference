@@ -165,9 +165,12 @@ int CHudMoney::MsgFunc_Money(const char *pszName, int iSize, void *pbuf)
 	BufferReader buf( pszName, pbuf, iSize );
 	int iOldCount = m_iMoneyCount;
 	m_iMoneyCount = buf.ReadLong();
+	const bool trackChange=iSize<5 || buf.ReadByte()!=0;
 	gEngfuncs.Cvar_SetValue( gHUD.cscl_currentmoney->name, m_iMoneyCount );
-	m_iDelta = m_iMoneyCount - iOldCount;
-	m_fFade = 5.0f; //fade for 5 seconds
+	const int change=m_iMoneyCount-iOldCount;
+	const bool accumulate=trackChange && change && m_fFade>4.25f && ((change>0)==(m_iDelta>0));
+	m_iDelta=trackChange?(accumulate?m_iDelta+change:change):0;
+	m_fFade=m_iDelta?5.0f:0.0f;
 	m_iFlags |= HUD_DRAW;
 	return 1;
 }

@@ -31,6 +31,7 @@
 #include "utlstring.h"
 #include "strl.h"
 #include "hud/unicode_labels.h"
+#include "hud/match_notice_layout.h"
 //#include "vgui_TeamFortressViewport.h"
 
 extern float *GetClientColor( int clientIndex );
@@ -62,21 +63,32 @@ static void StripSayTextControlCodes( const char *src, char *dst, int dstSize )
 static char g_szLineBuffer[ MAX_LINES + 1 ][ MAX_CHARS_PER_LINE ];
 static float *g_pflNameColors[ MAX_LINES + 1 ];
 static int g_iNameLengths[ MAX_LINES + 1 ];
+static float g_lineBirth[MAX_LINES+1];
 static float flScrollTime = 0;  // the time at which the lines next scroll up
 
 static int Y_START = 0;
 static int line_height = 0;
+
+static void NoticeDump()
+{
+	const auto area=match_notice::Feed(ScreenWidth,ScreenHeight,g_iUser1!=0);
+	gEngfuncs.Con_Printf("notice_feed: time=%.3f observer=%d x=%.1f bottom=%.1f width=%.1f font=%.1f line=%d\n",
+		gHUD.m_flTime,int(g_iUser1!=0),area.x,area.y,area.width,area.height,line_height);
+	for(int i=0;i<MAX_LINES;++i)if(g_szLineBuffer[i][0])
+		gEngfuncs.Con_Printf("notice_line: index=%d born=%.3f text=%s\n",i,g_lineBirth[i],g_szLineBuffer[i]);
+}
 
 int CHudSayText :: Init( void )
 {
 	gHUD.AddHudElem( this );
 
 	HOOK_MESSAGE( gHUD.m_SayText, SayText );
+	gEngfuncs.pfnAddCommand("hud_notice_dump",NoticeDump);
 
 	InitHUDData();
 
 	m_HUD_saytext =			gEngfuncs.pfnRegisterVariable( "hud_saytext_internal", "1", 0 );
-	m_HUD_saytext_time =	gEngfuncs.pfnRegisterVariable( "hud_saytext_time", "5", 0 );
+	m_HUD_saytext_time =	gEngfuncs.pfnRegisterVariable( "hud_saytext_time", "15.5", 0 );
 	m_HUD_saytext_console =	gEngfuncs.pfnRegisterVariable( "hud_saytext_console", "1", 0 );
 
 	m_iFlags |= HUD_INTERMISSION; // is always drawn during an intermission
@@ -90,6 +102,7 @@ void CHudSayText :: InitHUDData( void )
 	memset( g_szLineBuffer, 0, sizeof g_szLineBuffer );
 	memset( g_pflNameColors, 0, sizeof g_pflNameColors );
 	memset( g_iNameLengths, 0, sizeof g_iNameLengths );
+	memset(g_lineBirth,0,sizeof(g_lineBirth));
 }
 
 int CHudSayText :: VidInit( void )
@@ -104,6 +117,7 @@ int ScrollTextUp( void )
 	memmove( g_szLineBuffer[0], g_szLineBuffer[1], sizeof(g_szLineBuffer) - sizeof(g_szLineBuffer[0]) ); // overwrite the first line // -V512
 	memmove( &g_pflNameColors[0], &g_pflNameColors[1], sizeof(g_pflNameColors) - sizeof(g_pflNameColors[0]) );
 	memmove( &g_iNameLengths[0], &g_iNameLengths[1], sizeof(g_iNameLengths) - sizeof(g_iNameLengths[0]) );
+	memmove(g_lineBirth,g_lineBirth+1,sizeof(g_lineBirth)-sizeof(g_lineBirth[0]));
 	g_szLineBuffer[MAX_LINES-1][0] = 0;
 
 	if ( g_szLineBuffer[0][0] == ' ' ) // also scroll up following lines
@@ -118,6 +132,8 @@ int ScrollTextUp( void )
 int CHudSayText :: Draw( float flTime )
 {
 	int y = Y_START;
+	const bool modern=match_ui::Enabled()&&g_pMenu;
+	const float duration=max(1.f,min(30.f,m_HUD_saytext_time->value));
 
 	//if ( ( gViewPort && gViewPort->AllowedToPrintText() == FALSE) || !m_HUD_saytext->value )
 	if ( !m_HUD_saytext->value )
@@ -129,7 +145,11 @@ int CHudSayText :: Draw( float flTime )
 	// make sure the scrolltime is within reasonable bounds,  to guard against the clock being reset
 	flScrollTime = min( flScrollTime, flTime + m_HUD_saytext_time->value );
 
-	if ( flScrollTime <= flTime )
+	if(modern)
+	{
+		while(g_szLineBuffer[0][0] && (flTime<g_lineBirth[0] || flTime-g_lineBirth[0]>=duration))ScrollTextUp();
+	}
+	else if ( flScrollTime <= flTime )
 	{
 		if ( *g_szLineBuffer[0] )
 		{
@@ -145,19 +165,34 @@ int CHudSayText :: Draw( float flTime )
 	
 	if (g_pMenu)
 	{
-		const float height=max(12,gHUD.GetCharHeight());
-		line_height=int(std::ceil(hud_unicode::LineHeight(height)));
+		const auto area=match_notice::Feed(ScreenWidth,ScreenHeight,g_iUser1!=0);
+		const float height=modern?area.height:max(12,gHUD.GetCharHeight());
+		line_height=int(std::ceil(modern?max(area.line,hud_unicode::LineHeight(height)):hud_unicode::LineHeight(height)));
+		int count=0;for(int i=0;i<MAX_LINES;++i)if(g_szLineBuffer[i][0])++count;
+		if(modern)y=int(area.y-count*line_height);
+		static const float normal[3]={1,1,1},gain[3]={162/255.f,1,71/255.f},penalty[3]={1,64/255.f,64/255.f};
+		const float *defaultColor=modern?normal:g_ColorYellow;
 		for (int i=0;i<MAX_LINES;++i)
 		{
 			if (!g_szLineBuffer[i][0]) continue;
-			float x=LINE_START;
-			const float *color=g_ColorYellow;
+			const int alpha=modern?int(255*match_notice::Fade(flTime-g_lineBirth[i],duration)):255;
+			float x=modern?area.x:LINE_START;
+			const float *color=defaultColor;
+			if(modern)
+			{
+				const auto visible=hud_text_layout::VisibleText(g_szLineBuffer[i]);
+				const float width=min(area.width,hud_unicode::FixedLabelWidth(visible.c_str(),height));
+				FillRGBABlend(int(x-5),y-2,int(width+10),line_height,10,14,18,alpha*70/255);
+			}
 			std::string run;
 			const auto flush=[&]()
 			{
 				if (run.empty()) return;
+				const float available=modern?max(0.f,area.x+area.width-x):0;
+				if(modern&&available<=0){run.clear();return;}
+				if(modern)hud_unicode::FixedLabel(run.c_str(),x+1,float(y)+1,height,{0,0,0,alpha},false,available);
 				hud_unicode::FixedLabel(run.c_str(),x,float(y),height,
-					{int(color[0]*255),int(color[1]*255),int(color[2]*255)});
+					{int(color[0]*255),int(color[1]*255),int(color[2]*255),alpha},false,available);
 				x+=hud_unicode::FixedLabelWidth(run.c_str(),height);run.clear();
 			};
 			const char *text=g_szLineBuffer[i];
@@ -165,19 +200,19 @@ int CHudSayText :: Draw( float flTime )
 			for (const char *p=text;*p;)
 			{
 				if (legacyName && p-text>=g_iNameLengths[i])
-				{ flush();color=g_ColorYellow;legacyName=false; }
+				{ flush();color=defaultColor;legacyName=false; }
 				const unsigned char code=static_cast<unsigned char>(*p);
 				if (code=='^' && p[1]>='0' && p[1]<='9')
 				{
 					static const float colors[10][3]={{0,0,0},{1,0,0},{0,1,0},{1,1,0},{0,0,1},{0,1,1},{1,0,1},{1,1,1},{1,1,1},{1,1,1}};
-					flush();color=colors[p[1]-'0'];p+=2;continue;
+					flush();color=modern&&p[1]=='2'?gain:modern&&p[1]=='1'?penalty:colors[p[1]-'0'];p+=2;continue;
 				}
 				if (code>=1 && code<=4)
 				{
 					flush();++p;
 					if (code==4) color=g_ColorGreen;
 					else if ((code==2 || code==3) && g_pflNameColors[i]) color=g_pflNameColors[i];
-					else color=g_ColorYellow;
+					else color=defaultColor;
 					legacyName=code==2 && g_iNameLengths[i]>0;
 					continue;
 				}
@@ -419,10 +454,11 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
 	{
 		// force scroll buffer up
 		ScrollTextUp();
-		i = MAX_LINES - 1;
+		for(i=0;i<MAX_LINES && g_szLineBuffer[i][0];++i) {}
 	}
 
 	g_iNameLengths[i] = 0;
+	g_lineBirth[i]=gHUD.m_flTime;
 	g_pflNameColors[i] = NULL;
 
 #if 1
@@ -432,6 +468,13 @@ void CHudSayText :: SayTextPrint( const char *pszBuf, int iBufSize, int clientIn
 		GetPlayerInfo( clientIndex, &g_PlayerInfoList[clientIndex] );
 		const char *pName = g_PlayerInfoList[clientIndex].name;
 		g_pflNameColors[i] = GetClientColor( clientIndex );
+		if(match_ui::Enabled())
+		{
+			static const float ct[3]={162/255.f,198/255.f,1},t[3]={1,223/255.f,147/255.f};
+			const int team=g_PlayerExtraInfo[clientIndex].teamnumber;
+			if(team==TEAM_CT)g_pflNameColors[i]=const_cast<float *>(ct);
+			else if(team==TEAM_TERRORIST)g_pflNameColors[i]=const_cast<float *>(t);
+		}
 
 		if ( pName )
 		{
@@ -476,26 +519,31 @@ void CHudSayText :: EnsureTextFitsInOneLineAndWrapIfHaveTo( int line )
 {
 	if (g_pMenu)
 	{
-		const float height=max(12,gHUD.GetCharHeight());
+		const bool modern=match_ui::Enabled();
+		const auto area=match_notice::Feed(ScreenWidth,ScreenHeight,g_iUser1!=0);
+		const float height=modern?area.height:max(12,gHUD.GetCharHeight());
 		line_height=int(std::ceil(hud_unicode::LineHeight(height)));
-		const float available=float(MAX_LINE_WIDTH-LINE_START)-hud_unicode::FixedLabelWidth(" ",height);
-		const auto lines=hud_unicode::WrapLines(g_szLineBuffer[line],height,available,true);
+		const float available=(modern?area.width:float(MAX_LINE_WIDTH-LINE_START))-hud_unicode::FixedLabelWidth(" ",height);
+		auto lines=hud_unicode::WrapLines(g_szLineBuffer[line],height,available,true);
+		while(!lines.empty() && hud_text_layout::VisibleText(lines.back().c_str()).find_first_not_of(" \t\r\n")==std::string::npos)
+			lines.pop_back();
+		if(lines.size()>MAX_LINES){lines.resize(MAX_LINES);lines.back()+="...";}
 		float *nameColor=g_pflNameColors[line];
 		const int nameLength=g_iNameLengths[line];
+		const float birth=g_lineBirth[line];
+		// Reserve the entire wrapped message before inserting any continuation.
+		g_szLineBuffer[line][0]=0;
+		while(line+int(lines.size())>MAX_LINES)line=max(0,line-ScrollTextUp());
 		std::string activeColor(1,char(1));
 		for (size_t part=0;part<lines.size();++part)
 		{
-			int target=line;
-			if (part)
-			{
-				for (target=0;target<MAX_LINES && g_szLineBuffer[target][0];++target) {}
-				if (target==MAX_LINES) { ScrollTextUp();target=MAX_LINES-1; }
-			}
+			const int target=line+int(part);
 			std::string row=part?std::string(" ")+activeColor+lines[part]:lines[part];
 			if (row.empty()) row=" ";
 			hud_text_layout::Copy(g_szLineBuffer[target],sizeof(g_szLineBuffer[target]),row.c_str());
 			g_pflNameColors[target]=nameColor;
 			g_iNameLengths[target]=part?0:nameLength;
+			g_lineBirth[target]=birth;
 			for (const char *p=lines[part].c_str();*p;++p)
 			{
 				const unsigned char ch=static_cast<unsigned char>(*p);

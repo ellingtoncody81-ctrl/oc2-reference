@@ -33,6 +33,7 @@ public:
 	virtual void  MouseMove( int x, int y ) = 0;
 
 	virtual HFont BuildFont( CFontBuilder &builder ) = 0;
+	virtual void PrecacheMatch() = 0;
 
 	virtual void  GetCharABCWide( HFont font, int ch, int &a, int &b, int &c ) = 0;
 	virtual int   GetFontTall( HFont font ) = 0;
@@ -53,6 +54,6 @@ public:
 	virtual void  HideVGUIMenu( void ) = 0;
 };
 
-#define GAMEMENUEXPORTS_INTERFACE_VERSION "GameMenuExports001"
+#define GAMEMENUEXPORTS_INTERFACE_VERSION "GameMenuExports002"
 
 #endif // IGAMEMENUEXPORTS_H

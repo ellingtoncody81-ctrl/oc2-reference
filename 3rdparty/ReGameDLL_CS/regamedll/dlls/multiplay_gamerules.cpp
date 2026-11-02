@@ -1665,6 +1665,10 @@ LINK_HOOK_CLASS_VOID_CUSTOM_CHAIN2(CHalfLifeMultiplay, CSGameRules, RestartRound
 void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 {
 	OC2_BotControlRound();
+	// Establish the client round epoch before half-time/swap/match-point text.
+	// ResetHUD/fullupdate must not reset this state.
+	MESSAGE_BEGIN(MSG_ALL, gmsgHudRound);
+	MESSAGE_END();
 	const bool halfReset=OC2_MatchBeforeRound(this);
 	OC2_SpecStatsRound(m_bCompleteReset);
 	OC2_InfernoRoundReset();
@@ -1904,10 +1908,6 @@ void EXT_FUNC CHalfLifeMultiplay::__API_HOOK(RestartRound)()
 
 	// the round time stamp must be set before players are spawned
 	m_fRoundStartTime = m_fRoundStartTimeReal = gpGlobals->time;
-	// GoldSrc bridge for CS:GO CCSPlayer::RoundRespawn (cs_player.cpp:8363-8364):
-	// only a real round restart, never ResetHUD/fullupdate, resets round kills.
-	MESSAGE_BEGIN(MSG_ALL, gmsgHudRound);
-	MESSAGE_END();
 	OC2_HostageRoundStart();
 
 	// Adrian - No cash for anyone at first rounds! ( well, only the default. )

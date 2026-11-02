@@ -50,17 +50,11 @@ void Dump()
 }
 void OC2_WorldAccessoriesReset(){models.clear();placements.clear();records.clear();binds.clear();}
 void OC2_WorldAccessoriesInit(){gEngfuncs.pfnAddCommand("oc2_world_accessories_dump",Dump);worldAccessoriesEnabled=gEngfuncs.pfnRegisterVariable("cl_oc2_world_accessories","1",0);}
-void OC2_DrawWorldAccessories(CStudioModelRenderer &r,model_s *model,int player,int serial,alight_s &lighting,float *lightdir)
+void OC2_PrecacheWorldAccessoryMounts(model_s *model)
 {
- OC2ColdTimer cold("world_addons",model?model->name:nullptr);
- if(worldAccessoriesEnabled&&worldAccessoriesEnabled->value==0)return;
- const auto *enabled=gEngfuncs.pfnGetCvarPointer("oc2_accessories_enabled");if(enabled&&enabled->value==0)return;
- if(!model||!r.m_pCurrentEntity||!r.m_pStudioHeader||!IEngineStudio.IsHardware())return;
- // Tiny, distant attachments do not need an additional high-poly studio pass.
- float distance2=0;for(int axis=0;axis<3;++axis){const float d=r.m_pCurrentEntity->origin[axis]-r.m_vRenderOrigin[axis];distance2+=d*d;}if(distance2>1600*1600)return;
- oc2_accessories::WeaponConfig cfg;unsigned count=0;int pattern=0,instance=0;
- if(!OC2_InventoryWorldAccessories(model,player,serial,r.m_pCurrentEntity->index,cfg,count,pattern,instance))return;
- auto &entry=models[model];const auto *header=r.m_pStudioHeader;
+ if(!model||model->type!=mod_studio)return;
+ const auto *header=static_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(model));if(!header)return;
+ auto &entry=models[model];
  if(entry.header!=header)
  {
   entry=Model();entry.header=header;
@@ -79,6 +73,18 @@ void OC2_DrawWorldAccessories(CStudioModelRenderer &r,model_s *model,int player,
   for(int i=0;i<header->numbones;++i)if(a[i].parent!=b[i].parent||strncmp(a[i].name,b[i].name,sizeof(a[i].name)))return;
   {OC2ColdTimer build("world_mount_build",model->name);geo::BuildMountCache(header,entry.mounts,side);}
  }
+}
+void OC2_DrawWorldAccessories(CStudioModelRenderer &r,model_s *model,int player,int serial,alight_s &lighting,float *lightdir)
+{
+ OC2ColdTimer cold("world_addons",model?model->name:nullptr);
+ if(worldAccessoriesEnabled&&worldAccessoriesEnabled->value==0)return;
+ const auto *enabled=gEngfuncs.pfnGetCvarPointer("oc2_accessories_enabled");if(enabled&&enabled->value==0)return;
+ if(!model||!r.m_pCurrentEntity||!r.m_pStudioHeader||!IEngineStudio.IsHardware())return;
+ float distance2=0;for(int axis=0;axis<3;++axis){const float d=r.m_pCurrentEntity->origin[axis]-r.m_vRenderOrigin[axis];distance2+=d*d;}if(distance2>1600*1600)return;
+ oc2_accessories::WeaponConfig cfg;unsigned count=0;int pattern=0,instance=0;
+ if(!OC2_InventoryWorldAccessories(model,player,serial,r.m_pCurrentEntity->index,cfg,count,pattern,instance))return;
+ OC2_PrecacheWorldAccessoryMounts(model);
+ auto &entry=models[model];
  if(!entry.mounts.valid)return;
  if(placements.size()>2048)placements.clear();
  auto &mounts=placements[std::make_pair(instance,model)];

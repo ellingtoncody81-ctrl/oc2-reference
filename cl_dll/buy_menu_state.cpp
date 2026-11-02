@@ -9,6 +9,7 @@
 #include "weapontype.h"
 #include "cl_dll/IOc2BuyMenu.h"
 #include "buy_menu_state.h"
+#include "skin_inventory_client.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -348,6 +349,7 @@ public:
 	int ItemCount() override { return kItems; }
 	bool GetItem(int index, oc2_buy::Item &item) override { return ::GetItem(index,item); }
 	bool Purchase(int index) override { return ::Purchase(index); }
+	int PreviewTexture(const char *path) override { return OC2_InventoryPreviewTexture(path); }
 	void SetOpen(bool open) override
 	{
 		oc2_buy::State state;

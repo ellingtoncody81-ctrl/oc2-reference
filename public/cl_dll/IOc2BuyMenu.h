@@ -39,7 +39,9 @@ public:
 	virtual int ItemCount() = 0;
 	virtual bool GetItem(int index, oc2_buy::Item &item) = 0;
 	virtual bool Purchase(int index) = 0;
+	// Borrowed until the end of this frame; never freed by the menu.
+	virtual int PreviewTexture(const char *path) = 0;
 	virtual void SetOpen(bool open) = 0;
 };
 
-#define OC2_BUYMENU_INTERFACE_VERSION "OC2BuyMenu001"
+#define OC2_BUYMENU_INTERFACE_VERSION "OC2BuyMenu002"

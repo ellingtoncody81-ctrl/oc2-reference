@@ -36,6 +36,17 @@ class COc2BuyMenu : public CClientWindow
 {
 public:
 	COc2BuyMenu() : CClientWindow("OC2BuyMenu") { bAllowDrag=false; }
+	void Precache()
+	{
+		if (!g_pOc2BuyMenu) return;
+		for(int height:{14,18,20,22,28}) Font(height);
+		for(int i=0;i<g_pOc2BuyMenu->ItemCount();++i)
+		{
+			oc2_buy::Item item;
+			if(g_pOc2BuyMenu->GetItem(i,item)) Picture(item.image);
+		}
+		for(const char *path:{"gfx/weaponbuy/incendiary.tga","gfx/vgui/nightvision.tga","gfx/vgui/shield.tga","gfx/vgui/sammo.tga"})Picture(path);
+	}
 	void VidInit() override
 	{
 		pos=Point(0,0); size=Size(int(ScreenWidth/uiStatic.scaleX),int(ScreenHeight/uiStatic.scaleY));
@@ -299,13 +310,18 @@ private:
 		Fill({x,track.y,width,std::max(2,track.h)},PackRGBA(224,198,130,220));
 		Text("滚轮滚动",Area(columnX[col],.845f,columnW[col],.023f),14,PackRGBA(215,215,215,220),QM_CENTER);
 	}
-	void Text(const char *text,Rect rect,int height,unsigned int color,uint align=QM_CENTER)
+	HFont Font(int height)
 	{
 		const int pixels=std::max(10,int(height*ScreenHeight/1080.0f));
 		if (!fonts.count(pixels) || g_FontMgr->GetFontTall(fonts[pixels])<=0)
 			fonts[pixels]=CFontBuilder("Microsoft YaHei UI",pixels,500).Create();
-		const int actualHeight=std::max(1,g_FontMgr->GetFontTall(fonts[pixels]));
-		UI_DrawString(fonts[pixels],rect.x,rect.y,rect.w,rect.h,text,color,actualHeight,align,ETF_NO_WRAP|ETF_FORCECOL);
+		return fonts[pixels];
+	}
+	void Text(const char *text,Rect rect,int height,unsigned int color,uint align=QM_CENTER)
+	{
+		const HFont font=Font(height);
+		const int actualHeight=std::max(1,g_FontMgr->GetFontTall(font));
+		UI_DrawString(font,rect.x,rect.y,rect.w,rect.h,text,color,actualHeight,align,ETF_NO_WRAP|ETF_FORCECOL);
 	}
 	HIMAGE Picture(const char *name)
 	{
@@ -407,6 +423,13 @@ private:
 };
 
 COc2BuyMenu menu;
+}
+
+void UI_OC2BuyMenu_Precache()
+{
+	menu.VidInit();menu.Precache();
+	extern void OC2_PrecacheBuyModels();
+	if(g_pOc2BuyMenu)OC2_PrecacheBuyModels();
 }
 
 bool UI_OC2BuyMenu_Show()

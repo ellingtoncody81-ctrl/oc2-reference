@@ -46,6 +46,7 @@ version.
 #include "ammohistory.h"
 #include "spectator_layout.h"
 #include "skin_inventory_client.h"
+#include "hud_readability.h"
 #include "oc2_knife_icons.h"
 #include <cmath>
 #include <vector>
@@ -87,12 +88,12 @@ static void ClearEquipmentMasks()
 
 // CSS mask-image semantics: retain the original icon alpha, render its dark
 // artwork as a readable white silhouette. No source or runtime asset is edited.
-static bool SpectatorEquipmentIcon(const char *path,float x,float y,float w,float h,match_ui::Color color=match_ui::Color())
+static EquipmentMask *PrepareEquipmentMask(const char *path)
 {
 	EquipmentMask *mask=nullptr;
 	for(auto &candidate:s_equipmentMasks)if(!strcmp(candidate.path,path)){mask=&candidate;break;}
 	if(!mask || !gRenderAPI.GL_LoadTexture || !gEngfuncs.COM_LoadFile || !gEngfuncs.COM_FreeFile)
-		return match_ui::Silhouette(path,x,y,w,h,color);
+		return nullptr;
 	if(!mask->tried)
 	{
 		mask->tried=true;
@@ -121,11 +122,32 @@ static bool SpectatorEquipmentIcon(const char *path,float x,float y,float w,floa
 		}
 		if(data)gEngfuncs.COM_FreeFile(data);
 	}
-	if(!mask->texture)return match_ui::Silhouette(path,x,y,w,h,color);
+	return mask;
+}
+static bool SpectatorEquipmentIcon(const char *path,float x,float y,float w,float h,match_ui::Color color=match_ui::Color())
+{
+	auto *mask=PrepareEquipmentMask(path);
+	if(!mask||!mask->texture)return match_ui::Silhouette(path,x,y,w,h,color);
 	const float fit=min(w/mask->width,h/mask->height);
 	const float width=mask->width*fit,height=mask->height*fit;
 	match_ui::Picture(mask->texture,x+(w-width)*.5f,y+(h-height)*.5f,width,height,color);
 	return true;
+}
+
+void OC2_PrecacheSpectatorGui()
+{
+	// Called after every HUD VidInit, including scoreboard's font-cache reset.
+	const float s=spectator_layout::Make(ScreenWidth,ScreenHeight).scale;
+	for(float size:{9.f,12.f,12.5f,13.f,14.f,15.f,16.f,17.f,18.f,19.f,20.f,22.5f,24.f,25.f,26.f,30.f})
+		hud_unicode::LabelFont(size*s);
+	hud_unicode::LabelFont(18*s,700);hud_unicode::LabelFont(19*s,700);
+	hud_unicode::LabelFont(16*match_ui::Scale());
+	hud_unicode::LabelFont(28*hud_readability::Scale(match_ui::Scale()));
+	hud_unicode::LabelFont(max(16.f,26*s),700);
+	const float digitWidth=hud_unicode::FixedLabelWidth("00",30*s);
+	const auto layout=spectator_layout::Make(ScreenWidth,ScreenHeight,digitWidth+15*s);
+	hud_unicode::LabelFont(30*s*min(1.0f,layout.health.w/(214.254f*s)));
+	for(auto &mask:s_equipmentMasks)PrepareEquipmentMask(mask.path);
 }
 
 static void SpectatorUiDump()

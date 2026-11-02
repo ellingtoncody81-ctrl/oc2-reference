@@ -749,6 +749,8 @@ void CHud :: VidInit( void )
 	match_ui::VidInit();
 	for( HUDLIST *pList = m_pHudList; pList; pList = pList->pNext )
 		pList->p->VidInit();
+	extern void OC2_PrecacheSpectatorGui();
+	OC2_PrecacheSpectatorGui();
 
 #if 0
 	if( firstinit && gEngfuncs.CheckParm( "-firsttime", NULL ) )

@@ -18,6 +18,7 @@
 #include "pm_shared.h"
 #include "oc2_cold_perf.h"
 #include "oc2_texture_stream.h"
+#include "accessory_client.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -76,7 +77,7 @@ std::map<std::pair<int,int>,WorldGloveDraw> worldGloveDraws;
 // A body's hand bindings are immutable for its model lifetime. Never repeat
 // string allocation and bone-name classification for every vertex each frame.
 std::map<std::pair<const studiohdr_t *,const mstudiomodel_t *>,bool> worldHandLayouts;
-struct TextureSlot {int handle=0,frame=-1,visibleFrame=-1;std::uint64_t serial=0,bytes=0;std::string name;};
+struct TextureSlot {int handle=0,frame=-1,visibleFrame=-1,borrowedFrame=-1;std::uint64_t serial=0,bytes=0;std::string name;};
 std::map<std::string,TextureSlot> textures;
 std::map<std::string,int> textureBlockedFrame;
 std::map<std::string,std::uint64_t> textureKnownCost;
@@ -398,11 +399,11 @@ bool EvictTexture()
 {
  auto oldest=textures.end();
  for(auto i=textures.begin();i!=textures.end();++i)
-  if(i->second.frame!=textureFrame&&i->second.visibleFrame!=textureVisibleFrame&&!texturePins.count(i->second.handle)&&
+  if(i->second.frame!=textureFrame&&i->second.visibleFrame!=textureVisibleFrame&&i->second.borrowedFrame!=textureVisibleFrame&&!texturePins.count(i->second.handle)&&
      (oldest==textures.end()||i->second.serial<oldest->second.serial))oldest=i;
  if(oldest==textures.end())
   for(auto i=textures.begin();i!=textures.end();++i)
-   if(i->second.frame!=textureFrame&&!texturePins.count(i->second.handle)&&
+   if(i->second.frame!=textureFrame&&i->second.borrowedFrame!=textureVisibleFrame&&!texturePins.count(i->second.handle)&&
       (oldest==textures.end()||i->second.serial<oldest->second.serial))oldest=i;
  if(oldest==textures.end())return false;
  if(oldest->second.visibleFrame==textureVisibleFrame)++textureStats.sameFrameEvictions;
@@ -873,6 +874,7 @@ void OC2_InventoryInit()
 }
 void OC2_InventoryVidInit()
 {
+ CheckSession();
  oc2_texture_stream::Reset();++texturePrefetchEpoch;
  ClearItemQueryIndex();
  worldHandLayouts.clear();
@@ -881,6 +883,10 @@ void OC2_InventoryVidInit()
  ReleaseTextures();textureFrame=-1;catalog.clear();resourceIndices.clear();knifeIndices.clear();knifeModels.clear();catalogAttempted=false;nextRead=lastRead=-1;
  gloveCatalog.clear();gloveCatalogAttempted=false;gloveDraw=GloveDraw();
  diagnostics=Diagnostics();ReadState(true);
+}
+void OC2_PrecacheMatchModels()
+{
+ CheckSession();OC2_AccessoriesVidInit();
  // Prepare third-person geometry during the loading screen. Otherwise a
  // weapon first seen after a death/drop synchronously loads its body, overlay
  // and attachment models in the middle of the combat frame.
@@ -888,14 +894,35 @@ void OC2_InventoryVidInit()
  {
   std::set<std::string> paths;
   static const char *guns[]={"p228","scout","xm1014","mac10","aug","elite","fiveseven","ump45","sg550","galil","famas","usp","glock18","awp","mp7","m249","m3","m4a1","tmp","g3sg1","deagle","sg552","ak47","p90"};
-  for(const char *gun:guns)for(char prefix:{'p','w'})
-  {const std::string name=std::string(1,prefix)+"_"+gun+".mdl";paths.insert("models/"+name);paths.insert("models/oc2/stickers/"+name);}
-  for(const auto &entry:gloveCatalog)paths.insert(oc2_gloves::WorldModelPath(entry));
+  for(const char *gun:guns)for(char prefix:{'v','p','w'})
+  {const std::string name=std::string(1,prefix)+"_"+gun+".mdl";paths.insert("models/"+name);if(prefix!='v')paths.insert("models/oc2/stickers/"+name);}
+  for(const auto &entry:gloveCatalog)
+  {paths.insert(oc2_gloves::WorldModelPath(entry));paths.insert(entry.model);}
+  // Observer targets can use another glove family. World-only gloves do not
+  // populate the first-person model cache used when switching to their eyes.
+  paths.insert("models/arms/glove_hardknuckle/v_glove_hardknuckle_black.mdl");
+  paths.insert("models/arms/glove_fullfinger/v_glove_fullfinger.mdl");
+  paths.insert("models/arms/sas/v_sleeve_sas.mdl");
+  paths.insert("models/hostage/v_hostage_arm.mdl");
   for(const auto &entry:catalog)if(entry.kind==Kind::Knife&&entry.model.size()>8)
-   for(char prefix:{'p','w'}){std::string path=entry.model;path[7]=prefix;paths.insert(path);}
+   for(char prefix:{'v','p','w'}){std::string path=entry.model;path[7]=prefix;paths.insert(path);}
   paths.insert("models/attachments/oc2_stattrak.mdl");paths.insert("models/attachments/oc2_sticker_charm.mdl");paths.insert("models/attachments/oc2_sticker_charm_m249.mdl");
   for(const auto &path:paths)if(!path.empty())IEngineStudio.Mod_ForName(path.c_str(),false);
+  for(const char *gun:guns)for(char prefix:{'v','p','w'})
+  {
+   const std::string path=std::string("models/")+prefix+"_"+gun+".mdl";
+   auto *model=IEngineStudio.Mod_ForName(path.c_str(),false);
+   if(prefix=='v')OC2_PrecacheAccessoryMounts(model);else OC2_PrecacheWorldAccessoryMounts(model);
+  }
  }
+}
+int OC2_InventoryPreviewTexture(const char *path)
+{
+ if(!path||!*path)return 0;
+ BeginTextureDraw();const int handle=Texture(path,false);
+ const auto found=textures.find(path);
+ if(handle&&found!=textures.end())found->second.borrowedFrame=textureVisibleFrame;
+ return handle;
 }
 void OC2_InventoryResetSession()
 {

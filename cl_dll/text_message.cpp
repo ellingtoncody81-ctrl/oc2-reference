@@ -30,12 +30,48 @@
 #include "draw_util.h"
 #include "hud/message_zh.h"
 #include "hud/unicode_labels.h"
+#include "hud/match_notice_layout.h"
 #include "hud/presentation_contract.h"
 #include "hostage_hint.h"
 #include <string>
 #include <vector>
 
 static bool s_centerHostageHint = false;
+namespace
+{
+match_notice::BannerQueue phaseQueue;
+float phaseAlpha=0;
+int MatchPhase(const char *text)
+{
+	static const char *notices[]={u8"\u534a\u573a\u4f11\u606f\uff0c\u5373\u5c06\u4ea4\u6362\u9635\u8425",
+		u8"\u4e0a\u534a\u573a\u7ed3\u675f\uff0c\u4ea4\u6362\u9635\u8425",
+		u8"\u8d5b\u70b9\uff1a\u672c\u56de\u5408\u53ef\u51b3\u5b9a\u80dc\u8d1f",
+		u8"\u6bd4\u8d5b\u7ed3\u675f",u8"\u6bd4\u8d5b\u7ed3\u675f\uff1a\u5e73\u5c40"};
+	for(int i=0;i<5;++i)if(!strcmp(text,notices[i]))return i>=3?4:i==2?2:3;
+	return 0;
+}
+void DrawPhaseNotice(float time)
+{
+	phaseQueue.Update(time);const auto &phaseNotice=phaseQueue.current;phaseAlpha=phaseQueue.Alpha(time);
+	if(phaseNotice.text.empty()||phaseAlpha<=0||!g_pMenu||(gHUD.m_iHideHUDDisplay&HIDEHUD_ALL))return;
+	const float s=match_notice::Scale(ScreenWidth,ScreenHeight),height=max(16.f,26*s);
+	const float width=min(ScreenWidth*.72f,720*s),padding=16*s,y=ScreenHeight*.16f;
+	const float line=hud_unicode::LineHeight(height),x=(ScreenWidth-width)*.5f;
+	const int alpha=int(255*phaseAlpha);
+	FillRGBABlend(int(x),int(y),int(width),int(line+padding*2),12,17,23,alpha*190/255);
+	FillRGBABlend(int(x),int(y),int(width),max(1,int(2*s)),162,198,255,alpha);
+	const float textWidth=min(width-padding*2,hud_unicode::FixedLabelWidth(phaseNotice.text.c_str(),height,700));
+	hud_unicode::FixedLabel(phaseNotice.text.c_str(),(ScreenWidth-textWidth)*.5f,y+padding,height,{245,248,252,alpha},false,width-padding*2,700);
+}
+bool FeedNotification(const char *token)
+{
+	return !strcmp(token,"#Game_join_ct")||!strcmp(token,"#Game_join_terrorist")
+		||!strcmp(token,"#Game_join_ct_auto")||!strcmp(token,"#Game_join_terrorist_auto")
+		||!strcmp(token,"#Game_connected")||!strcmp(token,"#Game_disconnected");
+}
+}
+
+void OC2_MatchNoticeRound(){phaseQueue.NewRound(gHUD.m_flTime);}
 
 int CHudTextMessage::Init(void)
 {
@@ -56,6 +92,7 @@ void CHudTextMessage::InitHUDData()
 	m_lastDestination=0;
 	m_centerDrawTime=-1;m_centerDrawY=m_centerDrawExpansion=0;
 	s_centerHostageHint=false;
+	phaseQueue.Clear();phaseAlpha=0;
 	m_iFlags=HUD_DRAW | HUD_INTERMISSION;
 }
 void CHudTextMessage::Reset()
@@ -64,6 +101,11 @@ void CHudTextMessage::Reset()
 }
 void CHudTextMessage::ShowCenter(const char *text)
 {
+	if(text&&match_ui::Enabled()&&MatchPhase(text))
+	{
+		phaseQueue.Push(text,MatchPhase(text),gHUD.m_flTime);
+		return;
+	}
 	s_centerHostageHint=false;
 	hud_text_layout::Copy(m_centerText,sizeof(m_centerText),text);
 	m_centerStart=gHUD.m_flTime;
@@ -72,6 +114,7 @@ void CHudTextMessage::ShowCenter(const char *text)
 }
 int CHudTextMessage::Draw(float time)
 {
+	DrawPhaseNotice(time);
 	if (!m_centerText[0] || time<m_centerStart || time>=m_centerEnd || (gHUD.m_iHideHUDDisplay&HIDEHUD_ALL)) return 1;
 	if (!g_pMenu) return 1;
 	// Keep the original upper-screen anchor and the animated backdrop.
@@ -119,6 +162,7 @@ int CHudTextMessage::Draw(float time)
 }
 void CHudTextMessage::UserCmd_PresentationDump()
 {
+	gEngfuncs.Con_Printf("hudpresentation_phase: start=%.3f end=%.3f alpha=%.4f pending=%d text=%s\n",phaseQueue.current.start,phaseQueue.current.end,phaseAlpha,phaseQueue.count,phaseQueue.current.text.c_str());
 	const auto rect=hud_presentation::BombRect(ScreenWidth*.5f,5,1,hud_presentation::Bomb(gHUD.m_Timer.BombState()));
 	gEngfuncs.Con_Printf("hudpresentation: time=%.3f bomb=%d alpha=%d apk_rect=%.1f,%.1f,%.1f,%.1f received=%u suppressed=%u center_draws=%u token=%s dest=%d center_start=%.3f center_end=%.3f center=%s\n",
 		gHUD.m_flTime,gHUD.m_Timer.BombState(),hud_presentation::BombAlpha(gHUD.m_flTime),rect.x,rect.y,rect.width,rect.height,
@@ -315,6 +359,12 @@ int CHudTextMessage::MsgFunc_TextMsg( const char *pszName, int iSize, void *pbuf
 		break;
 	}
 	case HUD_PRINTNOTIFY:
+		if(match_ui::Enabled()&&FeedNotification(token))
+		{
+			Localize_Format(psz,MAX_TEXTMSG_STRING,msg_text,args,4);
+			gHUD.m_SayText.SayTextPrint(ConvertCRtoNL(psz),MAX_TEXTMSG_STRING);
+			break;
+		}
 		psz[0] = 1;  // mark this message to go into the notify buffer
 		Localize_Format( psz + 1, MAX_TEXTMSG_STRING - 1, msg_text, args, 4 );
 		ConsolePrint( ConvertCRtoNL( psz ) );
