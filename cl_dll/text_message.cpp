@@ -40,7 +40,15 @@ static bool s_centerHostageHint = false;
 namespace
 {
 match_notice::BannerQueue phaseQueue;
+match_notice::ActionNotice purchaseNotice;
 float phaseAlpha=0;
+const char *centerDrawSource="none";
+float centerTextAlpha=0;
+bool PhaseBusy(float time)
+{
+	return phaseQueue.count>0 || phaseQueue.current.priority>=4
+		|| (!phaseQueue.current.text.empty() && time<phaseQueue.current.end);
+}
 int MatchPhase(const char *text)
 {
 	static const char *notices[]={u8"\u534a\u573a\u4f11\u606f\uff0c\u5373\u5c06\u4ea4\u6362\u9635\u8425",
@@ -50,19 +58,6 @@ int MatchPhase(const char *text)
 	for(int i=0;i<5;++i)if(!strcmp(text,notices[i]))return i>=3?4:i==2?2:3;
 	return 0;
 }
-void DrawPhaseNotice(float time)
-{
-	phaseQueue.Update(time);const auto &phaseNotice=phaseQueue.current;phaseAlpha=phaseQueue.Alpha(time);
-	if(phaseNotice.text.empty()||phaseAlpha<=0||!g_pMenu||(gHUD.m_iHideHUDDisplay&HIDEHUD_ALL))return;
-	const float s=match_notice::Scale(ScreenWidth,ScreenHeight),height=max(16.f,26*s);
-	const float width=min(ScreenWidth*.72f,720*s),padding=16*s,y=ScreenHeight*.16f;
-	const float line=hud_unicode::LineHeight(height),x=(ScreenWidth-width)*.5f;
-	const int alpha=int(255*phaseAlpha);
-	FillRGBABlend(int(x),int(y),int(width),int(line+padding*2),12,17,23,alpha*190/255);
-	FillRGBABlend(int(x),int(y),int(width),max(1,int(2*s)),162,198,255,alpha);
-	const float textWidth=min(width-padding*2,hud_unicode::FixedLabelWidth(phaseNotice.text.c_str(),height,700));
-	hud_unicode::FixedLabel(phaseNotice.text.c_str(),(ScreenWidth-textWidth)*.5f,y+padding,height,{245,248,252,alpha},false,width-padding*2,700);
-}
 bool FeedNotification(const char *token)
 {
 	return !strcmp(token,"#Game_join_ct")||!strcmp(token,"#Game_join_terrorist")
@@ -71,7 +66,16 @@ bool FeedNotification(const char *token)
 }
 }
 
-void OC2_MatchNoticeRound(){phaseQueue.NewRound(gHUD.m_flTime);}
+void OC2_MatchNoticeRound(){phaseQueue.NewRound(gHUD.m_flTime);purchaseNotice.Clear();}
+void CHudTextMessage::ClearPurchaseNotice(){purchaseNotice.Clear();}
+void CHudTextMessage::ShowPurchaseExpired()
+{
+	if(g_iUser1 || gHUD.m_Health.m_iHealth<=0)return;
+	const char *text=u8"购买时间已结束，请等待下一回合";
+	if(!match_ui::Enabled()){ShowCenter(text);return;}
+	phaseQueue.Update(gHUD.m_flTime);
+	purchaseNotice.Push(text,gHUD.m_flTime,PhaseBusy(gHUD.m_flTime));
+}
 
 int CHudTextMessage::Init(void)
 {
@@ -92,7 +96,8 @@ void CHudTextMessage::InitHUDData()
 	m_lastDestination=0;
 	m_centerDrawTime=-1;m_centerDrawY=m_centerDrawExpansion=0;
 	s_centerHostageHint=false;
-	phaseQueue.Clear();phaseAlpha=0;
+	phaseQueue.Clear();purchaseNotice.Clear();phaseAlpha=0;
+	centerDrawSource="none";centerTextAlpha=0;
 	m_iFlags=HUD_DRAW | HUD_INTERMISSION;
 }
 void CHudTextMessage::Reset()
@@ -107,6 +112,7 @@ void CHudTextMessage::ShowCenter(const char *text)
 		return;
 	}
 	s_centerHostageHint=false;
+	purchaseNotice.Clear();
 	hud_text_layout::Copy(m_centerText,sizeof(m_centerText),text);
 	m_centerStart=gHUD.m_flTime;
 	const float hold=gEngfuncs.pfnGetCvarFloat("scr_centertime");
@@ -114,18 +120,40 @@ void CHudTextMessage::ShowCenter(const char *text)
 }
 int CHudTextMessage::Draw(float time)
 {
-	DrawPhaseNotice(time);
-	if (!m_centerText[0] || time<m_centerStart || time>=m_centerEnd || (gHUD.m_iHideHUDDisplay&HIDEHUD_ALL)) return 1;
+	phaseQueue.Update(time);phaseAlpha=phaseQueue.Alpha(time);
+	const bool phaseBusy=match_ui::Enabled()&&PhaseBusy(time);
+	if(phaseBusy)purchaseNotice.Clear();
+	const char *text=m_centerText;
+	float start=m_centerStart,end=m_centerEnd,interruptAlpha=1;
+	bool hostage=s_centerHostageHint;
+	centerDrawSource="center";centerTextAlpha=0;
+	if(phaseBusy)
+	{
+		const auto &notice=phaseQueue.current;
+		text=notice.text.c_str();start=notice.start;end=notice.end;
+		if(notice.cutStart>=0)
+		{
+			// Preserve the same animation while a higher-priority notice takes over.
+			end=start+4.8f;interruptAlpha=phaseAlpha;
+		}
+		hostage=false;centerDrawSource="phase";
+	}
+	else if(!purchaseNotice.current.text.empty()&&time<purchaseNotice.current.end)
+	{
+		text=purchaseNotice.current.text.c_str();start=purchaseNotice.current.start;end=purchaseNotice.current.end;
+		hostage=false;centerDrawSource="purchase";
+	}
+	if (!text[0] || time<start || time>=end || (gHUD.m_iHideHUDDisplay&HIDEHUD_ALL)) return 1;
 	if (!g_pMenu) return 1;
-	// Keep the original upper-screen anchor and the animated backdrop.
-	const float height=s_centerHostageHint ? max(20.0f,ScreenHeight*.024f) : float(max(12,gHUD.GetCharHeight()));
-	const float available=ScreenWidth*.9f, spacing=s_centerHostageHint ? 2.0f : 0.0f;
-	const auto lines=hud_text_layout::Wrap(m_centerText,available,[height,spacing](const char *line){
+	// Burst-fire, purchase and match notices share the original center animation.
+	const float height=hostage ? max(20.0f,ScreenHeight*.024f) : float(max(12,gHUD.GetCharHeight()));
+	const float available=ScreenWidth*.9f, spacing=hostage ? 2.0f : 0.0f;
+	const auto lines=hud_text_layout::Wrap(text,available,[height,spacing](const char *line){
 		return hud_unicode::SpacedLabelWidth(line,height,spacing);
 	});
 	const float lineHeight=hud_unicode::LineHeight(height);
 	float y=hud_presentation::CenterY(float(ScreenHeight));
-	const float expansion=hud_presentation::CenterExpansion(time-m_centerStart,m_centerEnd-time);
+	const float expansion=hud_presentation::CenterExpansion(time-start,end-time)*interruptAlpha;
 	float widest=0;
 	for (const auto &line:lines) widest=max(widest,hud_unicode::SpacedLabelWidth(line.c_str(),height,spacing));
 	const float padding=20.0f/hud_unicode::LabelScale();
@@ -148,13 +176,15 @@ int CHudTextMessage::Draw(float time)
 	// The backdrop retracts during its final 0.3 seconds. Remove the text
 	// first so it never hangs outside the shrinking panel. For unusually
 	// short center times, retain text for at least the first half.
-	const float textEnd = m_centerEnd - min(.3f, (m_centerEnd-m_centerStart)*.5f);
-	if (time < textEnd)
+	const float textDuration=end-start-min(.3f,(end-start)*.5f);
+	centerTextAlpha=match_notice::Fade(time-start,textDuration,.2f,.2f)*interruptAlpha;
+	if (centerTextAlpha>0)
 		for (const auto &line:lines)
 		{
 			const float width=hud_unicode::SpacedLabelWidth(line.c_str(),height,spacing);
-			if(s_centerHostageHint) hud_unicode::SpacedLabel(line.c_str(),(ScreenWidth-width)*.5f,y,height,{255,255,255},spacing);
-			else hud_unicode::FixedLabel(line.c_str(),(ScreenWidth-width)*.5f,y,height,{255,255,255});
+			const match_ui::Color color={255,255,255,int(255*centerTextAlpha)};
+			if(hostage) hud_unicode::SpacedLabel(line.c_str(),(ScreenWidth-width)*.5f,y,height,color,spacing);
+			else hud_unicode::FixedLabel(line.c_str(),(ScreenWidth-width)*.5f,y,height,color);
 			y+=lineHeight;
 		}
 	++m_drawn;
@@ -162,14 +192,15 @@ int CHudTextMessage::Draw(float time)
 }
 void CHudTextMessage::UserCmd_PresentationDump()
 {
+	gEngfuncs.Con_Printf("hudpresentation_purchase: start=%.3f end=%.3f alpha=%.4f text=%s\n",purchaseNotice.current.start,purchaseNotice.current.end,purchaseNotice.Alpha(gHUD.m_flTime),purchaseNotice.current.text.c_str());
 	gEngfuncs.Con_Printf("hudpresentation_phase: start=%.3f end=%.3f alpha=%.4f pending=%d text=%s\n",phaseQueue.current.start,phaseQueue.current.end,phaseAlpha,phaseQueue.count,phaseQueue.current.text.c_str());
 	const auto rect=hud_presentation::BombRect(ScreenWidth*.5f,5,1,hud_presentation::Bomb(gHUD.m_Timer.BombState()));
 	gEngfuncs.Con_Printf("hudpresentation: time=%.3f bomb=%d alpha=%d apk_rect=%.1f,%.1f,%.1f,%.1f received=%u suppressed=%u center_draws=%u token=%s dest=%d center_start=%.3f center_end=%.3f center=%s\n",
 		gHUD.m_flTime,gHUD.m_Timer.BombState(),hud_presentation::BombAlpha(gHUD.m_flTime),rect.x,rect.y,rect.width,rect.height,
 		m_received,m_suppressed,m_drawn,m_lastToken,m_lastDestination,m_centerStart,m_centerEnd,m_centerText);
 	gHUD.m_Timer.DumpPresentation();
-	gEngfuncs.Con_Printf("hudpresentation_center: draw_time=%.3f y=%.3f expansion=%.4f height=%d hud_scale=%.4f\n",
-		m_centerDrawTime,m_centerDrawY,m_centerDrawExpansion,ScreenHeight,gHUD.m_flScale);
+	gEngfuncs.Con_Printf("hudpresentation_center: draw_time=%.3f y=%.3f expansion=%.4f height=%d hud_scale=%.4f source=%s text_alpha=%.4f\n",
+		m_centerDrawTime,m_centerDrawY,m_centerDrawExpansion,ScreenHeight,gHUD.m_flScale,centerDrawSource,centerTextAlpha);
 }
 
 // Searches through the string for any msg names (indicated by a '#')
@@ -353,6 +384,7 @@ int CHudTextMessage::MsgFunc_TextMsg( const char *pszName, int iSize, void *pbuf
 		}
 
 		ConvertCRtoNL( psz );
+		if(!strcmp(token,"#Cant_buy")){ShowPurchaseExpired();break;}
 
 		ShowCenter( psz );
 		s_centerHostageHint=hostageHint;

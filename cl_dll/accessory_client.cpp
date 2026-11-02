@@ -425,6 +425,16 @@ bool CurrentCharmOracle()
  charmGun.oracleReady=geo::RefitMeshCollider(gun,charmGun.oracleLocal);
  return charmGun.oracleReady;
 }
+bool SameCharmBody(const geo::StudioTriangleCache& mesh,int previous,int current)
+{
+ // Animation events can change the raw body even when every selected submodel
+ // stays the same. Match ReadStudioTriangles' active-body rule so those aliases
+ // keep the existing BVH; current bone matrices still refit it when required.
+ previous=std::max(0,previous);current=std::max(0,current);
+ for(const auto& part:mesh.parts)
+  if(part.base>0&&part.models>0&&(previous/part.base)%part.models!=(current/part.base)%part.models)return false;
+ return true;
+}
 bool BeginCharmGun(CStudioModelRenderer& r,const geo::Frame& frame)
 {
  const int body=r.m_pCurrentEntity->curstate.body,skin=r.m_pCurrentEntity->curstate.skin;
@@ -453,7 +463,7 @@ bool BeginCharmGun(CStudioModelRenderer& r,const geo::Frame& frame)
   allowed=&assembly;
  }
  diag.charmHostOnly=allowed!=nullptr;diag.charmHostRoot=hostRoot;diag.charmHostBones=allowed?int(allowed->size()):0;
- if(charmGun.header!=r.m_pStudioHeader||charmGun.body!=body||charmGun.skin!=skin||charmGun.hostRoot!=hostRoot||charmGun.allowedBones!=assembly)
+ if(charmGun.header!=r.m_pStudioHeader||!SameCharmBody(weaponSurface->studio,charmGun.body,body)||charmGun.skin!=skin||charmGun.hostRoot!=hostRoot||charmGun.allowedBones!=assembly)
  {
   OC2ColdTimer cold("charm_geometry",r.m_pRenderModel?r.m_pRenderModel->name:nullptr);
   charmGun=CharmGunScene();charmGun.header=r.m_pStudioHeader;charmGun.body=body;charmGun.skin=skin;

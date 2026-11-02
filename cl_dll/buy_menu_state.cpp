@@ -258,6 +258,7 @@ void Close()
 
 void ClearMap()
 {
+	gHUD.m_TextMessage.ClearPurchaseNotice();
 	// A map/reset is cancellation, never a purchase deploy on a new connection.
 	const bool wasOpen = opened;
 	opened = false;
@@ -270,6 +271,7 @@ void ClearMap()
 
 void Think()
 {
+	if(g_iUser1 || gHUD.m_Health.m_iHealth<=0)gHUD.m_TextMessage.ClearPurchaseNotice();
 	if (!opened) return;
 	oc2_buy::State state;
 	if (!GetState(state) || !state.canBuy) Close();
@@ -285,6 +287,7 @@ int Message(const char *name, int size, void *buffer)
 	if (reader.Bad() || allowed > 1 || seconds < -1) return 0;
 	hasServerState = true; serverCanBuy = allowed != 0;
 	serverSeconds = seconds; stateTime = gEngfuncs.GetClientTime(); ++stateMessages;
+	if(allowed || seconds!=0)gHUD.m_TextMessage.ClearPurchaseNotice();
 	return 1;
 }
 
@@ -353,7 +356,11 @@ public:
 	void SetOpen(bool open) override
 	{
 		oc2_buy::State state;
-		const bool next = open && ::GetState(state) && state.canBuy;
+		const bool valid = open && ::GetState(state);
+		const bool next = valid && state.canBuy;
+		if(valid && !next && hasEquipmentState && hasServerState && state.alive
+			&& state.inBuyZone && serverSeconds==0)
+			gHUD.m_TextMessage.ShowPurchaseExpired();
 		if (next == opened) return;
 		opened = next;
 		gEngfuncs.pfnServerCmd(next ? "oc2_buymenu_open\n" : "oc2_buymenu_close\n");

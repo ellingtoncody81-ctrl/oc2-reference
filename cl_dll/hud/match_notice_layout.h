@@ -94,4 +94,18 @@ struct BannerQueue
         waiting[at]=item;++count;Remember(item.text);
     }
 };
+// User actions are repeatable after expiry, never queued behind match phases.
+struct ActionNotice
+{
+    Banner current;
+    void Clear(){current={};}
+    float Alpha(float now) const{return current.text.empty()?0:Fade(now-current.start,current.end-current.start,.2f,.5f);}
+    void Push(const char *text,float now,bool phaseBusy)
+    {
+        if(!std::isfinite(now)||!text||!*text||phaseBusy)return;
+        if(now<current.start)Clear();
+        if(!current.text.empty()&&now<current.end)return;
+        current={};current.text=text;current.created=current.start=now;current.end=now+3;
+    }
+};
 }

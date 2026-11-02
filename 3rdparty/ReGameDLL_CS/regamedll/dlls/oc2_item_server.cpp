@@ -521,7 +521,7 @@ void TestCommand(CBasePlayer *caller)
      if(auto *box=target->DropPlayerItem(STRING(previous->pev->classname)))
       UTIL_SetOrigin(box->pev,Vector(0,0,-4096));
    }
-   target->GiveNamedItem(info->entityName);
+    target->GiveNamedItemEx(info->entityName);
   }
   else if(FStrEq(action,"drop"))target->DropPlayerItem(info->entityName);
   else if(FStrEq(action,"park"))

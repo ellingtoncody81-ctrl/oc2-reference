@@ -705,6 +705,8 @@ public:
 	void Reset( void );
 	int Draw( float time );
 	void ShowCenter( const char *text );
+	void ShowPurchaseExpired();
+	void ClearPurchaseNotice();
 	void UserCmd_PresentationDump();
 	static char *LocaliseTextString( const char *msg, char *dst_buffer, int buffer_size );
 	static char *BufferedLocaliseTextString( const char *msg );
