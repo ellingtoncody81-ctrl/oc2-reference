@@ -491,12 +491,11 @@ void BuyState::OnUpdate(CCSBot *me)
 				me->ClientCommand("secammo");
 			}
 
-			OC2_BotBuyUtility(me);
-
 			if (m_buyDefuseKit)
 			{
 				me->ClientCommand("defuser");
 			}
+			OC2_BotBuyUtility(me);
 
 			m_doneBuying = true;
 		}

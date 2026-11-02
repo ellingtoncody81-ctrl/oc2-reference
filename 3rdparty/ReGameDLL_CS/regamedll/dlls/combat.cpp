@@ -1,4 +1,5 @@
 #include "precompiled.h"
+#include "oc2_bot_tactics.h"
 
 void PlayerBlind(CBasePlayer *pPlayer, entvars_t *pevInflictor, entvars_t *pevAttacker, float fadeTime, float fadeHold, int alpha, Vector &color)
 {
@@ -49,6 +50,7 @@ void RadiusFlash_TraceLine_hook(CBasePlayer *pPlayer, entvars_t *pevInflictor, e
 
 void RadiusFlash(Vector vecSrc, entvars_t *pevInflictor, entvars_t *pevAttacker, float flDamage, int iClassIgnore, int bitsDamageType)
 {
+	int oc2FriendlyBatch=0;
 	CBaseEntity *pEntity = nullptr;
 	TraceResult tr;
 	float flAdjustedDamage, falloff;
@@ -156,6 +158,7 @@ void RadiusFlash(Vector vecSrc, entvars_t *pevInflictor, entvars_t *pevAttacker,
 			}
 
 			Vector color(255, 255, 255);
+			if(!OC2_BotFriendlyFlash(CBaseEntity::Instance(pevInflictor),pPlayer,fadeTime,fadeHold,alpha,oc2FriendlyBatch))continue;
 			g_ReGameHookchains.m_PlayerBlind.callChain(PlayerBlind, pPlayer, pevInflictor, pevAttacker, fadeTime, fadeHold, alpha, color);
 		}
 	}

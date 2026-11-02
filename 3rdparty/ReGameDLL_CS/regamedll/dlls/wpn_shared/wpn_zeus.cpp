@@ -231,6 +231,9 @@ void CZeus::PrimaryAttack()
 	TraceResult trace;
 	UTIL_TraceLine(source, source + direction*kRange, dont_ignore_monsters, m_pPlayer->edict(), &trace);
 	const bool hit = trace.flFraction < 1.0f && !trace.fAllSolid;
+	if(m_pPlayer->IsBot()&&CVAR_GET_FLOAT("developer")>0)
+		ALERT(at_console,"oc2zeus_shot: t=%.3f player=%d clip=%d hit=%d target=%d distance=%.2f\n",
+			gpGlobals->time,m_pPlayer->entindex(),m_iClip,hit,hit&&!FNullEnt(trace.pHit)?ENTINDEX(trace.pHit):0,trace.flFraction*kRange);
 	// The short muzzle offset is a GoldSrc visual adapter only; the damage
 	// trace and its 190-unit range originate at the unshifted eye/gun position.
 	ElectricEffect(source + forward*12 + right*3 - up*3, trace.vecEndPos, hit);

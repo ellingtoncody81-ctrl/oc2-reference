@@ -1330,7 +1330,7 @@ bool BuildPoseMetrics(const std::vector<PoseSource>& sources,const Frame& frame,
 bool PoseDisplacementBound(const std::vector<BoneMetric>& old,const std::vector<BoneMetric>& current,const std::vector<Triangle>& query,float& error,bool allBones)
 {
     error=0;if(old.size()!=current.size()||query.empty())return false;
-    Bounds box=emptyBounds();for(const auto& t:query)extend(box,triangleBounds(t));
+    Bounds box=emptyBounds();if(!allBones)for(const auto& t:query)extend(box,triangleBounds(t));
     double maximum=0;
     for(size_t i=0;i<old.size();++i)
     {

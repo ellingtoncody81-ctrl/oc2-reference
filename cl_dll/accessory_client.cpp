@@ -381,6 +381,7 @@ struct CharmGunScene
  geo::Frame frame;
  geo::MeshCollider full,oracle,oracleLocal;
  std::array<geo::MeshCollider,4> queries;
+ std::vector<geo::Triangle> localScratch,outsideScratch,gunScratch;
  int footBone=-1,pendantBone=-1;
  bool fullReady=false,oracleReady=false,canRetain=false;
  float retainedError=0;
@@ -398,7 +399,7 @@ bool FullCharmGun()
 {
  if(charmGun.fullReady)return true;
  OC2ColdTimer cold("charm_collider",charmGun.header?charmGun.header->name:nullptr);
- std::vector<geo::Triangle> gun;
+ auto& gun=charmGun.gunScratch;
  const auto& source=charmGun.sources.front();
  if(!geo::ReadStudioTriangles(*source.mesh,source.body,source.skin,
   reinterpret_cast<const float (*)[3][4]>(source.matrices.data()),gun,false,true,
@@ -487,8 +488,12 @@ constexpr float kCharmCollisionGap=.0001f;
 bool CharmFree(const std::vector<geo::Triangle>& world,float gap=kCharmCollisionGap,bool local=false)
 {
  ++charmStats.queries;
- std::vector<geo::Triangle> triangles=world;
- if(!local)LocalTriangles(triangles,charmGun.frame);
+  if(!local)
+  {
+   charmGun.localScratch.assign(world.begin(),world.end());
+   LocalTriangles(charmGun.localScratch,charmGun.frame);
+  }
+  const auto& triangles=local?world:charmGun.localScratch;
  // The fixed gun connection has an explicit, tiny contact port. It is not a
  // material/bone exemption: every triangle crossing its boundary is cut, and
  // every outside fragment (including the pin/arm) is still collision tested.
@@ -503,7 +508,7 @@ bool CharmFree(const std::vector<geo::Triangle>& world,float gap=kCharmCollision
  auto& query=charmGun.queries[slot];
  const auto check=[&](float error)
  {
-  std::vector<geo::Triangle> outside;
+   auto& outside=charmGun.outsideScratch;
   geo::TrianglesOutsideMountContact(triangles,outside,std::max(0.f,gap-kCharmCollisionGap)+error,charmGun.footBone);
   if(outside.empty())return true;
   if(!geo::RefitMeshCollider(outside,query,false))return false;
@@ -533,7 +538,8 @@ unsigned ReverseDigits(unsigned n)
 
 void CharmPose(studiohdr_t *h,const geo::SwingOutput &angles,float length,std::array<Matrix,MAXSTUDIOBONES> &pose,const geo::SwingOutput& foot)
 {
- std::vector<Matrix> dynamic(joints.size()),delta(joints.size());
+  // LoadSkin validates at most sixteen joints; candidate poses need no heap.
+  std::array<Matrix,16> dynamic,delta;
  for(std::size_t i=0;i<joints.size();++i)
  {
   const Joint &j=joints[i];Matrix around=Identity();
@@ -617,7 +623,9 @@ const ContactSample &ContactOnMesh(studiohdr_t *header,const std::array<Matrix,M
  }
  return contactSamples.insert(std::make_pair(header,sample)).first->second;
 }
-void PosePlacement(CStudioModelRenderer &r,studiohdr_t *header,const std::array<Matrix,MAXSTUDIOBONES> &base,
+ void PlacementDiagnostics(CStudioModelRenderer &r,studiohdr_t *header,const std::array<Matrix,MAXSTUDIOBONES> &base,
+                           bool charm,Placement &p);
+ void PosePlacement(CStudioModelRenderer &r,studiohdr_t *header,const std::array<Matrix,MAXSTUDIOBONES> &base,
                    int body,bool charm,bool left,Placement &p,bool localReady=false,bool diagnostics=true)
 {
  p.frame=p.anchorFrame;
@@ -632,12 +640,16 @@ void PosePlacement(CStudioModelRenderer &r,studiohdr_t *header,const std::array<
  // Fixed contact offset in model units; animation never changes the mount.
  p.offset=.01f;
  for(int i=0;i<3;++i)p.frame.origin[i]+=p.frame.normal[i]*p.offset;
- p.minDepth=1e20f;p.boxMinDepth=1e20f;
- for(int i=0;i<3;++i){p.bounds.min[i]=1e20f;p.bounds.max[i]=-1e20f;}
  Matrix world=FrameMatrix(p.frame);
  for(int i=0;i<header->numbones;++i)p.posed[i]=Product(world,p.local[i]);
  geo::ReadStudioTriangles(Mesh(header),body,0,reinterpret_cast<const float (*)[3][4]>(p.posed.data()),p.triangles,false,true);
- if(!diagnostics)return;
+  if(diagnostics)PlacementDiagnostics(r,header,base,charm,p);
+ }
+ void PlacementDiagnostics(CStudioModelRenderer &r,studiohdr_t *header,const std::array<Matrix,MAXSTUDIOBONES> &base,
+                           bool charm,Placement &p)
+ {
+  p.minDepth=1e20f;p.boxMinDepth=1e20f;
+  for(int i=0;i<3;++i){p.bounds.min[i]=1e20f;p.bounds.max[i]=-1e20f;}
  for(const auto &triangle:p.triangles)for(const auto &point:triangle.p)
  {
   float d[3];for(int i=0;i<3;++i)d[i]=point[i]-r.m_vRenderOrigin[i];
@@ -681,7 +693,7 @@ Placement EvaluatePlacement(CStudioModelRenderer &r,studiohdr_t *header,const st
   geo::SwingConfig cfg;cfg.amplitude=1;cfg.maxAngle=frameConfig.amplitude;cfg.length=frameConfig.length*2.5f;cfg.stiffness=frameConfig.stiffness;cfg.damping=frameConfig.damping;
   p.swingState=swing;p.angles=geo::UpdateSwing(p.swingState,cfg,input);
  }
- PosePlacement(r,header,base,body,charm,left,p);
+  PosePlacement(r,header,base,body,charm,left,p,false,!charm);
  return p;
 }
 
@@ -744,10 +756,11 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
   motion.safeLocal=neutral.local;motion.safeAngles=neutral.angles;motion.charmSafe=true;
  }
  desired.angles.pitch+=motion.bias.pitch;desired.angles.yaw+=motion.bias.yaw;desired.foot=motion.foot;
- PosePlacement(r,header,base,body,true,left,desired);
+ PosePlacement(r,header,base,body,true,left,desired,false,false);
  const bool desiredFree=free(desired);
+ bool desiredUnchanged=true;
  Placement previous=desired;previous.local=motion.safeLocal;previous.angles=motion.safeAngles;
- PosePlacement(r,header,base,body,true,left,previous,true);
+ PosePlacement(r,header,base,body,true,left,previous,true,false);
  bool previousFree=motion.charmSafe&&free(previous);
  if(!previousFree)
  {
@@ -765,12 +778,16 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
    if(!found)found=seekRest(previous);
   if(!found){CharmFailure();return desired;}
   desired.foot=motion.foot;
-  PosePlacement(r,header,base,body,true,left,desired);
+  PosePlacement(r,header,base,body,true,left,desired,false,false);
+  desiredUnchanged=false;
   previousFree=true;
  }
  std::vector<geo::Triangle> from=previous.triangles,to=desired.triangles;
  LocalTriangles(from,charmGun.frame);LocalTriangles(to,charmGun.frame);
  geo::SwingPathOptions options;options.gap=kCharmCollisionGap;options.interpolationGuard=.00005f;
+ // An unresolved interval keeps its last certified pose. Bound work during
+ // firing without skipping triangles or accepting an unchecked swing segment.
+ options.maximumQueries=16;
  const auto path=geo::CertifySwingPath(from,to,CharmGroups(from,header),
    [&](const std::vector<geo::Triangle>& triangles,float gap){return CharmFree(triangles,gap,true);},options);
  charmStats.segments+=path.certifiedSegments;
@@ -782,7 +799,7 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
    accepted.local[i].m[a][b]=previous.local[i].m[a][b]+(desired.local[i].m[a][b]-previous.local[i].m[a][b])*f;
   accepted.angles.pitch=previous.angles.pitch+(desired.angles.pitch-previous.angles.pitch)*f;
   accepted.angles.yaw=previous.angles.yaw+(desired.angles.yaw-previous.angles.yaw)*f;
-  PosePlacement(r,header,base,body,true,left,accepted,true);
+  PosePlacement(r,header,base,body,true,left,accepted,true,false);
   desired=std::move(accepted);
   for(int i=0;i<2;++i)
   {
@@ -794,7 +811,8 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
  // Rendering reposes the accepted matrices in float. Certify those resulting
  // triangles as well; retain the already checked previous pose on rounding
  // contact instead of publishing a pose that only passed interpolation math.
- if(!free(desired))
+ // A full, unchanged desired pose already passed this identical query above.
+ if((path.fraction<1||!desiredFree||!desiredUnchanged)&&!free(desired))
  {
   desired=std::move(previous);++charmStats.limited;
   for(int i=0;i<2;++i)
@@ -845,7 +863,7 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
  {
   OC2ColdTimer solve("view_charm_solve",r.m_pRenderModel?r.m_pRenderModel->name:nullptr);
   selected=ConstrainCharm(r,header,base,body,left,std::move(selected));
-   PosePlacement(r,header,base,body,true,left,selected,true);
+   PlacementDiagnostics(r,header,base,true,selected);
   if(charmVerify&&charmVerify->value!=0)
   {
    ++charmStats.checks;

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <vector>
 
 namespace match_ui
 {
@@ -176,7 +177,31 @@ int Texture(const char *path)
 	if (cached != s_textures.end()) return cached->second;
 	if (s_textures.size() >= 256) return 0;
 	OC2ColdTimer cold("hud_texture",path);
-	const int texture = gRenderAPI.GL_LoadTexture(path, nullptr, 0, TF_NOMIPMAP | TF_CLAMP);
+	int texture = 0;
+	// The shared bomb/hostage-kit artwork is blue. Weapon-list icons use a
+	// white alpha mask so the panel's normal weapon tint is applied exactly.
+	// Build the mask once, retaining the authored alpha and TGA orientation.
+	if (!std::strcmp(path,"gfx/weaponlist/defuser.tga") && gEngfuncs.COM_LoadFile && gEngfuncs.COM_FreeFile)
+	{
+		int bytes = 0;
+		auto *data = gEngfuncs.COM_LoadFile(const_cast<char *>(path),5,&bytes);
+		if (data)
+		{
+			if (bytes >= 18 && bytes <= 16*1024*1024 && data[1] == 0 && data[2] == 2 && data[16] == 32)
+			{
+				const unsigned width = data[12] | data[13]<<8, height = data[14] | data[15]<<8;
+				const std::size_t start = 18u+data[0], pixels = std::size_t(width)*height;
+				if (width && height && width <= 2048 && height <= 2048 && start+pixels*4 <= std::size_t(bytes))
+				{
+					std::vector<unsigned char> mask(data,data+bytes);
+					for (std::size_t i=0;i<pixels;++i) mask[start+i*4]=mask[start+i*4+1]=mask[start+i*4+2]=255;
+					texture = gRenderAPI.GL_LoadTexture("#oc2_weaponlist_defuser_neutral.tga",mask.data(),bytes,TF_NOMIPMAP|TF_CLAMP);
+				}
+			}
+			gEngfuncs.COM_FreeFile(data);
+		}
+	}
+	if (!texture) texture = gRenderAPI.GL_LoadTexture(path, nullptr, 0, TF_NOMIPMAP | TF_CLAMP);
 	s_textures[path] = texture;
 	return texture;
 }

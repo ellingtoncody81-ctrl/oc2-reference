@@ -1,5 +1,6 @@
 #include "precompiled.h"
 #include "oc2_smoke.h"
+#include "oc2_bot_tactics.h"
 #include "oc2_economy.h"
 #include "oc2_inferno.h"
 
@@ -63,6 +64,7 @@ void CGrenade::__API_HOOK(Explode)(TraceResult *pTrace, int bitsDamageType)
 	// can't traceline attack owner if this is set
 	pev->owner = nullptr;
 
+	OC2_BotUtilityEffect(this,pev->origin);
 	RadiusFlash(pev->origin, pev, pevOwner, 3.0f, CLASS_NONE, bitsDamageType);
 
 	if (RANDOM_FLOAT(0, 1) < 0.5f)
@@ -301,6 +303,7 @@ void CGrenade::__API_HOOK(Explode3)(TraceResult *pTrace, int bitsDamageType)
 
 	pev->owner = nullptr;
 	OC2_SmokeBlast(pev->origin, pev->dmg);
+	OC2_BotUtilityEffect(this,pev->origin);
 	::RadiusDamage(pev->origin, pev, pevOwner, pev->dmg, 350.0f, CLASS_NONE, bitsDamageType);
 
 	if (RANDOM_FLOAT(0, 1) < 0.5f)
@@ -617,14 +620,15 @@ void CGrenade::__API_HOOK(SG_Detonate)()
 
 	m_bDetonated = true;
 	m_vSmokeDetonate = pev->origin;
+	OC2_BotUtilityEffect(this,pev->origin);
 	if (OC2_SmokeCreate(this))
 	{
-		OC2_InfernoSmokeDetonate(m_vSmokeDetonate,true);
+		OC2_InfernoSmokeDetonate(m_vSmokeDetonate,true,m_iTeam);
 		pev->nextthink = gpGlobals->time+0.1f;
 		SetThink(&CGrenade::SG_Smoke);
 		return;
 	}
-	OC2_InfernoSmokeDetonate(m_vSmokeDetonate,false);
+	OC2_InfernoSmokeDetonate(m_vSmokeDetonate,false,m_iTeam);
 	EMIT_SOUND(ENT(pev), CHAN_WEAPON, "weapons/sg_explode.wav", VOL_NORM, ATTN_NORM);
 
 	int flags = 0;
@@ -697,6 +701,7 @@ void CGrenade::DangerSoundThink()
 
 void CGrenade::BounceTouch(CBaseEntity *pOther)
 {
+	if(pOther&&pOther->IsBSPModel())OC2_BotUtilityBounce(this,UTIL_GetGlobalTrace().vecPlaneNormal);
 	if (OC2_InfernoSmokeTouch(this)) { SG_Detonate(); return; }
 	// don't hit the guy that launched this grenade
 	if (pOther->edict() == pev->owner)
@@ -1369,6 +1374,8 @@ CGrenade *CGrenade::__API_HOOK(ShootSmokeGrenade)(entvars_t *pevOwner, VectorRef
 	}
 	pGrenade->m_usEvent = usEvent;
 	pGrenade->m_bLightSmoke = false;
+	CBaseEntity *smokeOwner = pevOwner ? CBaseEntity::Instance(pevOwner) : nullptr;
+	pGrenade->m_iTeam = smokeOwner && smokeOwner->IsPlayer() ? static_cast<CBasePlayer *>(smokeOwner)->m_iTeam : 0;
 	pGrenade->m_bDetonated = false;
 	pGrenade->SetTouch(&CGrenade::BounceTouch);
 	pGrenade->pev->dmgtime = gpGlobals->time + time;
