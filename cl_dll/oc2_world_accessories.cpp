@@ -5,6 +5,9 @@
 #include "studio_util.h"
 #include "skin_inventory_client.h"
 #include "accessory_geometry.h"
+#include "world_accessory_mount.h"
+#include "../common/oc2_world_mount_fits.h"
+#include "../common/oc2_elite_world_regions.h"
 #include "oc2_cold_perf.h"
 #include "../common/oc2_accessories.h"
 #include <array>
@@ -19,11 +22,13 @@ namespace
 namespace geo=oc2_accessory;
 cvar_t *worldAccessoriesEnabled=nullptr;
 struct Matrix {float m[3][4]{};};
-struct Model {const studiohdr_t *header=nullptr;geo::MountCache mounts;bool attempted=false;};
-struct Placement {float u=-1,v=-1;geo::Mount mount;};
+struct Model {const studiohdr_t *header=nullptr;geo::MountCache mounts;std::vector<geo::Triangle> triangles;bool attempted=false;int weapon=0;char kind=0;};
+struct SourceModel {model_t *model=nullptr;const studiohdr_t *header=nullptr;geo::MountCache mounts;};
+struct Placement {float u=-1,v=-1;geo::Mount mount;const studiohdr_t *source=nullptr;bool mapped=false;};
 std::map<model_t *,Model> models;
+std::map<int,SourceModel> sources;
 std::map<std::pair<int,model_t *>,std::array<Placement,2>> placements;
-struct Record {int player=0,count=0,drawn=0,pattern=0;float time=0;std::string model;};
+struct Record {int player=0,count=0,drawn=0,pattern=0;float time=0;std::string model;int mapped=0;float mapDistance=0;};
 std::map<int,Record> records;
 std::map<const studiohdr_t *,std::vector<Matrix>> binds;
 Matrix Product(const Matrix &a,const Matrix &b)
@@ -45,10 +50,10 @@ const std::vector<Matrix> &Bind(const studiohdr_t *h)
 }
 void Dump()
 {
- for(const auto &row:records){const auto &r=row.second;gEngfuncs.Con_Printf("oc2_world_accessories: serial=%d player=%d count=%d drawn=%d pattern=%d time=%.4f model=%s\n",row.first,r.player,r.count,r.drawn,r.pattern,r.time,r.model.c_str());}
+ for(const auto &row:records){const auto &r=row.second;gEngfuncs.Con_Printf("oc2_world_accessories: serial=%d player=%d count=%d drawn=%d pattern=%d time=%.4f model=%s mapped=%d map_distance=%.4f\n",row.first,r.player,r.count,r.drawn,r.pattern,r.time,r.model.c_str(),r.mapped,r.mapDistance);}
 }
 }
-void OC2_WorldAccessoriesReset(){models.clear();placements.clear();records.clear();binds.clear();}
+void OC2_WorldAccessoriesReset(){models.clear();sources.clear();placements.clear();records.clear();binds.clear();}
 void OC2_WorldAccessoriesInit(){gEngfuncs.pfnAddCommand("oc2_world_accessories_dump",Dump);worldAccessoriesEnabled=gEngfuncs.pfnRegisterVariable("cl_oc2_world_accessories","1",0);}
 void OC2_PrecacheWorldAccessoryMounts(model_s *model)
 {
@@ -72,6 +77,26 @@ void OC2_PrecacheWorldAccessoryMounts(model_s *model)
   const auto *b=reinterpret_cast<const mstudiobone_t *>(reinterpret_cast<const byte *>(side)+side->boneindex);
   for(int i=0;i<header->numbones;++i)if(a[i].parent!=b[i].parent||strncmp(a[i].name,b[i].name,sizeof(a[i].name)))return;
   {OC2ColdTimer build("world_mount_build",model->name);geo::BuildMountCache(header,entry.mounts,side);}
+  if(entry.mounts.valid)geo::ReadStudioTriangles(entry.mounts.studio,0,0,
+   reinterpret_cast<const float (*)[3][4]>(entry.mounts.bind.data()),entry.triangles);
+  const char *file=name+1;
+  for(const auto& fit:oc2_world_mount::kFits)
+  {
+   const char *viewFile=strrchr(fit.view,'/');
+   if(!viewFile||file[0]!=fit.kind||strcmp(file+2,viewFile+3))continue;
+   entry.weapon=fit.weapon;entry.kind=fit.kind;
+   auto *viewModel=IEngineStudio.Mod_ForName(fit.view,false);
+   const auto *viewHeader=viewModel?static_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(viewModel)):nullptr;
+   auto& source=sources[fit.weapon];
+   if(viewHeader&&source.header!=viewHeader){source=SourceModel();source.model=viewModel;source.header=viewHeader;geo::BuildMountCache(viewHeader,source.mounts);}
+   break;
+  }
+ }
+ if(entry.weapon)
+ {
+  auto& source=sources[entry.weapon];
+  const auto *current=source.model?static_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(source.model)):nullptr;
+  if(current&&current!=source.header){source.header=current;geo::BuildMountCache(current,source.mounts);}
  }
 }
 void OC2_DrawWorldAccessories(CStudioModelRenderer &r,model_s *model,int player,int serial,alight_s &lighting,float *lightdir)
@@ -93,13 +118,30 @@ void OC2_DrawWorldAccessories(CStudioModelRenderer &r,model_s *model,int player,
  const int faceFlags=IEngineStudio.GetForceFaceFlags();
  std::array<Matrix,MAXSTUDIOBONES> bones,lights;
  for(int i=0;i<MAXSTUDIOBONES;++i){memcpy(bones[i].m,(*r.m_pbonetransform)[i],sizeof(bones[i].m));memcpy(lights[i].m,(*r.m_plighttransform)[i],sizeof(lights[i].m));}
- int drawn=0;
+ int drawn=0,mapped=0;float mapDistance=0;
  for(int kind=0;kind<2;++kind)
  {
   if(!(kind?cfg.charm:cfg.stattrak))continue;
   const float u=kind?cfg.charmU:cfg.statU,v=kind?cfg.charmV:cfg.statV;auto &p=mounts[kind];
-  if(p.u!=u||p.v!=v){OC2ColdTimer find("world_mount_find",model->name);p.u=u;p.v=v;if(!geo::FindMount(entry.mounts,u,v,p.mount)){p.mount.bone=-1;}}
+  const auto source=sources.find(cfg.weapon);
+  const auto *sourceHeader=source!=sources.end()?source->second.header:nullptr;
+  if(p.u!=u||p.v!=v||p.source!=sourceHeader)
+  {
+   OC2ColdTimer find("world_mount_find",model->name);p.u=u;p.v=v;p.source=sourceHeader;p.mapped=false;
+   const auto *fit=oc2_world_mount::FindFit(cfg.weapon,entry.kind,cfg.weapon==10&&u>=.5f?1:0);
+   geo::Mount viewMount;float distance=0;
+   const int region=cfg.weapon==10&&u>=.5f?1:0;
+   if(fit&&source!=sources.end()&&geo::FindMount(source->second.mounts,u,v,viewMount))
+    p.mapped=oc2_world_mount::Map(source->second.mounts,viewMount,entry.mounts,entry.triangles,fit->matrix,p.mount,distance,
+     cfg.weapon==10&&entry.kind=='p'?(region?18:17):-1,
+     cfg.weapon==10&&entry.kind=='w'?oc2_world_mount::kEliteWorldRegions:nullptr,
+     sizeof(oc2_world_mount::kEliteWorldRegions),region);
+   // An unregistered replacement model retains the old best-effort path.
+   // A known model never silently switches coordinate systems on fit failure.
+   if(!p.mapped){p.mount.bone=-1;if(!fit)geo::FindMount(entry.mounts,u,v,p.mount);}
+  }
   if(p.mount.bone<0||p.mount.bone>=savedHeader->numbones)continue;
+  if(p.mapped){++mapped;mapDistance=std::max(mapDistance,p.mount.snapDistance);}
   const char *path=kind?(cfg.weapon==20?"models/attachments/oc2_sticker_charm_m249.mdl":"models/attachments/oc2_sticker_charm.mdl"):"models/attachments/oc2_stattrak.mdl";
   auto *addon=IEngineStudio.Mod_ForName(path,false);auto *h=addon?static_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(addon)):nullptr;
   if(!h||h->numbones<1||h->numbones>MAXSTUDIOBONES)continue;
@@ -119,5 +161,6 @@ void OC2_DrawWorldAccessories(CStudioModelRenderer &r,model_s *model,int player,
  for(int i=0;i<MAXSTUDIOBONES;++i){memcpy((*r.m_pbonetransform)[i],bones[i].m,sizeof(bones[i].m));memcpy((*r.m_plighttransform)[i],lights[i].m,sizeof(lights[i].m));}
  IEngineStudio.StudioSetHeader(savedHeader);IEngineStudio.SetRenderModel(savedModel);IEngineStudio.SetForceFaceFlags(faceFlags);IEngineStudio.StudioSetupLighting(&lighting);
  auto &record=records[instance];record={player,int(count),drawn,pattern,float(gEngfuncs.GetClientTime()),model->name};
+ record.mapped=mapped;record.mapDistance=mapDistance;
  if(records.size()>512)records.erase(records.begin());
 }
