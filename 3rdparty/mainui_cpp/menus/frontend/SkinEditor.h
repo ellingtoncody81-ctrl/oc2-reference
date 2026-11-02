@@ -122,7 +122,9 @@ public:
             char description[128];
             if(pattern&&m_tab!=5)std::snprintf(description,sizeof(description),u8"本地图案 · 用于贴纸槽 %c",'A'+m_tab-1);
             else std::snprintf(description,sizeof(description),pattern?u8"本地图案 · 用于当前挂件":u8"本地武器涂装 · 双方阵营共用");
-            Text(right,522,rw,30,description,13,Muted());
+            // Use the same clear font as the caption for the charm description.
+            Text(right,522,rw,34,description,pattern&&m_tab==5?20:13,
+                pattern&&m_tab==5?Ink():Muted());
         }
         else if(selection==-1)
         {
