@@ -203,6 +203,11 @@ public:
 	{
 		return builder.Create();
 	}
+	void PrecacheMatch() override
+	{
+		extern void UI_OC2BuyMenu_Precache();
+		UI_OC2BuyMenu_Precache();
+	}
 
 	void GetCharABCWide( HFont font, int ch, int &a, int &b, int &c ) override
 	{

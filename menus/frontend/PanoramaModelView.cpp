@@ -1,6 +1,7 @@
 #include "BaseMenu.h"
 #include "PanoramaModelView.h"
 #include "../client/BuyModelPreview.h"
+#include "cl_dll/IOc2BuyMenu.h"
 #include "../../../../common/oc2_glove_inventory.h"
 // GoldSrc's anonymous bone typedefs predate the menu SDK's tagged forward
 // declarations. Keep their names local while sharing their on-disk layout.
@@ -22,6 +23,8 @@
 #include <map>
 #include <memory>
 #include <vector>
+
+extern IOc2BuyMenu *g_pOc2BuyMenu;
 
 namespace
 {
@@ -163,6 +166,14 @@ int StickerTexture(int id)
     if(id<0)return Texture(oc2_inventory::kTransparentPath,true);
     const auto *entry=oc2_inventory::FindEntry(resources.skins,id);
     return entry&&entry->kind==oc2_inventory::Kind::Sticker?Texture(entry->file,true):0;
+}
+int EquippedTexture(const std::string &path)
+{
+    // During a match the client owns an asynchronous, budgeted texture cache.
+    // A cold buy preview may use the original material until the image is ready.
+    // Borrow its handle only for this draw; the front end must never free it.
+    if(EngFuncs::ClientInGame()&&g_pOc2BuyMenu)return g_pOc2BuyMenu->PreviewTexture(path.c_str());
+    return Texture(path);
 }
 bool MaterialMatches(const std::string &list,const char *name)
 {
@@ -872,14 +883,14 @@ OC2_PreviewAppearance::OC2_PreviewAppearance(cl_entity_t &weapon,cl_entity_t *gl
     if(const auto *equipped=oc2_inventory::Find(resources.loadout,weaponId))
         if(const auto *skin=oc2_inventory::FindEntry(resources.skins,equipped->skin))
             if(skin->kind==oc2_inventory::Kind::GunSkin&&skin->weapon==weaponId)
-                state.weapon.ReplaceBody(weapon.curstate.body,Texture(skin->file));
+                state.weapon.ReplaceBody(weapon.curstate.body,EquippedTexture(skin->file));
     if(glove)
     {
         state.glove.Use(static_cast<studiohdr_t *>(api->StudioHeader(glove)));
         if(const auto *entry=oc2_gloves::FindEntry(resources.gloves,resources.gloveLoadout.resource))
         {
-            state.glove.Replace(entry->leftMaterial,Texture(entry->leftTexture));
-            state.glove.Replace(entry->rightMaterial,Texture(entry->rightTexture));
+            state.glove.Replace(entry->leftMaterial,EquippedTexture(entry->leftTexture));
+            state.glove.Replace(entry->rightMaterial,EquippedTexture(entry->rightTexture));
         }
     }
 }
