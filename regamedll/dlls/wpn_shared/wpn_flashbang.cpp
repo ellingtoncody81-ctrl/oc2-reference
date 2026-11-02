@@ -173,5 +173,6 @@ LINK_HOOK_CLASS_CHAIN3(BOOL, CBasePlayerWeapon, CFlashbang, CanDeploy)
 
 BOOL EXT_FUNC CFlashbang::__API_HOOK(CanDeploy)()
 {
-	return m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] != 0;
+	return m_pPlayer && m_iPrimaryAmmoType >= 0 && m_iPrimaryAmmoType < MAX_AMMO_SLOTS
+		&& m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] > 0;
 }
