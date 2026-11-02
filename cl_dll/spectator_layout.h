@@ -22,7 +22,7 @@ struct Rect { float x, y, w, h; };
 struct Layout
 {
     float scale, width, height, margin, bottom, rowWidth, rowHeight, rowGap;
-    Rect top, team[2], score[2], clock, alive, focus, health, ammo, radar;
+    Rect top, team[2], score[2], clock, alive, focus, health, ammo, radar, controls;
     float RowX(int side) const { return side ? width - margin - rowWidth : margin; }
     float RowTop(int shown, bool overflow = false) const
     {
@@ -60,9 +60,12 @@ inline Layout Make(int width, int height, float minimumScoreWidth = 0)
     const float available=width-2*(l.margin+l.rowWidth+20*s);
     if(available<focusedWidth)focusedWidth=available;
     const float focusedX=(width-focusedWidth)*.5f,wing=focusedWidth*16/67;
-    l.focus = {focusedX+wing, height-l.bottom-90*s, focusedWidth-2*wing, 90*s};
-    l.health = {focusedX, height-l.bottom-45*s, wing-15*s, 45*s};
+    // Raise the entire center card slightly to reserve a separate control row.
+    const float focusedBottom = l.bottom+18*s;
+    l.focus = {focusedX+wing, height-focusedBottom-90*s, focusedWidth-2*wing, 90*s};
+    l.health = {focusedX, height-focusedBottom-45*s, wing-15*s, 45*s};
     l.ammo = {l.focus.x+l.focus.w+15*s, l.health.y, wing-15*s, 45*s};
+    l.controls = {focusedX, height-27*s, focusedWidth, 24*s};
     // Preserve GoldSrc's verified tile projection. Only its observer viewport
     // changes; the player's circular radar and Tab layout remain independent.
     l.radar = {l.margin, 82*s, 435*s, 435*s};

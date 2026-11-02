@@ -29,6 +29,7 @@
 #include "match_ui.h"
 #include "weapon_hud_layout.h"
 #include "hud_readability.h"
+#include "spectator_layout.h"
 #include "oc2_ragdoll.h"
 #include "death_notice_extra.h"
 #include "hud/unicode_labels.h"
@@ -180,6 +181,13 @@ void DeathIconDump()
 	}
 }
 
+struct NoticeDrawInfo
+{
+	bool drawn, observer;
+	float x, y, width, height, textHeight, iconHeight;
+};
+NoticeDrawInfo s_noticeDraw[MAX_DEATHNOTICES] = {};
+
 void DeathNoticeDump()
 {
 	for (int i=0;i<MAX_DEATHNOTICES && rgDeathNoticeList[i].iId;++i)
@@ -189,21 +197,27 @@ void DeathNoticeDump()
 			i,item.killerIndex,item.victimIndex,int(item.localKiller),int(item.localVictim),item.assisterIndex,int(item.localAssister),
 			int(item.localKiller || item.localVictim || item.localAssister),item.weaponResource,item.iId,item.flDisplayTime,item.szAssister);
 	}
+	for (int i=0;i<MAX_DEATHNOTICES;++i)
+	{
+		const auto &draw=s_noticeDraw[i];
+		if (draw.drawn) gEngfuncs.Con_Printf("deathnotice_layout: row=%d observer=%d rect=%.2f,%.2f,%.2f,%.2f text=%.2f icon=%.2f viewport=%d,%d\n",
+			i,int(draw.observer),draw.x,draw.y,draw.width,draw.height,draw.textHeight,draw.iconHeight,ScreenWidth,ScreenHeight);
+	}
 }
 
 std::string SpectatorNoticeName(const char *name);
 float NoticeNameWidth(const char *text, float height)
 {
-	return g_pMenu && hud_unicode::LabelFont(height)>0 ? hud_unicode::FixedLabelWidth(text,height) : match_ui::TextWidth(text,height);
+	return g_pMenu && hud_unicode::LabelFont(height,700)>0 ? hud_unicode::FixedLabelWidth(text,height,700) : match_ui::TextWidth(text,height);
 }
 void NoticeName(const char *text, float x, float y, float height, match_ui::Color color, float width)
 {
 	if (width <= 0) return;
-	if (g_pMenu && hud_unicode::LabelFont(height)>0) hud_unicode::FixedLabel(text,x,y,height,color,false,width);
+	if (g_pMenu && hud_unicode::LabelFont(height,700)>0) hud_unicode::FixedLabel(text,x,y,height,color,false,width,700);
 	else match_ui::Text(text,x,y,height,color,false,width);
 }
 
-void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int headshot, float time)
+void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int headshot, float time, bool observer = false)
 {
 	// Fit the visible contour, not the common 89x32 canvas. In particular,
 	// the bottle/canister artwork occupies only its rightmost 11-20 pixels.
@@ -225,15 +239,28 @@ void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int heads
 	const float assisterW = hasAssister ? min(maxName,NoticeNameWidth(assister.c_str(),textH)) : 0.0f;
 	const float width = fixed+killerW+victimW+assisterW;
 	const float x = ScreenWidth-32.0f*scale-width;
-	const float y = std::floor(ScreenHeight/480.0f*32.0f+0.5f)+50.0f*scale+row*(70.0f/1.5f)*scale;
+	float top = std::floor(ScreenHeight/480.0f*32.0f+0.5f)+50.0f*scale;
+	if (observer)
+	{
+		const auto layout = spectator_layout::Make(ScreenWidth,ScreenHeight);
+		top = max(ScreenHeight*0.08f,layout.top.y+layout.top.h+12.0f*layout.scale);
+	}
+	const float y = top+row*(70.0f/1.5f)*scale;
 	// The queue remains bounded at 15; tiny viewports draw only complete rows.
-	if (y < 0 || y+weaponH+8.0f*scale > ScreenHeight-20.0f*scale) return;
+	if (x < 0 || y < 0 || y+weaponH+8.0f*scale > ScreenHeight-20.0f*scale) return;
+	s_noticeDraw[row] = {true,observer,x,y,width,weaponH+8.0f*scale,textH,weaponH};
 	// CSGO starts fade after the lifetime and deletes one second later
 	// (csgo_huddeathnotice.cpp:182-188,555-559). Legacy drawing keeps its
 	// original expiry; modern pictures, text and background share this opacity.
 	const int alpha = (int)(255.0f*kill_feedback::NoticeOpacity(time,item.flDisplayTime));
-	NoticeBackground(x,y,width,weaponH+8.0f*scale,item,alpha);
-	match_ui::Color killerColor = NoticeNameColor(item.killerTeam), victimColor = NoticeNameColor(item.victimTeam);
+	if (observer)
+	{
+		FillRGBABlend(int(x),int(y),int(width),int(weaponH+8.0f*scale),0,0,0,180*alpha/255);
+		NoticeBorder(x,y,width,weaponH+8.0f*scale,item,alpha);
+	}
+	else NoticeBackground(x,y,width,weaponH+8.0f*scale,item,alpha);
+	const auto nameColor = observer ? TeamColor : NoticeNameColor;
+	match_ui::Color killerColor = nameColor(item.killerTeam), victimColor = nameColor(item.victimTeam);
 	killerColor.a = victimColor.a = alpha;
 	const match_ui::Color iconColor(255,255,255,alpha);
 	float cursor = x+padding;
@@ -245,7 +272,7 @@ void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int heads
 		{
 			NoticeName(" + ",cursor,y+(weaponH-textH)*0.5f+4.0f*scale,textH,iconColor,plusW);
 			cursor += plusW;
-			auto assisterColor=NoticeNameColor(item.assisterTeam);assisterColor.a=alpha;
+			auto assisterColor=nameColor(item.assisterTeam);assisterColor.a=alpha;
 			NoticeName(assister.c_str(),cursor,y+(weaponH-textH)*0.5f+4.0f*scale,textH,assisterColor,maxName);
 			cursor += assisterW;
 		}
@@ -268,7 +295,7 @@ void DrawModernNotice(const DeathNoticeItem& item, int row, int skull, int heads
 	{
 		cursor += padding;
 		if (!match_ui::Silhouette("gfx/vgui/death/headshot.tga",cursor,y+4.0f*scale,iconW,weaponH,iconColor)
-			&& headshot >= 0) match_ui::Sprite(headshot,cursor,y+4.0f*scale,iconW,weaponH,iconColor);
+			&& headshot >= 0 && headshot < gHUD.SpriteCount()) match_ui::Sprite(headshot,cursor,y+4.0f*scale,iconW,weaponH,iconColor);
 		cursor += iconW;
 	}
 	if (!item.bNonPlayerKill)
@@ -289,88 +316,6 @@ std::string SpectatorNoticeName(const char *name)
 	return clean;
 }
 
-void DrawSpectatorNotice(const DeathNoticeItem& item, int row, int skull, int headshot, float time)
-{
-	const float scale = match_ui::Scale();
-	const float padding = 6.0f*scale, gap = 5.0f*scale;
-	const float height = 28.0f*scale, textH = 16.0f*scale, iconH = 20.0f*scale;
-	const float margin = 12.0f*scale;
-	const int id = item.iId >= 0 ? item.iId : skull;
-	const float weaponW = NoticeIconWidth(item.weaponResource,id,scale*0.65f);
-	const float headW = item.iHeadShotId ? 20.0f*scale : 0.0f;
-	const bool hasKiller = !item.bSuicide;
-	const bool hasVictim = !item.bNonPlayerKill;
-	const std::string killer = SpectatorNoticeName(item.szKiller);
-	const std::string victim = SpectatorNoticeName(item.szVictim);
-	const std::string assister = SpectatorNoticeName(item.szAssister);
-	const bool hasAssister = hasKiller && !assister.empty();
-	const bool unicode = g_pMenu && hud_unicode::LabelFont(textH) > 0;
-	const float plusW = hasAssister ? (unicode ? hud_unicode::FixedLabelWidth(" + ",textH) : match_ui::TextWidth(" + ",textH)) : 0.0f;
-	const float fixed = 2.0f*padding+weaponW+plusW+(hasKiller ? gap : 0.0f)
-		+(hasVictim ? gap : 0.0f)+(item.iHeadShotId ? gap+headW : 0.0f);
-	const int names = int(hasKiller)+int(hasVictim)+int(hasAssister);
-	const float maxName = names ? max(0.0f,min(200.0f*scale,(ScreenWidth-2.0f*margin-fixed)/names)) : 0.0f;
-	const float killerW = hasKiller ? min(maxName,unicode ? hud_unicode::FixedLabelWidth(killer.c_str(),textH) : match_ui::TextWidth(killer.c_str(),textH)) : 0.0f;
-	const float victimW = hasVictim ? min(maxName,unicode ? hud_unicode::FixedLabelWidth(victim.c_str(),textH) : match_ui::TextWidth(victim.c_str(),textH)) : 0.0f;
-	const float assisterW = hasAssister ? min(maxName,unicode ? hud_unicode::FixedLabelWidth(assister.c_str(),textH) : match_ui::TextWidth(assister.c_str(),textH)) : 0.0f;
-	const float width = fixed+killerW+victimW+assisterW;
-	const float x = ScreenWidth-margin-width;
-	const float y = ScreenHeight*0.08f+row*(height+4.0f*scale);
-	if (x < 0 || y+height > ScreenHeight) return;
-	const int alpha = int(255.0f*kill_feedback::NoticeOpacity(time,item.flDisplayTime));
-	FillRGBABlend(int(x),int(y),int(width),int(height),0,0,0,180*alpha/255);
-	NoticeBorder(x,y,width,height,item,alpha);
-	match_ui::Color killerColor = TeamColor(item.killerTeam), victimColor = TeamColor(item.victimTeam);
-	killerColor.a = victimColor.a = alpha;
-	const match_ui::Color iconColor(255,255,255,alpha);
-	float cursor = x+padding;
-	if (hasKiller && maxName > 0)
-	{
-		if (unicode) hud_unicode::FixedLabel(killer.c_str(),cursor,y+(height-textH)*0.5f,textH,killerColor,false,maxName);
-		else match_ui::Text(killer.c_str(),cursor,y+(height-textH)*0.5f,textH,killerColor,false,maxName);
-		cursor += killerW;
-		if (hasAssister)
-		{
-			if (unicode) hud_unicode::FixedLabel(" + ",cursor,y+(height-textH)*0.5f,textH,iconColor);
-			else match_ui::Text(" + ",cursor,y+(height-textH)*0.5f,textH,iconColor);
-			cursor += plusW;
-			auto assisterColor=TeamColor(item.assisterTeam);assisterColor.a=alpha;
-			if (unicode) hud_unicode::FixedLabel(assister.c_str(),cursor,y+(height-textH)*0.5f,textH,assisterColor,false,maxName);
-			else match_ui::Text(assister.c_str(),cursor,y+(height-textH)*0.5f,textH,assisterColor,false,maxName);
-			cursor += assisterW;
-		}
-		cursor += gap;
-	}
-	if (!match_ui::Silhouette(item.weaponResource,cursor,y+(height-iconH)*0.5f,weaponW,iconH,iconColor,NoticeIconFlips(item.weaponResource)))
-	{
-		if (id >= 0 && id < gHUD.SpriteCount())
-		{
-			const wrect_t &rect = gHUD.GetSpriteRect(id);
-			const float fit = min(weaponW/max(1,rect.right-rect.left),iconH/max(1,rect.bottom-rect.top));
-			const float w = (rect.right-rect.left)*fit, h = (rect.bottom-rect.top)*fit;
-			match_ui::Sprite(id,cursor+(weaponW-w)*0.5f,y+(height-h)*0.5f,w,h,iconColor,false);
-		}
-		else match_ui::Text("X",cursor,y+(height-textH)*0.5f,textH,iconColor);
-	}
-	cursor += weaponW;
-	if (item.iHeadShotId)
-	{
-		cursor += gap;
-		if (!match_ui::Silhouette("gfx/vgui/death/headshot.tga",cursor,y+(height-iconH)*0.5f,headW,iconH,iconColor))
-		{
-			if (headshot >= 0 && headshot < gHUD.SpriteCount())
-				match_ui::Sprite(headshot,cursor,y+(height-iconH)*0.5f,headW,iconH,iconColor);
-			else match_ui::Text("HS",cursor,y+(height-textH)*0.5f,textH,iconColor,false,headW);
-		}
-		cursor += headW;
-	}
-	if (hasVictim && maxName > 0)
-	{
-		cursor += gap;
-		if (unicode) hud_unicode::FixedLabel(victim.c_str(),cursor,y+(height-textH)*0.5f,textH,victimColor,false,maxName);
-		else match_ui::Text(victim.c_str(),cursor,y+(height-textH)*0.5f,textH,victimColor,false,maxName);
-	}
-}
 
 void DrawKillCard(float time)
 {
@@ -529,6 +474,7 @@ int CHudDeathNotice :: VidInit( void )
 
 int CHudDeathNotice :: Draw( float flTime )
 {
+	memset(s_noticeDraw,0,sizeof(s_noticeDraw));
 	int x, y, r, g, b, i;
 	ExpireNotices(flTime);
 	if (g_iUser1)
@@ -538,7 +484,7 @@ int CHudDeathNotice :: Draw( float flTime )
 		const int first = max(0,count-2);
 		if (!(gHUD.m_iHideHUDDisplay & HIDEHUD_ALL))
 			for (int n = first; n < count; ++n)
-				DrawSpectatorNotice(rgDeathNoticeList[n],n-first,m_HUD_d_skull,m_HUD_d_headshot,flTime);
+				DrawModernNotice(rgDeathNoticeList[n],n-first,m_HUD_d_skull,m_HUD_d_headshot,flTime,true);
 		return 1;
 	}
 	const bool modern = match_ui::Enabled();

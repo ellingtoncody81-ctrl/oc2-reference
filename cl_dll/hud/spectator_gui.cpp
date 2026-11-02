@@ -139,14 +139,13 @@ void OC2_PrecacheSpectatorGui()
 	// Called after every HUD VidInit, including scoreboard's font-cache reset.
 	const float s=spectator_layout::Make(ScreenWidth,ScreenHeight).scale;
 	for(float size:{9.f,12.f,12.5f,13.f,14.f,15.f,16.f,17.f,18.f,19.f,20.f,22.5f,24.f,25.f,26.f,30.f})
-		hud_unicode::LabelFont(size*s);
+		hud_unicode::LabelFont(size*s,700);
 	hud_unicode::LabelFont(18*s,700);hud_unicode::LabelFont(19*s,700);
-	hud_unicode::LabelFont(16*match_ui::Scale());
-	hud_unicode::LabelFont(28*hud_readability::Scale(match_ui::Scale()));
+	hud_unicode::LabelFont(28*hud_readability::Scale(match_ui::Scale()),700);
 	hud_unicode::LabelFont(max(16.f,26*s),700);
-	const float digitWidth=hud_unicode::FixedLabelWidth("00",30*s);
+	const float digitWidth=hud_unicode::FixedLabelWidth("00",30*s,700);
 	const auto layout=spectator_layout::Make(ScreenWidth,ScreenHeight,digitWidth+15*s);
-	hud_unicode::LabelFont(30*s*min(1.0f,layout.health.w/(214.254f*s)));
+	hud_unicode::LabelFont(30*s*min(1.0f,layout.health.w/(214.254f*s)),700);
 	for(auto &mask:s_equipmentMasks)PrepareEquipmentMask(mask.path);
 }
 
@@ -160,6 +159,8 @@ static void SpectatorUiDump()
 		s_layout.focus.x,s_layout.focus.y,s_layout.focus.w,s_layout.focus.h,
 		s_layout.health.x,s_layout.health.y,s_layout.health.w,s_layout.health.h,
 		s_layout.ammo.x,s_layout.ammo.y,s_layout.ammo.w,s_layout.ammo.h,s_layout.rowGap);
+	gEngfuncs.Con_Printf("spectator_controls: rect=%.1f,%.1f,%.1f,%.1f text=%.1f weight=700\n",
+		s_layout.controls.x,s_layout.controls.y,s_layout.controls.w,s_layout.controls.h,17*s_layout.scale);
 	const oc2_spec::Round *round = oc2_spec::GetRound();
 	const oc2_spec::Target *target = oc2_spec::GetTarget(g_iUser2);
 	if (round) gEngfuncs.Con_Printf("spectator_round: completed=%d limit=%d alive_ct=%d alive_t=%d\n", round->completedRounds, round->maxRounds, round->aliveCT, round->aliveT);
@@ -203,8 +204,8 @@ static const char *SpectatorModeName(int mode, bool chinese)
 static void SpectatorFixedText(const char *chinese, const char *fallback, float x, float y,
 	float height, match_ui::Color color, bool right = false, float width = 0)
 {
-	if (g_pMenu && hud_unicode::LabelFont(height) > 0)
-		hud_unicode::FixedLabel(chinese, x, y, height, color, right, width);
+	if (g_pMenu && hud_unicode::LabelFont(height,700) > 0)
+		hud_unicode::FixedLabel(chinese, x, y, height, color, right, width,700);
 	else
 		match_ui::Text(fallback, x, y, height, color, right, width);
 }
@@ -226,7 +227,7 @@ static void SpectatorPlayerText(const char *name, float x, float y, float height
 }
 
 static void SpectatorCenteredText(const char *text, float center, float y, float height,
-	match_ui::Color color, float width, int weight = 500)
+	match_ui::Color color, float width, int weight = 700)
 {
 	const bool unicode = g_pMenu && hud_unicode::LabelFont(height,weight) > 0;
 	const float measured = unicode ? hud_unicode::FixedLabelWidth(text,height,weight) : match_ui::TextWidth(text,height);
@@ -238,8 +239,8 @@ static void SpectatorCenteredText(const char *text, float center, float y, float
 static void SpectatorCenteredLabel(const char *chinese, const char *fallback, float center, float y,
 	float height, match_ui::Color color, float width)
 {
-	const bool unicode = g_pMenu && hud_unicode::LabelFont(height) > 0;
-	const float measured = unicode ? hud_unicode::FixedLabelWidth(chinese, height)
+	const bool unicode = g_pMenu && hud_unicode::LabelFont(height,700) > 0;
+	const float measured = unicode ? hud_unicode::FixedLabelWidth(chinese, height,700)
 		: match_ui::TextWidth(fallback, height);
 	SpectatorFixedText(chinese, fallback, center - min(measured, width) * 0.5f, y, height, color, false, width);
 }
@@ -543,8 +544,8 @@ int CHudSpectatorGui::Draw( float flTime )
 	if (ScreenWidth >= 120 && ScreenHeight >= 100 && !gHUD.m_Scoreboard.ShouldDrawScoreboard())
 	{
 		const float baseScale=spectator_layout::Make(ScreenWidth,ScreenHeight).scale;
-		const float digitWidth=g_pMenu && hud_unicode::LabelFont(30*baseScale)>0
-			? hud_unicode::FixedLabelWidth("00",30*baseScale) : match_ui::TextWidth("00",30*baseScale);
+		const float digitWidth=g_pMenu && hud_unicode::LabelFont(30*baseScale,700)>0
+			? hud_unicode::FixedLabelWidth("00",30*baseScale,700) : match_ui::TextWidth("00",30*baseScale);
 		s_layout = spectator_layout::Make(ScreenWidth,ScreenHeight,digitWidth+15*baseScale);
 		s_layoutDrawn = true;
 		const auto &l = s_layout;
@@ -634,7 +635,7 @@ int CHudSpectatorGui::Draw( float flTime )
 				SpectatorPanel({f.x,f.y,15*s,f.h},color,-17.5f*s,15*s,-17.5f*s,15*s);
 				SpectatorPanel({f.x+f.w-15*s,f.y,15*s,f.h},color,17.5f*s,-15*s,17.5f*s,-15*s);
 				SpectatorPanel({f.x+15*s,f.y,f.w-30*s,45*s},teamColor(targetTeam,153),-17.5f*s,-1.25f*s,17.5f*s,1.25f*s);
-				SpectatorPanel({f.x+15*s,f.y+45*s,f.w-30*s,45*s},{0,0,0,128},-1.25f*s,15*s,1.25f*s,-15*s);
+				SpectatorPanel({f.x+15*s,f.y+45*s,f.w-30*s,45*s},{0,0,0,190},-1.25f*s,15*s,1.25f*s,-15*s);
 				SpectatorPlayerText(info.name,f.x+25*s,f.y+9*s,25*s,{255,255,255},false,f.w-55*s);
 				const char *labels[]={"K","A","D","ADR"};
 				const int stats[]={targetRow ? targetRow->kills : -1,targetRow ? targetRow->assists : -1,
@@ -642,9 +643,9 @@ int CHudSpectatorGui::Draw( float flTime )
 				for (int i=0;i<4;++i)
 				{
 					const float x=f.x+40*s+i*50*s;
-					SpectatorFixedText(labels[i],labels[i],x,f.y+46*s,15*s,color,false,46*s);
+					SpectatorCenteredText(labels[i],x+23*s,f.y+46*s,15*s,{230,235,242},46*s);
 					char value[16];if (stats[i]>=0) snprintf(value,sizeof(value),"%d",stats[i]);else snprintf(value,sizeof(value),"--");
-					SpectatorFixedText(value,value,x,f.y+63*s,20*s,{255,255,255},false,46*s);
+					SpectatorCenteredText(value,x+23*s,f.y+63*s,20*s,{255,255,255},46*s);
 				}
 				if (targetRow && targetRow->alive)
 				{
@@ -670,11 +671,11 @@ int CHudSpectatorGui::Draw( float flTime )
 				FillRGBABlend(int(l.health.x+13*hs),int(cy+20*s),int(21*hs),max(1,int(5*hs)),255,255,255,255);
 				FillRGBABlend(int(l.health.x+21*hs),int(cy+12*s),max(1,int(5*hs)),int(21*hs),255,255,255,255);
 				char text[24];if(hp>=0)snprintf(text,sizeof(text),"%d",hp);else snprintf(text,sizeof(text),"--");
-				const float hpWidth=min(62*hs,g_pMenu ? hud_unicode::FixedLabelWidth(text,30*hs) : match_ui::TextWidth(text,30*hs));
+				const float hpWidth=min(62*hs,g_pMenu ? hud_unicode::FixedLabelWidth(text,30*hs,700) : match_ui::TextWidth(text,30*hs));
 				SpectatorFixedText(text,text,l.health.x+43*hs,cy+6*s,30*hs,{255,255,255},false,62*hs);
 				const int armorType=targetData ? targetData->armorType : targetRow ? targetRow->armorType : 0;
 				if(armor>=0)snprintf(text,sizeof(text),"%d",armor);else snprintf(text,sizeof(text),"--");
-				const float armorWidth=min(62*hs,g_pMenu ? hud_unicode::FixedLabelWidth(text,30*hs) : match_ui::TextWidth(text,30*hs));
+				const float armorWidth=min(62*hs,g_pMenu ? hud_unicode::FixedLabelWidth(text,30*hs,700) : match_ui::TextWidth(text,30*hs));
 				const float armorRight=l.health.x+l.health.w-12*hs;
 				const float iconLeft=l.health.x+43*hs+hpWidth+6*hs;
 				const float iconWidth=max(0.0f,armorRight-armorWidth-6*hs-iconLeft);
@@ -842,10 +843,21 @@ int CHudSpectatorGui::Draw( float flTime )
 		}
 	}
 
- const float controlScale=spectator_layout::Make(ScreenWidth,ScreenHeight).scale;
- const char *prompt=OC2_ControlPrompt();
- if(prompt&&*prompt)SpectatorCenteredText(prompt,ScreenWidth*.5f,s_layout.focus.y-31*controlScale,19*controlScale,{255,255,255},540*controlScale,700);
- SpectatorCenteredText(u8"\u5de6\u952e / \u53f3\u952e  \u5207\u6362\u73a9\u5bb6     \u7a7a\u683c / \u6eda\u8f6e  \u5207\u6362\u89c6\u89d2",ScreenWidth*.5f,ScreenHeight-24*controlScale,15*controlScale,{220,225,235},800*controlScale);
+	if (s_layoutDrawn)
+	{
+		const float s=s_layout.scale;
+		const char *prompt=OC2_ControlPrompt();
+		if(prompt&&*prompt)
+		{
+			const float y=s_layout.focus.y-31*s;
+			SpectatorCenteredText(prompt,ScreenWidth*.5f+s,y+s,19*s,{0,0,0,230},540*s,700);
+			SpectatorCenteredText(prompt,ScreenWidth*.5f,y,19*s,{255,255,255},540*s,700);
+		}
+		const auto &controls=s_layout.controls;
+		SpectatorPanel(controls,{0,0,0,175});
+		SpectatorCenteredText(u8"\u5de6\u952e / \u53f3\u952e  \u5207\u6362\u73a9\u5bb6     \u7a7a\u683c / \u6eda\u8f6e  \u5207\u6362\u89c6\u89d2",
+			ScreenWidth*.5f,controls.y,17*s,{245,247,250},controls.w-16*s);
+	}
 	if( m_menuFlags & ROOT_MENU )
 	{
 		// draw the root menu
