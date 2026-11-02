@@ -17,6 +17,14 @@ typedef struct
  unsigned rawBytes,vertices,elements,numChunks,bytes,used;
 } oc2_mesh_cache_t;
 static oc2_mesh_cache_t oc2_mesh_cache[OC2_MESH_CACHE_SLOTS];
+#define OC2_MESH_HINT_SLOTS 512
+// A slot hint is never ownership: key and command bytes are revalidated.
+static unsigned short oc2_mesh_hint[OC2_MESH_HINT_SLOTS];
+static unsigned R_StudioMeshHint(const studiohdr_t *header,const short *commands)
+{
+ uintptr_t h=(uintptr_t)header>>4,p=(uintptr_t)commands>>1;
+ return (unsigned)((h*2654435761u)^(p*2246822519u))&(OC2_MESH_HINT_SLOTS-1);
+}
 static unsigned oc2_mesh_cache_bytes,oc2_mesh_cache_use;
 static unsigned oc2_mesh_cache_hits,oc2_mesh_cache_misses,oc2_mesh_cache_evictions;
 // Merge only identical authored corner tuples. Position/normal/UV seams,
@@ -31,10 +39,12 @@ static void R_StudioFreeMeshCache(oc2_mesh_cache_t *c)
 }
 void R_StudioClearMeshCache(void)
 {
+ memset(oc2_mesh_hint,0,sizeof(oc2_mesh_hint));
  for(int i=0;i<OC2_MESH_CACHE_SLOTS;++i)R_StudioFreeMeshCache(&oc2_mesh_cache[i]);
 }
 static void R_StudioInvalidateMeshCache(const studiohdr_t *header)
 {
+ memset(oc2_mesh_hint,0,sizeof(oc2_mesh_hint));
  for(int i=0;i<OC2_MESH_CACHE_SLOTS;++i)
   if(oc2_mesh_cache[i].header==header)R_StudioFreeMeshCache(&oc2_mesh_cache[i]);
 }
@@ -44,13 +54,25 @@ static oc2_mesh_cache_t *R_StudioGetMeshCache(const short *commands)
  if(commands<(const short *)m_pStudioHeader||commands>=end||!*commands)return NULL;
  unsigned vertices=0,elements=0,chunks=0;const short *cursor=commands,*next=NULL;
  int empty=-1;
+ const unsigned hint=R_StudioMeshHint(m_pStudioHeader,commands);
+ const int hinted=(int)oc2_mesh_hint[hint]-1;
+ if(hinted>=0&&hinted<OC2_MESH_CACHE_SLOTS)
+ {
+  oc2_mesh_cache_t *c=&oc2_mesh_cache[hinted];
+  if(c->raw&&c->header==m_pStudioHeader&&c->commands==commands)
+  {
+   if(c->rawBytes<=(unsigned)((const byte *)end-(const byte *)commands)&&!memcmp(c->raw,commands,c->rawBytes))
+   {c->used=++oc2_mesh_cache_use;++oc2_mesh_cache_hits;return c;}
+   R_StudioFreeMeshCache(c);empty=hinted;
+  }
+ }
  for(int i=0;i<OC2_MESH_CACHE_SLOTS;++i)
  {
   oc2_mesh_cache_t *c=&oc2_mesh_cache[i];
   if(!c->raw){empty=i;continue;}
   if(c->header!=m_pStudioHeader||c->commands!=commands)continue;
   if(c->rawBytes<=(unsigned)((const byte *)end-(const byte *)commands)&&!memcmp(c->raw,commands,c->rawBytes))
-  {c->used=++oc2_mesh_cache_use;++oc2_mesh_cache_hits;return c;}
+  {oc2_mesh_hint[hint]=(unsigned short)(i+1);c->used=++oc2_mesh_cache_use;++oc2_mesh_cache_hits;return c;}
   R_StudioFreeMeshCache(c);empty=i;break;
  }
  ++oc2_mesh_cache_misses;
@@ -114,6 +136,7 @@ static oc2_mesh_cache_t *R_StudioGetMeshCache(const short *commands)
   e+=batch->elements;
  }
  c->vertices=v;
+ oc2_mesh_hint[hint]=(unsigned short)(empty+1);
  if(coldStart){const double ms=(gEngfuncs.pfnTime()-coldStart)*1000;if(ms>8)gEngfuncs.Con_Printf("studio_mesh_build: model=%s vertices=%u ms=%.4f\n",RI.currentmodel->name,v,ms);}
  return c;
 }

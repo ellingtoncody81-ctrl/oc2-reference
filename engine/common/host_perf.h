@@ -36,7 +36,7 @@ static void Host_PerfDump_f( void )
    names[stage],host_perf_count,sum/host_perf_count,sorted[(host_perf_count-1)*95/100],
    sorted[(host_perf_count-1)*99/100],sorted[host_perf_count-1],over16,over33);
  }
- for(unsigned i=0;i<host_perf_count;++i)if(host_perf_samples[i][7]>33.333)
+ for(unsigned i=0;i<host_perf_count;++i)if(host_perf_samples[i][7]>20.0)
  {
   const double *p=host_perf_samples[i];
   Con_Printf("hostperf_slow: sample=%u work_ms=%.4f server_ms=%.4f client_ms=%.4f view_ms=%.4f entities_ms=%.4f hud_ms=%.4f radar_ms=%.4f swap_ms=%.4f sound_ms=%.4f packets_ms=%.4f client_frame_ms=%.4f resources_ms=%.4f\n",i,p[7],p[2],p[3],p[11],p[5],p[9],p[8],p[10],p[12],p[13],p[14],p[15]);
