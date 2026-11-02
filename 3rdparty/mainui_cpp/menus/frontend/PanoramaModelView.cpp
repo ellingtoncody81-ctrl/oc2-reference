@@ -1029,48 +1029,28 @@ bool CMenuPanoramaModelView::UnprojectAccessory(float x,float y,float &u,float &
     {
         if(scene.accessoryRegion>=0&&region!=scene.accessoryRegion)continue;
         const auto &part=cache.regions.empty()?cache:cache.regions[region];
-        const float denom=Dot(ray,part.side.normal);if(std::fabs(denom)<1e-6f)continue;
-        float relative[3];for(int a=0;a<3;++a)relative[a]=part.side.origin[a]-scene.camera[a];
-        const float distance=Dot(relative,part.side.normal)/denom;if(distance<=0)continue;
-        for(int a=0;a<3;++a)relative[a]=scene.camera[a]+ray[a]*distance-part.side.origin[a];
-        const float pu=(Dot(relative,part.side.axisX)-part.minUV[0])/(part.maxUV[0]-part.minUV[0]);
-        const float pv=(Dot(relative,part.side.axisY)-part.minUV[1])/(part.maxUV[1]-part.minUV[1]);
-        // The split view selects a single gun up front. Its actual surface
-        // can be in front of the reference plane, so a ray through an edge
-        // can intersect that plane just outside its rectangle. Use a clamped
-        // seed there; the final screen-space check still rejects empty space.
-        // In the ordinary view keep the existing multi-region rejection.
-        if(scene.accessoryRegion<0&&(pu<0.f||pu>1.f||pv<0.f||pv>1.f))continue;
-        const float cu=std::max(0.f,std::min(1.f,pu)),cv=std::max(0.f,std::min(1.f,pv));
-        float sx,sy,scale;const float regionMin=float(region)/count;
-        const float regionMax=region+1<count?std::nextafter(float(region+1)/count,regionMin):1.f;
-        const float candidateU=std::min(regionMax,(region+cu)/count);
-        if(!ProjectAccessory(0,candidateU,cv,sx,sy,scale))continue;
-        const float score=(sx-x)*(sx-x)+(sy-y)*(sy-y);
-        if(score<best){best=score;u=candidateU;v=cv;found=true;}
+        // Pick the actual 3D gun face under the cursor after orbit/zoom. The
+        // original side plane alone causes large jumps on oblique views.
+        for(const auto& triangle:part.surfaces)
+        {
+            if(Dot(ray,triangle.normal)>=-1e-6f)continue;
+            float e1[3],e2[3],h[3],q[3],delta[3];
+            for(int a=0;a<3;++a){e1[a]=triangle.p[1][a]-triangle.p[0][a];e2[a]=triangle.p[2][a]-triangle.p[0][a];delta[a]=scene.camera[a]-triangle.p[0][a];}
+            Cross(ray,e2,h);const float det=Dot(e1,h);if(std::fabs(det)<1e-9f)continue;
+            const float b=Dot(delta,h)/det;if(b<-.00001f||b>1.00001f)continue;
+            Cross(delta,e1,q);const float c=Dot(ray,q)/det;if(c<-.00001f||b+c>1.00001f)continue;
+            const float distance=Dot(e2,q)/det;if(distance<=0||distance>=best)continue;
+            float relative[3];for(int a=0;a<3;++a)relative[a]=scene.camera[a]+ray[a]*distance-part.side.origin[a];
+            const float pu=(Dot(relative,part.side.axisX)-part.minUV[0])/(part.maxUV[0]-part.minUV[0]);
+            const float pv=(Dot(relative,part.side.axisY)-part.minUV[1])/(part.maxUV[1]-part.minUV[1]);
+            const float minU=float(region)/count,maxU=region+1<count?std::nextafter(float(region+1)/count,minU):1.f;
+            const float cu=std::max(minU,std::min(maxU,(region+std::max(0.f,std::min(1.f,pu)))/count));
+            const float cv=std::max(0.f,std::min(1.f,pv));float sx,sy,scale;
+            if(!ProjectAccessory(0,cu,cv,sx,sy,scale)||(sx-x)*(sx-x)+(sy-y)*(sy-y)>9.f)continue;
+            best=distance;u=cu;v=cv;found=true;
+        }
     }
-    if(found)for(int iteration=0;iteration<3;++iteration)
-    {
-        float px,py,scale,ux,uy,vx,vy;
-        if(!ProjectAccessory(0,u,v,px,py,scale))break;
-        if((px-x)*(px-x)+(py-y)*(py-y)<.04f)break;
-        const float localMax=scene.accessoryRegion>=0?float(scene.accessoryRegion+1)/count:1.f;
-        const float du=u+.001f<localMax?.001f:-.001f,dv=v<.999f?.001f:-.001f;
-        if(!ProjectAccessory(0,u+du,v,ux,uy,scale)||!ProjectAccessory(0,u,v+dv,vx,vy,scale))break;
-        const float a=(ux-px)/du,b=(vx-px)/dv,c=(uy-py)/du,d=(vy-py)/dv,det=a*d-b*c;
-        if(std::fabs(det)<1e-4f)break;
-        const float minU=scene.accessoryRegion>=0?float(scene.accessoryRegion)/count:0.f;
-        const float maxU=scene.accessoryRegion>=0&&scene.accessoryRegion+1<count?
-            std::nextafter(float(scene.accessoryRegion+1)/count,minU):1.f;
-        u=std::max(minU,std::min(maxU,u+((x-px)*d-(y-py)*b)/det));
-        v=std::max(0.f,std::min(1.f,v+((y-py)*a-(x-px)*c)/det));
-    }
-    if(!found)return false;
-    float sx,sy,scale;
-    if(!ProjectAccessory(0,u,v,sx,sy,scale))return false;
-    // FindMount may snap a ray over empty space to a distant surface. Accept
-    // only the actual surface under the pointer; otherwise retain the mount.
-    return (sx-x)*(sx-x)+(sy-y)*(sy-y)<=9.f;
+    return found;
 }
 bool CMenuPanoramaModelView::AttachmentBounds(int kind,float &left,float &top,float &right,float &bottom) const
 {
@@ -1085,6 +1065,10 @@ void CMenuPanoramaModelView::ReloadConfiguration()
     if(m_scene->mode==1)SetWeapon(m_scene->weapon,m_scene->skin);
 }
 void CMenuPanoramaModelView::ResetView(){m_scene->yaw=m_scene->pitch=0;m_scene->zoom=1;m_scene->dragging=false;}
+void CMenuPanoramaModelView::RotateView(float yaw,float pitch)
+{m_scene->yaw=std::fmod(m_scene->yaw+yaw,360.f);m_scene->pitch=std::max(-75.f,std::min(75.f,m_scene->pitch+pitch));}
+void CMenuPanoramaModelView::ZoomView(float factor)
+{if(std::isfinite(factor)&&factor>0)m_scene->zoom=std::max(.6f,std::min(2.4f,m_scene->zoom*factor));}
 void CMenuPanoramaModelView::Dump(const char *tag) const
 {
     Con_Printf("oc2_preview_resources: geometry=%u texture=%u releases=%u\n",unsigned(geometries.size()),unsigned(textures.size()),resourceReleases);

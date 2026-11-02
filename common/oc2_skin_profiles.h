@@ -14,13 +14,13 @@ struct Profile
  oc2_accessories::WeaponConfig accessories;
 };
 struct Config { unsigned revision=1;std::vector<Profile> items; };
-inline Profile DefaultProfile(int weapon,int skin)
+inline Profile DefaultProfile(int weapon,int skin,const oc2_accessories::Config *defaults=nullptr)
 {
  Profile p;const int i=oc2_accessories::Index(weapon);
  if(i>=0)
  {
   p.appearance=oc2_inventory::DefaultConfig().weapons[i];p.appearance.skin=skin;
-  p.accessories=oc2_accessories::DefaultConfig().weapons[i];
+  p.accessories=defaults?defaults->weapons[i]:oc2_accessories::DefaultConfig().weapons[i];
  }
  return p;
 }
@@ -61,10 +61,10 @@ inline void InheritEquipped(Config &c,const oc2_inventory::Config &loadout,const
  }
 }
 inline Profile Resolve(const Config &c,const oc2_inventory::Config &loadout,
-                       const oc2_accessories::Config &accessories,int weapon,int skin)
+                       const oc2_accessories::Config &accessories,int weapon,int skin,const oc2_accessories::Config *defaults=nullptr)
 {
  if(const Profile *p=Find(c,weapon,skin))return *p;
- Profile p=DefaultProfile(weapon,skin);
+ Profile p=DefaultProfile(weapon,skin,defaults);
  const auto *active=oc2_inventory::Find(loadout,weapon);
  if(active&&active->skin==skin)p=EquippedProfile(*active,*oc2_accessories::Find(accessories,weapon));
  return p;

@@ -5,6 +5,7 @@
 #include "../../../../common/oc2_skin_inventory.h"
 #include "../../../../common/oc2_glove_inventory.h"
 #include "../../../../common/oc2_carry_state.h"
+#include "../../../../common/oc2_mount_defaults.h"
 #include "wpn_shared/wpn_molotov.h"
 #include <map>
 
@@ -21,6 +22,30 @@ std::map<int,Appearance> published;
 int messageId=0, nextSerial=1;
 int gloveMessageId=0;
 int carryMessageId=0;
+oc2_accessories::Config accessoryDefaults=oc2_accessories::DefaultConfig();
+std::string accessoryDefaultsText;
+float accessoryDefaultsNext=0;
+void RefreshAccessoryDefaults(bool force=false)
+{
+ if(!force&&gpGlobals->time<accessoryDefaultsNext)return;
+ accessoryDefaultsNext=gpGlobals->time+1;
+ int bytes=0;char *raw=reinterpret_cast<char *>(LOAD_FILE_FOR_ME(oc2_mount_defaults::kPath,&bytes));
+ std::string text;if(raw){if(bytes<=0||bytes>8192){FREE_FILE(raw);return;}text.assign(raw,bytes);FREE_FILE(raw);}
+ if(text==accessoryDefaultsText&&!force)return;
+ oc2_mount_defaults::Config custom;std::string error;
+ if(!text.empty()&&!oc2_mount_defaults::Parse(text,custom,error))return;
+ accessoryDefaultsText=text;accessoryDefaults=oc2_mount_defaults::Apply(custom);
+ // Existing bot-owned instances follow the curated layout. Transferred items
+ // keep their original instance appearance, including personal placements.
+ for(auto &row:issued)
+ {
+  auto *entity=static_cast<CBaseEntity *>(row.second);if(!entity)continue;
+  auto *item=static_cast<CBasePlayerItem *>(entity);auto &a=item->m_oc2Appearance;
+  if(!item->m_pPlayer||!item->m_pPlayer->IsBot()||item->m_bOc2Transferred||!(a.flags&oc2_item::BotOrigin))continue;
+  if(const auto *layout=oc2_accessories::Find(accessoryDefaults,item->m_iId))oc2_mount_defaults::CopyLayout(a.accessory,*layout);
+ }
+ if(CVAR_GET_FLOAT("developer")>0)ALERT(at_console,"oc2_mount_defaults: revision=%u loaded=%d\n",custom.revision,int(!text.empty()));
+}
 struct CarryPublished
 {
  bool valid=false;
@@ -313,8 +338,10 @@ void Dump()
    if(found!=issued.end())if(CBaseEntity *entity=found->second)
    {
     const auto &appearance=static_cast<CBasePlayerItem *>(entity)->m_oc2Appearance;
-    ALERT(at_console,"oc2item_accessory: serial=%d owner=%d stattrak=%d charm=%d pattern=%d count=%u\n",
-     a.serial,a.owner,appearance.accessory.stattrak,appearance.accessory.charm,appearance.charm,appearance.count);
+     const auto &layout=appearance.accessory;
+     ALERT(at_console,"oc2item_accessory: serial=%d owner=%d stattrak=%d charm=%d pattern=%d count=%u stat_uv=%.6f/%.6f charm_uv=%.6f/%.6f length=%.6f transferred=%d\n",
+      a.serial,a.owner,layout.stattrak,layout.charm,appearance.charm,appearance.count,
+      layout.statU,layout.statV,layout.charmU,layout.charmV,layout.length,int(static_cast<CBasePlayerItem *>(entity)->m_bOc2Transferred));
    }
  }
  for(int i=1;i<=gpGlobals->maxClients&&i<=32;++i)
@@ -568,7 +595,7 @@ void OC2_ItemsPrecache()
  for(auto &v:gunSkins)v.clear();
  for(auto &v:players)v=PlayerLoadout();
  for(auto &v:carryPublished)v=CarryPublished();
- gloveCatalog.clear();
+ gloveCatalog.clear();accessoryDefaultsText.clear();accessoryDefaultsNext=0;RefreshAccessoryDefaults(true);
  int gloveSize=0;char *gloveData=reinterpret_cast<char *>(LOAD_FILE_FOR_ME(oc2_gloves::kCatalogPath,&gloveSize));
  if(gloveData)
  {
@@ -623,8 +650,8 @@ void OC2_ItemsAcquire(CBasePlayerItem *item,CBasePlayer *player)
   a.originUserid=GETPLAYERUSERID(player->edict());
   a.flags=player->IsBot()?oc2_item::BotOrigin:0;
   ApplyChoice(item,player);
-  const auto defaults=oc2_accessories::DefaultConfig();
-  if(const auto *config=oc2_accessories::Find(defaults,item->m_iId))
+   RefreshAccessoryDefaults();
+   if(const auto *config=oc2_accessories::Find(accessoryDefaults,item->m_iId))
   {
    a.accessory=*config;a.accessoryReady=true;
    if(player->IsBot())
@@ -648,6 +675,7 @@ void OC2_ItemsFrame()
 {
  OC2_WeaponPhysicsFrame();
  OC2_PickupFrame();
+ RefreshAccessoryDefaults();
  Publish();
  PublishCarry();
  for(int i=1;i<=gpGlobals->maxClients&&i<=32;++i)

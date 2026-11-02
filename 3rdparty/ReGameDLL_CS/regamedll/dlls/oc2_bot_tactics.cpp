@@ -33,6 +33,19 @@ float physicsStep=.01f,physicsTime=-1,physicsSamples[16]{};
 int physicsCount=0,physicsCursor=0;
 int protectedUtility=0,reservedUtility=0,bankThrows=0,arcTraces=0,flashLimited=0,flashSuppressed=0;
 int purchases=0,throws=0,cancels=0,zeusUses=0;
+struct BuyChoice {int userid=0,team=0;bool rolled=false,grenade=false,zeus=false,completed=false;};
+BuyChoice buyChoices[33];
+BuyChoice& UtilityBuyChoice(CCSBot *bot)
+{
+ auto& choice=buyChoices[bot->entindex()];const int userid=GETPLAYERUSERID(bot->edict());
+ if(choice.userid!=userid||choice.team!=bot->m_iTeam){choice={};choice.userid=userid;choice.team=bot->m_iTeam;}
+ if(!choice.rolled)
+ {
+  choice.rolled=true;choice.grenade=RANDOM_LONG(0,99)<20;choice.zeus=RANDOM_LONG(0,99)<20;
+  if(CVAR_GET_FLOAT("developer")>0)ALERT(at_console,"oc2buy_roll: player=%d userid=%d grenade=%d zeus=%d chance=20\n",bot->entindex(),userid,int(choice.grenade),int(choice.zeus));
+ }
+ return choice;
+}
 int decisions=0,noOptions=0,unsafe=0,blockedArc=0,chanceSkipped=0,started=0;
 CBasePlayerWeapon *Find(CCSBot *bot,int id,int slot)
 {
@@ -259,7 +272,7 @@ void OC2_BotTacticsReset()
 {
     if(gpGlobals->time<lastResetTime)for(auto &time:friendlyFlashNext)time=0;
     lastResetTime=gpGlobals->time;
-    for(auto &p:plans)p={};purchases=throws=cancels=zeusUses=0;
+    for(auto &p:plans)p={};for(auto& choice:buyChoices)choice={};purchases=throws=cancels=zeusUses=0;
     for(auto &r:reservations)r={};for(auto &f:flights)f={};plannerFrame=-1;
     plannerLast=0;
     if(CBaseEntity *probe=fireHullProbe)UTIL_Remove(probe);
@@ -410,10 +423,13 @@ bool OC2_BotFriendlyFlash(CBaseEntity *grenade,CBasePlayer *victim,float &fade,f
         gpGlobals->time,victim->entindex(),flight->team,fade,hold,alpha,friendlyFlashNext[flight->team]);
     return true;
 }
-void OC2_BotBuyUtility(CCSBot *bot)
+bool OC2_BotWantsGrenadePurchase(CCSBot *bot)
+{return bot&&bot->entindex()>0&&bot->entindex()<=32&&UtilityBuyChoice(bot).grenade;}
+void OC2_BotBuyUtility(CCSBot *bot,bool buyGrenade)
 {
-    if(!bot || !bot->IsAlive())return;
-    if(TheCSBots()->AllowGrenades())
+    if(!bot || !bot->IsAlive()||bot->entindex()<1||bot->entindex()>32)return;
+    auto& choice=UtilityBuyChoice(bot);if(choice.completed)return;choice.completed=true;
+    if(buyGrenade&&choice.grenade&&TheCSBots()->AllowGrenades())
     {
         const char *aliases[]={"sgren","hegren","flash",bot->m_iTeam==CT?"incendiary":"molotov"};
         const float aggression=bot->GetProfile()->GetAggression(),teamwork=bot->GetProfile()->GetTeamwork();
@@ -431,7 +447,7 @@ void OC2_BotBuyUtility(CCSBot *bot)
             if(OC2_GrenadeCount(bot)>before)++purchases;
         }
     }
-    if(bot->m_bHasPrimary && bot->m_iAccount>=600 && RANDOM_LONG(0,99)<10+int(bot->GetProfile()->GetAggression()*25))
+    if(choice.zeus&&bot->m_bHasPrimary && bot->m_iAccount>=600)
     {
         const int money=bot->m_iAccount;bot->ClientCommand("zeus");
         if(bot->m_iAccount<money)++purchases;
