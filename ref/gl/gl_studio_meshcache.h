@@ -54,6 +54,7 @@ static oc2_mesh_cache_t *R_StudioGetMeshCache(const short *commands)
   R_StudioFreeMeshCache(c);empty=i;break;
  }
  ++oc2_mesh_cache_misses;
+ const double coldStart=r_studio_perf_cold.value!=0?gEngfuncs.pfnTime():0;
  do
  {
   if(R_StudioPlanArrayChunk(cursor,end,&next)!=1||next<cursor)return NULL;
@@ -113,6 +114,7 @@ static oc2_mesh_cache_t *R_StudioGetMeshCache(const short *commands)
   e+=batch->elements;
  }
  c->vertices=v;
+ if(coldStart){const double ms=(gEngfuncs.pfnTime()-coldStart)*1000;if(ms>8)gEngfuncs.Con_Printf("studio_mesh_build: model=%s vertices=%u ms=%.4f\n",RI.currentmodel->name,v,ms);}
  return c;
 }
 static qboolean R_StudioSubmitCached(short *commands,vec3_t *normals,float s,float t,float shellscale)

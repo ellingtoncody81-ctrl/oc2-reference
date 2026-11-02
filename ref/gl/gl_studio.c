@@ -2065,6 +2065,7 @@ static void R_StudioDrawPoints( void )
 	oc2_studio_normal_colors_ready=false;
 	oc2_studio_perf_t *profile=R_StudioPerfModel();
 	double perfTime=profile?gEngfuncs.pfnTime():0;
+	const double perfStart=perfTime;
 	if(profile){++profile->calls;profile->vertices+=m_pSubModel->numverts;}
 
 
@@ -2253,7 +2254,13 @@ static void R_StudioDrawPoints( void )
 	}
 	GL_Cull( savedCull );
 	oc2_studio_normal_colors_ready=false;
-	if(profile)profile->submit+=(gEngfuncs.pfnTime()-perfTime)*1000;
+	if(profile)
+	{
+		const double now=gEngfuncs.pfnTime(),submit=(now-perfTime)*1000,total=(now-perfStart)*1000;
+		profile->submit+=submit;
+		if(r_studio_perf_cold.value!=0 && total>16)
+			gEngfuncs.Con_Printf("studio_slow: model=%s vertices=%d meshes=%d total_ms=%.4f submit_ms=%.4f\n",RI.currentmodel->name,numverts,m_pSubModel->nummesh,total,submit);
+	}
 }
 
 /*

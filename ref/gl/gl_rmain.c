@@ -807,8 +807,18 @@ void R_DrawFog( void )
 R_DrawEntitiesOnList
 =============
 */
+extern convar_t r_studio_perf_cold;
+static void R_ColdSection( const char *section, double *start )
+{
+	if( !*start ) return;
+	const double now=gEngfuncs.pfnTime(), ms=(now-*start)*1000;
+	if( ms>16 ) gEngfuncs.Con_Printf("render_cold: section=%s ms=%.4f time=%.4f\n",section,ms,gp_cl->time);
+	*start=now;
+}
+
 static void R_DrawEntitiesOnList( void )
 {
+	double cold=r_studio_perf_cold.value!=0?gEngfuncs.pfnTime():0;
 	tr.blend = 1.0f;
 	GL_CheckForErrors();
 
@@ -843,6 +853,7 @@ static void R_DrawEntitiesOnList( void )
 	GL_CheckForErrors();
 
 	// quake-specific feature
+	R_ColdSection("solid_entities",&cold);
 	R_DrawAlphaTextureChains();
 
 	GL_CheckForErrors();
@@ -878,6 +889,7 @@ static void R_DrawEntitiesOnList( void )
 
 	if( FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
 		gEngfuncs.pfnDrawNormalTriangles();
+	R_ColdSection("normal_triangles_effects",&cold);
 
 	GL_CheckForErrors();
 
@@ -933,6 +945,7 @@ static void R_DrawEntitiesOnList( void )
 		pglTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
 		gEngfuncs.pfnDrawTransparentTriangles ();
 	}
+	R_ColdSection("transparent_entities_triangles",&cold);
 
 	GL_CheckForErrors();
 
@@ -946,10 +959,12 @@ static void R_DrawEntitiesOnList( void )
 	GL_CheckForErrors();
 
 	pglDisable( GL_BLEND );	// Trinity Render issues
+	R_ColdSection("transparent_effects",&cold);
 
 	if( !FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ))
 		R_DrawViewModel();
 	gEngfuncs.CL_ExtraUpdate();
+	R_ColdSection("viewmodel",&cold);
 
 	GL_CheckForErrors();
 }
@@ -963,6 +978,7 @@ R_SetupRefParams must be called right before
 */
 void R_RenderScene( void )
 {
+	double cold=r_studio_perf_cold.value!=0?gEngfuncs.pfnTime():0;
 	if( !WORLDMODEL && FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
 		gEngfuncs.Host_Error( "%s: NULL worldmodel\n", __func__ );
 
@@ -987,14 +1003,18 @@ void R_RenderScene( void )
 		R_AnimateRipples();
 
 	R_CheckGLFog();
+	R_ColdSection("scene_setup",&cold);
 	R_DrawWorld();
+	R_ColdSection("world",&cold);
 	R_CheckFog();
 
 	gEngfuncs.CL_ExtraUpdate ();	// don't let sound get messed up if going slow
 
 	R_DrawEntitiesOnList();
+	R_ColdSection("all_entities",&cold);
 
 	R_DrawWaterSurfaces();
+	R_ColdSection("water",&cold);
 }
 
 void R_GammaChanged( qboolean do_reset_gamma )
@@ -1098,6 +1118,7 @@ R_RenderFrame
 */
 void R_RenderFrame( const ref_viewpass_t *rvp )
 {
+	double cold=r_studio_perf_cold.value!=0?gEngfuncs.pfnTime():0;
 	if( r_norefresh->value )
 		return;
 
@@ -1126,6 +1147,7 @@ void R_RenderFrame( const ref_viewpass_t *rvp )
 		R_RunViewmodelEvents();
 
 	tr.realframecount++; // right called after viewmodel events
+	R_ColdSection("frame_setup_events",&cold);
 	R_RenderScene();
 
 	return;
