@@ -91,7 +91,7 @@ void BuyState::OnEnter(CCSBot *me)
 
 	if (TheCSBots()->AllowGrenades())
 	{
-		m_buyGrenade = (RANDOM_FLOAT(0.0f, 100.0f) < 33.3f) ? true : false;
+		m_buyGrenade = OC2_BotWantsGrenadePurchase(me);
 	}
 	else
 	{
@@ -495,7 +495,7 @@ void BuyState::OnUpdate(CCSBot *me)
 			{
 				me->ClientCommand("defuser");
 			}
-			OC2_BotBuyUtility(me);
+			OC2_BotBuyUtility(me,m_buyGrenade);
 
 			m_doneBuying = true;
 		}
