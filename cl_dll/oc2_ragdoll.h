@@ -16,5 +16,6 @@ void OC2_RagdollCorpseCreated(tempent_s *corpse, int playerIndex);
 void OC2_RagdollCorpseForgotten(tempent_s *corpse);
 void OC2_RagdollApply(CStudioModelRenderer &renderer);
 void OC2_RagdollTick(double clientTime);
+void OC2_RagdollResolveDeaths(double clientTime);
 void OC2_RagdollClear();
 void OC2_CorpseForget(tempent_s *corpse);

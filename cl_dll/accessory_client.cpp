@@ -333,6 +333,9 @@ bool LoadSkin(bool longNeck)
 
 std::map<const studiohdr_t *,geo::MountCache> mounts;
 std::map<const studiohdr_t *,geo::StudioTriangleCache> meshes;
+// Immutable topology prepared while the map is loading. Every use is refit
+// against the actual current pose before any collision query.
+std::map<const studiohdr_t *,geo::MeshCollider> warmCharmColliders;
 geo::SwingState swing;
 struct Motion
 {
@@ -468,6 +471,9 @@ bool BeginCharmGun(CStudioModelRenderer& r,const geo::Frame& frame)
  {
   OC2ColdTimer cold("charm_geometry",r.m_pRenderModel?r.m_pRenderModel->name:nullptr);
   charmGun=CharmGunScene();charmGun.header=r.m_pStudioHeader;charmGun.body=body;charmGun.skin=skin;
+  const auto warm=warmCharmColliders.find(r.m_pStudioHeader);
+  if(!allowed&&skin==0&&SameCharmBody(weaponSurface->studio,0,body)&&warm!=warmCharmColliders.end())
+   charmGun.full=warm->second;
   charmGun.hostRoot=hostRoot;if(allowed)charmGun.allowedBones=*allowed;
   if(!geo::BuildPoseGeometry(weaponSurface->studio,body,skin,charmGun.geometry,false,
    charmGun.allowedBones.empty()?nullptr:&charmGun.allowedBones))return false;
@@ -693,14 +699,14 @@ Placement EvaluatePlacement(CStudioModelRenderer &r,studiohdr_t *header,const st
   geo::SwingConfig cfg;cfg.amplitude=1;cfg.maxAngle=frameConfig.amplitude;cfg.length=frameConfig.length*2.5f;cfg.stiffness=frameConfig.stiffness;cfg.damping=frameConfig.damping;
   p.swingState=swing;p.angles=geo::UpdateSwing(p.swingState,cfg,input);
  }
-  PosePlacement(r,header,base,body,charm,left,p,false,!charm);
+  if(!charm)PosePlacement(r,header,base,body,false,left,p,false,true);
  return p;
 }
 
 Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
  const std::array<Matrix,MAXSTUDIOBONES>& base,int body,bool left,Placement desired)
 {
- if(!BeginCharmGun(r,desired.anchorFrame)){CharmFailure();return desired;}
+  if(!BeginCharmGun(r,desired.anchorFrame)){CharmFailure();PosePlacement(r,header,base,body,true,left,desired,false,false);return desired;}
  auto charmBones=reinterpret_cast<mstudiobone_t *>(reinterpret_cast<byte *>(header)+header->boneindex);
  for(int i=0;i<header->numbones;++i)
  {
@@ -751,7 +757,7 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
   Placement neutral=pose(geo::SwingOutput());
   bool found=free(neutral);
   if(!found)found=seekRest(neutral);
-  if(!found){CharmFailure();return desired;}
+   if(!found){CharmFailure();PosePlacement(r,header,base,body,true,left,desired,false,false);return desired;}
   motion.bias=neutral.angles;motion.biasReady=true;
   motion.safeLocal=neutral.local;motion.safeAngles=neutral.angles;motion.charmSafe=true;
  }
@@ -959,7 +965,7 @@ void OC2_AccessoriesVidInit()
 {
  const char *map=gEngfuncs.pfnGetLevelName();level=map?map:"";
  ResetCharmCollisionStats();runCharmFailures=runCharmBlocked=0;
- mounts.clear();meshes.clear();stickerTextures.clear();weaponSurface=nullptr;
+ mounts.clear();meshes.clear();warmCharmColliders.clear();stickerTextures.clear();weaponSurface=nullptr;
  contactSamples.clear();addonBind.clear();charmGun=CharmGunScene();
  skinAttempted=skinValid=false;skinVariant=-1;joints.clear();carriers.clear();swing=geo::SwingState();motion=Motion();
  frameWeapon=0;diag=Diagnostics();nextRead=-1;lastTime=-1;
@@ -970,6 +976,12 @@ void OC2_PrecacheAccessoryMounts(model_s *model)
  auto *header=static_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(model));
  if(!header||mounts.count(header))return;
  geo::MountCache cache;geo::BuildMountCache(header,cache);
+ if(cache.valid&&!cache.bind.empty())
+ {
+  std::vector<geo::Triangle> triangles;geo::MeshCollider collider;
+  if(geo::ReadStudioTriangles(cache.studio,0,0,reinterpret_cast<const float (*)[3][4]>(cache.bind.data()),triangles,false,true)&&
+     geo::BuildMeshCollider(triangles,collider,false))warmCharmColliders.emplace(header,std::move(collider));
+ }
  mounts.emplace(header,std::move(cache));
 }
 void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)

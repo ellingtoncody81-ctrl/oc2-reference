@@ -456,6 +456,7 @@ void DLLEXPORT HUD_TempEntUpdate (
 	if ( g_pParticleMan )
 		g_pParticleMan->SetVariables( cl_gravity, vAngles );
 
+	OC2_RagdollResolveDeaths(client_time);
 	// Nothing to simulate
 	if ( !*ppTempEntActive )		
 		return;

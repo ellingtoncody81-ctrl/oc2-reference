@@ -92,11 +92,14 @@ endif()
 
 set(GRAPHS_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/graphs")
 
+option(OC2_DOWNLOAD_BOT_GRAPHS "Download optional YaPB graphs during configure" ON)
+if(OC2_DOWNLOAD_BOT_GRAPHS)
 execute_process(
 	COMMAND ${Python_EXECUTABLE}
 	${CMAKE_CURRENT_SOURCE_DIR}/scripts/yapb_graph_dl.py
 	${GRAPHS_OUTPUT}/addons/yapb/data/graph
 )
+endif()
 
 set(EXTRAS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/cs16client-extras")
 set(YAPB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/yapb/cfg")

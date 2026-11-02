@@ -1,6 +1,7 @@
 #pragma once
 #include "Framework.h"
 #include "Action.h"
+#include "Field.h"
 #include "PanoramaChrome.h"
 #include <string>
 #include <vector>
@@ -20,7 +21,7 @@ public:
     void SetBack(void (*back)()) { m_backCallback=back; }
     void SelectCategory(int category);
 private:
-    enum Kind { Number, Choice, Binding, Pitch, Resolution };
+    enum Kind { Number, Choice, Binding, Pitch, Resolution, PlayerName };
     struct Setting
     {
         int category;Kind kind;const char *label,*key,*defaultValue;
@@ -47,6 +48,7 @@ private:
     void SliderAt(Row &row,int x);
     void PaintRow(Row &row);
     void Save();
+    void NameChanged();
     void Revert();
     void CrosshairDefaults();
     void CrosshairDemo(CMenuBaseItem *item);
@@ -68,6 +70,8 @@ private:
     int m_crosshairDemoMode=0;
     CMenuAction m_displayMode,m_displayWindow,m_displayApply,m_displayCancel;
     Row m_rows[9];
+    CMenuField m_playerName;
+    bool m_nameLoading=false,m_nameInvalid=false;
     char m_rowTags[9][32];
     std::vector<int> m_visible;
     std::vector<Original> m_original;

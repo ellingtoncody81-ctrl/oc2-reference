@@ -52,6 +52,7 @@ static void RadarDumpCommand() { gHUD.m_RadarModern.DumpState(); }
 extern radar_engfuncs_t gRadarAPI;
 extern int g_iRadarAPIVersion;
 extern engine_studio_api_t IEngineStudio;
+#include "oc2_player_snapshot.h"
 
 #define RADAR_MASK_SEGMENTS  63
 #define BLIP_SIZE            20
@@ -335,6 +336,7 @@ void CHudRadarModern::ResetRound()
 	memset( m_aRadarEnemySeen, 0, sizeof( m_aRadarEnemySeen ) );
 	memset( m_aRadarEnemyConfirmed, 0, sizeof( m_aRadarEnemyConfirmed ) );
 	memset( m_aRadarEnemyLastSeen, 0, sizeof( m_aRadarEnemyLastSeen ) );
+	memset( m_aRadarTeammateUserid, 0, sizeof( m_aRadarTeammateUserid ) );
 	memset( m_aRadarEnemyConfirm, 0, sizeof( m_aRadarEnemyConfirm ) );
 	memset( m_aRadarEnemyHold, 0, sizeof( m_aRadarEnemyHold ) );
 	memset( m_aRadarPlayerDeadAt, 0, sizeof( m_aRadarPlayerDeadAt ) );
@@ -409,6 +411,11 @@ void CHudRadarModern::DumpState() const
 		int(gHUD.m_Scoreboard.ShouldDrawScoreboard()),g_iUser1,m_iSelfDrawX,m_iSelfDrawY );
 	for( int i = 1; i <= count; ++i )
 	{
+		const cl_entity_t *entity=gEngfuncs.GetEntityByIndex(i);
+		gEngfuncs.Con_Printf("radar_snapshot: slot=%d current=%d message=%d last_seen=%.6f ghost_age=%.6f entity_origin=%.1f,%.1f,%.1f\n",
+			i,int(OC2_CurrentPlayerSnapshot(entity)),entity?entity->curstate.messagenum:0,
+			m_aRadarEnemyLastSeen[i],gEngfuncs.GetClientTime()-m_aRadarEnemyLastSeen[i],
+			entity?entity->origin.x:0,entity?entity->origin.y:0,entity?entity->origin.z:0);
 		gEngfuncs.Con_Printf( "radar_player: slot=%d team=%d visible=%d confirmed=%d confirm=%.3f hold=%.3f dead=%d dead_at=%.3f has_last=%d has_confirmed_last=%d last=%.1f,%.1f,%.1f dead_origin=%.1f,%.1f,%.1f\n",
 			i, RadarTeamOf( i ), int( m_aRadarEnemyVisible[i] ),
 			int( m_aRadarEnemyConfirmed[i] ), m_aRadarEnemyConfirm[i],
@@ -1704,6 +1711,15 @@ bool CHudRadarModern::IsPlayerDead( int i ) const
 	return m_aRadarPlayerDeadAt[i] > 0.0f;
 }
 
+void CHudRadarModern::NotePlayerAlive( int player )
+{
+	if(player<1||player>kRadarMaxPlayers||m_aRadarPlayerDeadAt[player]<=0)return;
+	m_aRadarPlayerDeadAt[player]=0;m_aRadarPlayerDeadMoveStreak[player]=0;
+	m_aRadarPlayerDeadPrevOrigin[player]=Vector(0,0,0);
+	m_aRadarEnemyVisible[player]=m_aRadarEnemySeen[player]=m_aRadarEnemyConfirmed[player]=false;
+	m_aRadarEnemyConfirm[player]=m_aRadarEnemyHold[player]=0;m_aRadarHasConfirmedOrigin[player]=false;
+}
+
 void CHudRadarModern::NotePlayerDeath( int victim, float time )
 {
 	if( victim <= 0 || victim > kRadarMaxPlayers )
@@ -1714,7 +1730,10 @@ void CHudRadarModern::NotePlayerDeath( int victim, float time )
 	const int victimTeam = RadarTeamOf( victim );
 	const bool teammate = localTeam > 0 && localTeam == victimTeam;
 	Vector origin( 0, 0, 0 );
-	if( teammate && m_aRadarEnemySeen[victim] )
+	const player_info_t *info=IEngineStudio.PlayerInfo?IEngineStudio.PlayerInfo(victim-1):NULL;
+	if(teammate&&info&&info->userid>0&&m_aRadarTeammateUserid[victim]==info->userid&&m_aRadarTeammateTeam[victim]==victimTeam)
+		origin=m_aRadarTeammateOrigin[victim];
+	else if( teammate && m_aRadarEnemySeen[victim] )
 		origin = m_aRadarEnemyLastOrigin[victim];
 	else if( !teammate && localTeam > 0 && victimTeam > 0 &&
 		m_aRadarHasConfirmedOrigin[victim] &&
@@ -1724,7 +1743,7 @@ void CHudRadarModern::NotePlayerDeath( int victim, float time )
 	if( teammate && origin == Vector( 0, 0, 0 ) )
 	{
 		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( victim );
-		if( pEnt && pEnt->player )
+		if( OC2_CurrentPlayerSnapshot(pEnt) )
 			origin = pEnt->origin;
 	}
 	// Stamp the death even when there is no usable position. m_aRadarPlayerDeadAt
@@ -1736,6 +1755,15 @@ void CHudRadarModern::NotePlayerDeath( int victim, float time )
 	m_aRadarPlayerDeadOrigin[victim] = origin;
 	m_aRadarPlayerDeadPrevOrigin[victim] = Vector( 0, 0, 0 );
 	m_aRadarPlayerDeadMoveStreak[victim] = 0.0f;
+}
+
+void CHudRadarModern::NoteTeammatePosition( int player, const Vector &origin )
+{
+	if(player<1||player>kRadarMaxPlayers||!IEngineStudio.PlayerInfo)return;
+	const player_info_t *info=IEngineStudio.PlayerInfo(player-1);
+	if(!info||info->userid<=0)return;
+	m_aRadarTeammateOrigin[player]=origin;m_aRadarTeammateUserid[player]=info->userid;
+	m_aRadarTeammateTeam[player]=RadarTeamOf(player);
 }
 
 void CHudRadarModern::UpdateEnemyVisibility( float flTime )
@@ -1816,7 +1844,7 @@ void CHudRadarModern::UpdateEnemyVisibility( float flTime )
 			continue;
 
 		cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
-		const bool live = ( pEnt && pEnt->player );
+		const bool live = OC2_CurrentPlayerSnapshot( pEnt );
 		const int trackedTeam = RadarTeamOf( i );
 		if( m_aRadarTrackedTeam[i] != trackedTeam )
 		{
@@ -2056,7 +2084,10 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	const bool bFriend = ( iLocalTeam >= 0 && iTheirTeam >= 0 && iTheirTeam == iLocalTeam );
 
 	cl_entity_t *pEnt = gEngfuncs.GetEntityByIndex( i );
-	const bool live = ( pEnt && pEnt->player );
+	const bool live = OC2_CurrentPlayerSnapshot( pEnt );
+	const player_info_t *info=IEngineStudio.PlayerInfo?IEngineStudio.PlayerInfo(i-1):NULL;
+	const bool teammatePosition=bFriend&&info&&info->userid>0&&
+		m_aRadarTeammateUserid[i]==info->userid&&m_aRadarTeammateTeam[i]==iTheirTeam;
 
 	// The X is drawn at the last position captured while the player was alive.
 	if( IsPlayerDead( i ) )
@@ -2105,7 +2136,7 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	const bool ghost = !bFriend && m_bRadarGating && m_aRadarEnemyConfirmed[i] &&
 		!m_aRadarEnemyVisible[i] && m_aRadarEnemySeen[i] && ghostAge >= 0.0f && ghostAge < 6.0f;
 
-	if( !live && !ghost )
+	if( !live && !ghost && !teammatePosition )
 		return;
 	if( !bFriend && m_bRadarGating && !m_aRadarEnemyVisible[i] && !ghost )
 		return;
@@ -2131,7 +2162,7 @@ void CHudRadarModern::DrawPlayerBlip( int cx, int cy, int radius, int i, float f
 	// map pixel a third of the way up from the centre. The live entity is
 	// the only populated source, same as CHudSpectator uses; a ghost uses the
 	// position captured on the last clear sight.
-	const Vector &vecBlip = ( !live || ( !bFriend && !m_aRadarEnemyVisible[i] ) )
+	const Vector &vecBlip = !live&&teammatePosition ? m_aRadarTeammateOrigin[i] : ( !live || ( !bFriend && !m_aRadarEnemyVisible[i] ) )
 		? m_aRadarEnemyLastOrigin[i] : pEnt->origin;
 	if( CalcPoint( vecBlip, x, y, radius ) )
 		return;

@@ -40,6 +40,8 @@ public:
 	// ScoreAttrib dead flag is compiled out in some builds, so the radar keeps
 	// its own per-player death stamp.
 	void NotePlayerDeath( int victim, float time );
+	void NotePlayerAlive( int player );
+	void NoteTeammatePosition( int player, const Vector &origin );
 	void NoteBombDrop( int flag, const Vector &origin, float time );
 	void NoteBombPickup();
 	void ResetRound();
@@ -191,6 +193,9 @@ public:
 	int m_aRadarConfirmedVictimTeam[kRadarMaxPlayers + 1];
 	bool m_aRadarHasConfirmedOrigin[kRadarMaxPlayers + 1];
 	float m_aRadarEnemyLastSeen[kRadarMaxPlayers + 1];
+	Vector m_aRadarTeammateOrigin[kRadarMaxPlayers + 1];
+	int m_aRadarTeammateUserid[kRadarMaxPlayers + 1] = {};
+	int m_aRadarTeammateTeam[kRadarMaxPlayers + 1] = {};
 	float m_aRadarEnemyConfirm[kRadarMaxPlayers + 1];
 	float m_aRadarEnemyHold[kRadarMaxPlayers + 1];
 	float m_aRadarPlayerDeadAt[kRadarMaxPlayers + 1];

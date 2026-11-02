@@ -6,6 +6,7 @@
 #include <map>
 #include <fstream>
 #include <cstdint>
+#include <algorithm>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -81,7 +82,7 @@ void Shutdown()
  {std::lock_guard<std::mutex> lock(state.mutex);state.stop=true;state.changed.notify_all();}
  if(state.worker.joinable())state.worker.join();Reset();
 }
-void Request(const std::string &path,int limit)
+void Request(const std::string &path,int limit,bool priority)
 {
  if(path.empty()||path.size()>=256||path.find("..")!=std::string::npos||path.find(':')!=std::string::npos||path[0]=='/'||path[0]=='\\')return;
  std::lock_guard<std::mutex> lock(state.mutex);const Key key(path,limit);
@@ -96,9 +97,18 @@ void Request(const std::string &path,int limit)
   if(oldest==state.jobs.end())break;
   state.readyBytes-=oldest->second.data.size();state.jobs.erase(oldest);
  }
- if(existing!=state.jobs.end()){state.changed.notify_one();return;}
+ if(existing!=state.jobs.end())
+ {
+  if(priority&&existing->second.status==Status::Pending)
+  {
+   const auto queued=std::find(state.queue.begin(),state.queue.end(),key);
+   if(queued!=state.queue.end()){state.queue.erase(queued);state.queue.push_front(key);}
+  }
+  state.changed.notify_one();return;
+ }
  if(state.jobs.size()>=512)return;
- Job job;job.age=++state.clock;state.jobs.emplace(key,std::move(job));state.queue.push_back(key);state.changed.notify_one();
+ Job job;job.age=++state.clock;state.jobs.emplace(key,std::move(job));
+ if(priority)state.queue.push_front(key);else state.queue.push_back(key);state.changed.notify_one();
 }
 Status Take(const std::string &path,int limit,std::vector<unsigned char> &data,bool &resized,bool &dds)
 {

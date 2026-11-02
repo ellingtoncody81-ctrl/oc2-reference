@@ -49,6 +49,8 @@ android/app/src/main/assets
 
 build/
 build_regamedll/
+build_oc2_amd64/
+build_regamedll_oc2_amd64/
 
 .vscode/
 

@@ -230,6 +230,7 @@ int CHudRadar::MsgFunc_Radar(const char *pszName,  int iSize, void *pbuf )
 	g_PlayerExtraInfo[index].origin.x = reader.ReadCoord();
 	g_PlayerExtraInfo[index].origin.y = reader.ReadCoord();
 	g_PlayerExtraInfo[index].origin.z = reader.ReadCoord();
+	gHUD.m_RadarModern.NoteTeammatePosition(index,g_PlayerExtraInfo[index].origin);
 	return 1;
 }
 

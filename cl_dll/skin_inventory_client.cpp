@@ -83,6 +83,8 @@ std::map<std::string,int> textureBlockedFrame;
 std::map<std::string,std::uint64_t> textureKnownCost;
 std::map<std::string,std::string> textureVariantAliases;
 std::map<int,unsigned> texturePins;
+struct PendingTexture {int handle=0;bool priority=false;std::string key,name;};
+PendingTexture pendingTexture;
 int textureFrame=-1,textureVisibleFrame=-1;std::uint64_t textureSerial=0,textureBytes=0;
 cvar_t *textureBudget=nullptr;
 struct TextureStats
@@ -97,6 +99,13 @@ struct OverlayLayout
  std::vector<std::pair<int,int>> commands;
 };
 std::map<const model_t *,OverlayLayout> overlayLayouts;
+struct MaterialLayout
+{
+ int length=0,textureindex=0,numtextures=0,skinindex=0,numskinref=0,numskinfamilies=0;
+ std::vector<int> decals;
+ std::map<std::string,std::vector<unsigned char>> families;
+};
+std::map<const studiohdr_t *,MaterialLayout> materialLayouts;
 std::map<int,std::size_t> resourceIndices,knifeIndices;
 std::map<std::string,int> knifeModels;
 double nextRead=-1,lastRead=-1;
@@ -195,11 +204,11 @@ int ItemMessage(const char *,int size,void *buffer)
  const int operation=reader.ReadByte();
  if(operation==oc2_item::Reset&&size==oc2_item::kResetBytes)
  {
-  CheckSession();items.clear();ClearItemQueryIndex();draws.clear();networkReady=true;itemSnapshotStarted=true;return 1;
+   CheckSession();items.clear();ClearItemQueryIndex();draws.clear();networkReady=true;itemSnapshotStarted=true;++texturePrefetchEpoch;return 1;
  }
  if(operation==oc2_item::Remove&&size==oc2_item::kRemoveBytes)
  {
-  const int serial=reader.ReadLong();items.erase(serial);itemQueryIndex.dirty=true;
+   const int serial=reader.ReadLong();items.erase(serial);itemQueryIndex.dirty=true;++texturePrefetchEpoch;
   for(auto i=draws.begin();i!=draws.end();)if(i->first.first==serial)i=draws.erase(i);else ++i;
   return 1;
  }
@@ -220,6 +229,9 @@ int ItemMessage(const char *,int size,void *buffer)
     (item.flags&~(oc2_item::Active|oc2_item::BotOrigin|oc2_item::OriginOwner)))return 1;
  for(int s:item.stickers)if(s<-1)return 1;
  CheckSession();networkReady=true;itemQueryIndex.dirty=true;
+ const auto previousAppearance=items.find(item.serial);
+ if(previousAppearance==items.end()||previousAppearance->second.owner!=item.owner||previousAppearance->second.skin!=item.skin||previousAppearance->second.charm!=item.charm||
+    !std::equal(item.stickers,item.stickers+4,previousAppearance->second.stickers))++texturePrefetchEpoch;
  // Entity slots can be reused. A new server identity retires the old entry;
  // one player can only have one active weapon even while a diff is arriving.
  for(auto i=items.begin();i!=items.end();)
@@ -244,7 +256,7 @@ int GloveMessage(const char *,int size,void *buffer)
  if(operation!=oc2_gloves::Upsert||size!=oc2_gloves::kUpsertBytes)return 1;
  const int player=reader.ReadByte(),resource=reader.ReadLong();
  if(player<1||player>32||resource<0)return 1;
- CheckSession();playerGloves[player]=resource;gloveNetworkReady=true;return 1;
+  CheckSession();if(playerGloves[player]!=resource)++texturePrefetchEpoch;playerGloves[player]=resource;gloveNetworkReady=true;return 1;
 }
 
 bool LoadText(const char *path,std::string &text,int maximum,bool &exists)
@@ -274,7 +286,7 @@ void ReadGloveState(bool force)
   {
    oc2_gloves::Catalog candidate;
    if(!oc2_gloves::ParseCatalog(text,candidate,error))goto failed;
-   gloveCatalog.swap(candidate);gloveCatalogAttempted=true;
+   gloveCatalog.swap(candidate);gloveCatalogAttempted=true;++texturePrefetchEpoch;
   }
   else if(exists){error="Cannot read glove catalog";goto failed;}
  }
@@ -314,7 +326,7 @@ void ReadState(bool force=false)
   {
    Catalog candidate;
    if(!ParseCatalog(text,candidate,error)){catalogAttempted=false;ReportError(error);SyncKnifeInfo();return;}
-   catalog.swap(candidate);resourceIndices.clear();knifeIndices.clear();knifeModels.clear();
+   catalog.swap(candidate);resourceIndices.clear();knifeIndices.clear();knifeModels.clear();++texturePrefetchEpoch;
    for(std::size_t i=0;i<catalog.size();++i)
    {
     const Entry &e=catalog[i];resourceIndices[e.id]=i;
@@ -379,12 +391,16 @@ bool OwnTexture(const TextureSlot &slot)
 }
 void ReleaseTexture(const TextureSlot &slot)
 { if(gRenderAPI.GL_FreeTexture&&OwnTexture(slot))gRenderAPI.GL_FreeTexture(slot.handle); }
+void CancelTextureUpload()
+{
+ if(pendingTexture.handle){TextureSlot slot;slot.handle=pendingTexture.handle;slot.name=pendingTexture.name;ReleaseTexture(slot);pendingTexture=PendingTexture();}
+}
 void ReleaseTextures()
-{ for(const auto &v:textures)ReleaseTexture(v.second);textures.clear();textureBlockedFrame.clear();textureKnownCost.clear();textureVariantAliases.clear();overlayLayouts.clear();textureBytes=0; }
+{ CancelTextureUpload();for(const auto &v:textures)ReleaseTexture(v.second);textures.clear();textureBlockedFrame.clear();textureKnownCost.clear();textureVariantAliases.clear();overlayLayouts.clear();materialLayouts.clear();textureBytes=0; }
 std::uint64_t TextureBudgetBytes()
 {
- const float mb=textureBudget&&std::isfinite(textureBudget->value)?textureBudget->value:256.f;
- return std::uint64_t(std::max(32.f,std::min(512.f,mb)))*1024u*1024u;
+ const float mb=textureBudget&&std::isfinite(textureBudget->value)?textureBudget->value:768.f;
+ return std::uint64_t(std::max(32.f,std::min(1024.f,mb)))*1024u*1024u;
 }
 bool EvictTexture();
 void BeginTextureDraw()
@@ -566,16 +582,35 @@ void PrepareStreamImage(std::vector<byte> &data,int limit,bool &resized,bool &dd
  std::vector<byte> decoded;const byte *pixels=nullptr;
  if(data[2]==10){if(!DecodeTgaRle(data.data(),data.size(),start,channels,bytes,decoded))return;pixels=decoded.data();}
  else {if(bytes>data.size()-start)return;pixels=data.data()+start;}
- std::vector<byte> prepared(128u+std::size_t(w)*h*4,0);
+ // Supply the full mip chain from the decoding worker. A single-level DDS
+ // makes GL_LoadTexture rebuild every mip on the game thread at pickup or
+ // observer entry. Keep the renderer's exact integer box filter and full size.
+ std::size_t payload=0;unsigned mipCount=0;
+ for(int mw=w,mh=h;;mw=std::max(1,mw/2),mh=std::max(1,mh/2))
+ {payload+=std::size_t(mw)*mh*4;++mipCount;if(mw==1&&mh==1)break;}
+ std::vector<byte> prepared(128u+payload,0);
  auto put=[&](int offset,unsigned value){for(int b=0;b<4;++b)prepared[offset+b]=byte(value>>(b*8));};
- put(0,0x20534444);put(4,124);put(8,0x81007);put(12,h);put(16,w);put(20,unsigned(w)*h*4);
- put(76,32);put(80,0x41);put(88,32);put(92,0x00ff0000);put(96,0x0000ff00);put(100,0x000000ff);put(104,0xff000000);put(108,0x1000);
+ put(0,0x20534444);put(4,124);put(8,0x2100f);put(12,h);put(16,w);put(20,unsigned(w)*4);put(28,mipCount);
+ put(76,32);put(80,0x41);put(88,32);put(92,0x00ff0000);put(96,0x0000ff00);put(100,0x000000ff);put(104,0xff000000);put(108,0x401008);
  for(int y=0;y<h;++y)
  {
   const byte *row=pixels+std::size_t((data[17]&0x20)?y:h-1-y)*w*channels;
   byte *target=prepared.data()+128+std::size_t(y)*w*4;
   if(channels==4)memcpy(target,row,std::size_t(w)*4);
   else for(int x=0;x<w;++x){memcpy(target+x*4,row+x*3,3);target[x*4+3]=255;}
+ }
+ std::size_t offset=128;int mw=w,mh=h;
+ while(mw>1||mh>1)
+ {
+  const int nw=std::max(1,mw/2),nh=std::max(1,mh/2);
+  const byte *src=prepared.data()+offset;offset+=std::size_t(mw)*mh*4;
+  byte *dst=prepared.data()+offset;
+  for(int y=0;y<nh;++y)for(int x=0;x<nw;++x)for(int c=0;c<4;++c)
+  {
+   const int x0=x*2,x1=std::min(x0+1,mw-1),y0=y*2,y1=std::min(y0+1,mh-1);
+   dst[(y*nw+x)*4+c]=byte((unsigned(src[(y0*mw+x0)*4+c])+src[(y0*mw+x1)*4+c]+src[(y1*mw+x0)*4+c]+src[(y1*mw+x1)*4+c])>>2);
+  }
+  mw=nw;mh=nh;
  }
  data.swap(prepared);dds=true;
 }
@@ -604,7 +639,36 @@ int CachedTexture(const std::string &key)
  }
  return 0;
 }
-int Texture(const std::string &path,bool sticker,int maxDimension=0)
+int PublishTexture(const std::string &key,const std::string &name,int handle)
+{
+ TextureSlot slot;slot.handle=handle;slot.frame=textureFrame;slot.visibleFrame=textureVisibleFrame;
+ slot.serial=++textureSerial;slot.name=name;slot.bytes=TextureCost(handle);
+ if(textureKnownCost.size()>=512&&!textureKnownCost.count(key))textureKnownCost.erase(textureKnownCost.begin());
+ textureKnownCost[key]=slot.bytes;
+ const std::uint64_t budget=TextureBudgetBytes();
+ if(slot.bytes>budget)
+ {ReleaseTexture(slot);textureBlockedFrame[key]=textureVisibleFrame;++textureStats.blocked;return 0;}
+ while(textureBytes>budget-slot.bytes)
+  if(!EvictTexture())
+  {ReleaseTexture(slot);textureBlockedFrame[key]=textureVisibleFrame;++textureStats.blocked;return 0;}
+ textureBytes+=slot.bytes;textureStats.peakBytes=std::max(textureStats.peakBytes,textureBytes);textures[key]=slot;
+ return handle;
+}
+void PumpTextureUpload()
+{
+ if(!pendingTexture.handle)return;
+ BeginTextureDraw();
+ if(textureUploadFrame==textureVisibleFrame&&textureUploadsThisFrame>=1)return;
+ textureUploadFrame=textureVisibleFrame;textureUploadsThisFrame=1;
+ const char *name=gRenderAPI.GL_TextureName?gRenderAPI.GL_TextureName(pendingTexture.handle):nullptr;
+ if(!name||pendingTexture.name!=name){pendingTexture=PendingTexture();return;}
+ const int handle=gRenderAPI.GL_LoadTexture(pendingTexture.name.c_str(),nullptr,0,0);
+ if(handle<0)return;
+ if(handle)PublishTexture(pendingTexture.key,pendingTexture.name,handle);
+ else CancelTextureUpload();
+ pendingTexture=PendingTexture();
+}
+int Texture(const std::string &path,bool sticker,int maxDimension=0,bool priority=true)
 {
  if(path.empty()||!gRenderAPI.GL_LoadTexture)return 0;
  const std::string requested=maxDimension>0?path+"|oc2max="+std::to_string(maxDimension):path;
@@ -612,6 +676,12 @@ int Texture(const std::string &path,bool sticker,int maxDimension=0)
  const auto alias=textureVariantAliases.find(requested);
  if(alias!=textureVariantAliases.end())key=alias->second;
  if(const int cached=CachedTexture(key))return cached;
+ if(pendingTexture.handle)
+ {
+  if(priority&&pendingTexture.key==key)pendingTexture.priority=true;
+  if(priority&&!pendingTexture.priority&&pendingTexture.key!=key)CancelTextureUpload();
+  else return 0;
+ }
  OC2ColdTimer cold("texture",path.c_str());
  ++textureStats.misses;
  if(textureBlockedFrame.count(key)){++textureStats.blocked;return 0;}
@@ -624,7 +694,7 @@ int Texture(const std::string &path,bool sticker,int maxDimension=0)
  if(textureStreaming&&textureStreaming->value!=0)
  {
   const int limit=key==requested?maxDimension:0;
-  oc2_texture_stream::Request(path,limit);
+   oc2_texture_stream::Request(path,limit,priority);
   if(textureUploadsThisFrame>=1||textureUploadMs>=2)return 0;
   const auto status=oc2_texture_stream::Take(path,limit,streamed,streamResized,streamDds);
   if(status==oc2_texture_stream::Status::Pending)return 0;
@@ -635,7 +705,7 @@ int Texture(const std::string &path,bool sticker,int maxDimension=0)
  if(!streamReady){OC2ColdTimer read("texture_read",path.c_str());data=gEngfuncs.COM_LoadFile(const_cast<char *>(path.c_str()),5,&size);engineData=true;}
  const auto freeData=[&](){if(engineData&&data)gEngfuncs.COM_FreeFile(data);};
  if(!data){textureBlockedFrame[key]=textureVisibleFrame;++textureStats.failures;return 0;}
- if(size<=0||size>17*1024*1024){freeData();textureBlockedFrame[key]=textureVisibleFrame;++textureStats.failures;return 0;}
+ if(size<=0||size>(streamDds?23:17)*1024*1024){freeData();textureBlockedFrame[key]=textureVisibleFrame;++textureStats.failures;return 0;}
  std::vector<byte> resized;
  if(maxDimension>0&&key==requested)
  {
@@ -657,25 +727,15 @@ int Texture(const std::string &path,bool sticker,int maxDimension=0)
  std::uint64_t hash=14695981039346656037ull;
  for(unsigned char c:key)hash=(hash^c)*1099511628211ull;
  const std::size_t dot=path.rfind('.');
- const std::string name="#oc2_inventory_"+std::to_string(hash)+(streamDds?".dds":dot==std::string::npos?".tga":path.substr(dot));
+ const std::string name=std::string(streamDds?"#oc2_stream_":"#oc2_inventory_")+std::to_string(hash)+(streamDds?".dds":dot==std::string::npos?".tga":path.substr(dot));
  ++textureStats.uploads;
  ++textureUploadsThisFrame;const auto uploadStart=std::chrono::steady_clock::now();
  int handle=0;
  {OC2ColdTimer upload("texture_upload",path.c_str());handle=gRenderAPI.GL_LoadTexture(name.c_str(),resized.empty()?data:resized.data(),resized.empty()?size:int(resized.size()),sticker?TF_CLAMP:0);}
  textureUploadMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-uploadStart).count();freeData();
+ if(handle<0){pendingTexture.handle=-handle;pendingTexture.priority=priority;pendingTexture.key=key;pendingTexture.name=name;return 0;}
  if(!handle){textureBlockedFrame[key]=textureVisibleFrame;++textureStats.failures;return 0;}
- TextureSlot slot;slot.handle=handle;slot.frame=textureFrame;slot.visibleFrame=textureVisibleFrame;
- slot.serial=++textureSerial;slot.name=name;slot.bytes=TextureCost(handle);
- if(textureKnownCost.size()>=512&&!textureKnownCost.count(key))textureKnownCost.erase(textureKnownCost.begin());
- textureKnownCost[key]=slot.bytes;
- const std::uint64_t budget=TextureBudgetBytes();
- if(slot.bytes>budget)
- {ReleaseTexture(slot);textureBlockedFrame[key]=textureVisibleFrame;++textureStats.blocked;return 0;}
- while(textureBytes>budget-slot.bytes)
-  if(!EvictTexture())
-  {ReleaseTexture(slot);textureBlockedFrame[key]=textureVisibleFrame;++textureStats.blocked;return 0;}
- textureBytes+=slot.bytes;textureStats.peakBytes=std::max(textureStats.peakBytes,textureBytes);textures[key]=slot;
- return handle;
+ return PublishTexture(key,name,handle);
 }
 void PinTexture(int handle,std::vector<int> &pinned)
 {
@@ -723,6 +783,28 @@ bool FamilyMaterialMatches(const studiohdr_t *header,const mstudiotexture_t *mat
    if(skinrefs[family*header->numskinref+column]==texture)return true;
  }
  return false;
+}
+MaterialLayout &GetMaterialLayout(const studiohdr_t *h,const mstudiotexture_t *materials)
+{
+ auto &layout=materialLayouts[h];
+ if(layout.length!=h->length||layout.textureindex!=h->textureindex||layout.numtextures!=h->numtextures||
+    layout.skinindex!=h->skinindex||layout.numskinref!=h->numskinref||layout.numskinfamilies!=h->numskinfamilies)
+ {
+  layout=MaterialLayout();layout.length=h->length;layout.textureindex=h->textureindex;layout.numtextures=h->numtextures;
+  layout.skinindex=h->skinindex;layout.numskinref=h->numskinref;layout.numskinfamilies=h->numskinfamilies;
+  layout.decals.assign(h->numtextures,-1);
+  for(int i=0;i<h->numtextures;++i)if(memchr(materials[i].name,0,sizeof(materials[i].name)))
+   for(int slot=0;slot<4;++slot){char name[]="decal_A.bmp";name[6]=char('A'+slot);if(!stricmp(materials[i].name,name)){layout.decals[i]=slot;break;}}
+ }
+ return layout;
+}
+const std::vector<unsigned char> &MaterialFamily(const studiohdr_t *h,const mstudiotexture_t *materials,const std::string &names)
+{
+ auto &layout=GetMaterialLayout(h,materials);auto found=layout.families.find(names);
+ if(found!=layout.families.end())return found->second;
+ std::vector<unsigned char> matches(h->numtextures,0);
+ for(int i=0;i<h->numtextures;++i)if(memchr(materials[i].name,0,sizeof(materials[i].name)))matches[i]=FamilyMaterialMatches(h,materials,i,names);
+ return layout.families.emplace(names,std::move(matches)).first->second;
 }
 const OverlayLayout *GetOverlayLayout(model_t *model,studiohdr_t *header,mstudiotexture_t *materials)
 {
@@ -848,7 +930,7 @@ void Dump()
 }
 }
 
-void OC2_InventoryShutdown(){oc2_texture_stream::Shutdown();}
+void OC2_InventoryShutdown(){CancelTextureUpload();oc2_texture_stream::Shutdown();}
 void OC2_InventoryInit()
 {
  textureStreaming=gEngfuncs.pfnRegisterVariable("cl_oc2_texture_stream","1",0);
@@ -859,7 +941,7 @@ void OC2_InventoryInit()
  OC2_WorldAccessoriesInit();
  OC2_InitWorldStickers();
  enabled=gEngfuncs.pfnRegisterVariable("cl_oc2_inventory","1",FCVAR_ARCHIVE);
- textureBudget=gEngfuncs.pfnRegisterVariable("cl_oc2_texture_cache_mb","256",0);
+ textureBudget=gEngfuncs.pfnRegisterVariable("cl_oc2_texture_cache_mb","768",0);
  knifeInfo=gEngfuncs.pfnRegisterVariable("oc2_knife","0",FCVAR_USERINFO);
  gEngfuncs.pfnAddCommand("oc2_inventory_dump",Dump);
  gEngfuncs.pfnAddCommand("oc2_inventory_reload",Reload);
@@ -926,11 +1008,13 @@ int OC2_InventoryPreviewTexture(const char *path)
 }
 void OC2_InventoryResetSession()
 {
+ CancelTextureUpload();
  oc2_texture_stream::Reset();++texturePrefetchEpoch;
  worldHandLayouts.clear();
  OC2_WorldAccessoriesReset();
  OC2_ResetWorldStickers();
  overlayLayouts.clear();
+ materialLayouts.clear();
  accessorySent.clear();
  items.clear();ClearItemQueryIndex();draws.clear();networkReady=false;resyncSent=false;itemSnapshotStarted=false;lastSent.clear();queuedConfig.clear();upload.clear();uploadIndex=0;
  playerGloves.fill(0);gloveNetworkReady=false;lastGloveSent.clear();gloveDraw=GloveDraw();gloveShaders.clear();
@@ -941,45 +1025,67 @@ namespace
 void PrefetchAppearanceTextures()
 {
  if(!textureStreaming||textureStreaming->value==0||!Active())return;
- struct Wanted {std::string path;int limit;bool sticker;};
- static std::vector<Wanted> wanted;static double next=-1,last=-1;static unsigned epoch=0;
+ struct Wanted {std::string path,key;int limit;bool sticker,speculative;};
+ static std::vector<Wanted> wanted;static double last=-1;static unsigned epoch=0;
+ static int lastView=-1;static bool complete=false;static std::uint64_t evictions=0,invalid=0,budget=0;
  const double now=gEngfuncs.GetClientTime();
- if(epoch!=texturePrefetchEpoch||now<last||now>=next)
+ const int view=ViewPlayer();
+ if(epoch!=texturePrefetchEpoch||now<last||lastView!=view)
  {
-  epoch=texturePrefetchEpoch;last=now;next=now+.25;wanted.clear();
-  std::map<std::pair<std::string,int>,bool> unique;
-  const auto append=[&](int id,int limit,bool sticker){const auto *entry=Resource(id);if(entry&&!entry->file.empty())unique[std::make_pair(entry->file,limit)]=sticker;};
-  const int view=ViewPlayer();
+  epoch=texturePrefetchEpoch;lastView=view;complete=false;wanted.clear();
+   std::map<std::pair<std::string,int>,std::pair<bool,bool>> unique;
+   const auto append=[&](int id,int limit,bool sticker,bool speculative=false){const auto *entry=Resource(id);if(entry&&!entry->file.empty()){
+    auto result=unique.emplace(std::make_pair(entry->file,limit),std::make_pair(sticker,speculative));
+    if(!speculative)result.first->second.second=false;}};
   for(const auto &row:items)
   {
    const auto &item=row.second;if(!item.owner)continue;
    append(item.skin,512,false);for(int id:item.stickers)if(id>0)append(id,256,true);if(item.charm>0)append(item.charm,256,true);
-   if(item.owner==view){append(item.skin,0,false);for(int id:item.stickers)if(id>0)append(id,0,true);if(item.charm>0)append(item.charm,0,true);}
+    // Any owned gun can become the viewmodel through pickup/observer/control.
+    // Warm its original resolution while it is still remote, not on that
+    // transition frame. The bounded cache evicts unused images if necessary.
+    const bool speculative=item.owner!=view;
+    append(item.skin,0,false,speculative);for(int id:item.stickers)if(id>0)append(id,0,true,speculative);if(item.charm>0)append(item.charm,0,true,speculative);
   }
   for(int id:playerGloves)if(const auto *glove=oc2_gloves::FindEntry(gloveCatalog,id))
-  {if(!glove->leftTexture.empty())unique[std::make_pair(glove->leftTexture,0)]=false;if(!glove->rightTexture.empty())unique[std::make_pair(glove->rightTexture,0)]=false;}
-  for(const auto &entry:unique)if(wanted.size()<400)wanted.push_back({entry.first.first,entry.first.second,entry.second});
+   {if(!glove->leftTexture.empty())unique[std::make_pair(glove->leftTexture,0)]={false,false};if(!glove->rightTexture.empty())unique[std::make_pair(glove->rightTexture,0)]={false,false};}
+   for(const auto &entry:unique)if(wanted.size()<400){const auto &path=entry.first.first;const int limit=entry.first.second;wanted.push_back({path,limit?path+"|oc2max="+std::to_string(limit):path,limit,entry.second.first,entry.second.second});}
+   std::stable_sort(wanted.begin(),wanted.end(),[](const Wanted&a,const Wanted&b){return a.speculative<b.speculative;});
  }
+ last=now;
+ if(evictions!=textureStats.evictions||invalid!=textureStats.invalid||budget!=TextureBudgetBytes())complete=false;
+ evictions=textureStats.evictions;invalid=textureStats.invalid;budget=TextureBudgetBytes();
+ if(complete)return;
  BeginTextureDraw();
  // Queue the whole known loadout before it enters the camera. Only one ready
  // image is uploaded per frame; file reads/decoding/resizing run off-thread.
- for(const auto &entry:wanted)
+  const auto spareBudget=[](){const auto budget=TextureBudgetBytes();return textures.size()<224&&budget>64u*1024u*1024u&&textureBytes<budget-64u*1024u*1024u;};
+  for(const auto &entry:wanted)
  {
-  const std::string requested=entry.limit?entry.path+"|oc2max="+std::to_string(entry.limit):entry.path;
+   if(entry.speculative&&!spareBudget())continue;
+  const std::string &requested=entry.key;
   const auto alias=textureVariantAliases.find(requested);const std::string &key=alias==textureVariantAliases.end()?requested:alias->second;
   if(textures.count(key))continue;
-  oc2_texture_stream::Request(entry.path,key==requested?entry.limit:0);
+   oc2_texture_stream::Request(entry.path,key==requested?entry.limit:0,!entry.speculative);
  }
+ bool outstanding=false;
  for(const auto &entry:wanted)
  {
-  if(textureUploadFrame==textureVisibleFrame&&textureUploadsThisFrame>=1)break;
-  Texture(entry.path,entry.sticker,entry.limit);
+   if(entry.speculative&&!spareBudget())continue;
+   const std::string &requested=entry.key;
+   const auto alias=textureVariantAliases.find(requested);
+   if(textures.count(alias==textureVariantAliases.end()?requested:alias->second))continue;
+   outstanding=true;
+   if(textureUploadFrame==textureVisibleFrame&&textureUploadsThisFrame>=1)break;
+   Texture(entry.path,entry.sticker,entry.limit,!entry.speculative);
  }
+ complete=!outstanding;
 }
 }
 void OC2_InventoryFrame()
 {
  CheckSession();ReadState();
+ PumpTextureUpload();
  PrefetchAppearanceTextures();
  const auto *local=gEngfuncs.GetLocalPlayer();
  if(sessionLevel.empty()||!local||local->index<1||gEngfuncs.IsSpectateOnly()||
@@ -1199,16 +1305,17 @@ OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &ren
  }
  if(skin&&(weapon?(skin->kind!=Kind::GunSkin||skin->weapon!=weapon):(skin->kind!=Kind::KnifeSkin||skin->definition!=current.knife)))skin=nullptr;
  const int bodyTexture=skin&&!stickersOnly?Texture(skin->file,false,worldTexture?512:0):0;
+ const auto *bodyBindings=bodyTexture?&MaterialFamily(header,materials,skin->material):nullptr;
+ const auto &decalSlots=GetMaterialLayout(header,materials).decals;
  for(int i=0;i<header->numtextures;++i)
  {
   auto &material=materials[i];int replacement=0;
-  if(!memchr(material.name,0,sizeof(material.name)))continue;
-  if(bodyTexture&&FamilyMaterialMatches(header,materials,i,skin->material))replacement=bodyTexture;
-  if(state)for(int slot=0;slot<4;++slot)
+   if(bodyBindings&&(*bodyBindings)[i])replacement=bodyTexture;
+   const int slot=decalSlots[i];
+   if(state&&slot>=0)
   {
-   char name[]="decal_A.bmp";name[6]=char('A'+slot);
-   if(state->stickers[slot]&&(!stickersOnly||state->stickers[slot]>0)&&!stricmp(material.name,name))
-    {replacement=stickersOnly?selectedTextures[slot]:StickerTexture(state->stickers[slot],worldTexture?256:0);current.slotTextures[slot]=replacement;break;}
+    if(state->stickers[slot]&&(!stickersOnly||state->stickers[slot]>0))
+     {replacement=stickersOnly?selectedTextures[slot]:StickerTexture(state->stickers[slot],worldTexture?256:0);current.slotTextures[slot]=replacement;}
   }
   if(!replacement)continue;
   saved.push_back(Saved(&material.index,material.index));PinTexture(replacement,pinned);material.index=replacement;++current.swaps;
@@ -1243,23 +1350,20 @@ OC2_InventoryGloveMaterialScope::OC2_InventoryGloveMaterialScope(CStudioModelRen
  auto *header=renderer.m_pStudioHeader;
  if(!HeaderRange(header,header?header->textureindex:0,header?header->numtextures:0,sizeof(mstudiotexture_t)))return;
  auto *materials=reinterpret_cast<mstudiotexture_t *>(reinterpret_cast<byte *>(header)+header->textureindex);
- bool left=false,right=false;
- for(int index=0;index<header->numtextures;++index)
- {
-  if(!memchr(materials[index].name,0,sizeof(materials[index].name)))continue;
-  left=left||FamilyMaterialMatches(header,materials,index,entry->leftMaterial);
-  right=right||FamilyMaterialMatches(header,materials,index,entry->rightMaterial);
- }
+ const auto &leftBindings=MaterialFamily(header,materials,entry->leftMaterial);
+ const auto &rightBindings=MaterialFamily(header,materials,entry->rightMaterial);
+ const bool left=std::find(leftBindings.begin(),leftBindings.end(),1)!=leftBindings.end();
+ const bool right=std::find(rightBindings.begin(),rightBindings.end(),1)!=rightBindings.end();
  if(!left||!right)return;
  BeginTextureDraw();
  const int leftTexture=Texture(entry->leftTexture,false),rightTexture=Texture(entry->rightTexture,false);
  if(!leftTexture||!rightTexture)return;
  for(int index=0;index<header->numtextures;++index)
  {
-  auto &material=materials[index];if(!memchr(material.name,0,sizeof(material.name)))continue;
+  auto &material=materials[index];
   int replacement=0;
-  if(FamilyMaterialMatches(header,materials,index,entry->leftMaterial))replacement=leftTexture;
-  else if(FamilyMaterialMatches(header,materials,index,entry->rightMaterial))replacement=rightTexture;
+  if(leftBindings[index])replacement=leftTexture;
+  else if(rightBindings[index])replacement=rightTexture;
   if(!replacement)continue;
   // Keep MDL dimensions, normalized UVs, flags and bare skin families intact.
   saved.push_back(Saved(&material.index,material.index));

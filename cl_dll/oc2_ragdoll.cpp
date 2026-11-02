@@ -19,6 +19,7 @@
 #include <string.h>
 
 extern engine_studio_api_t IEngineStudio;
+#include "oc2_player_snapshot.h"
 
 namespace
 {
@@ -175,6 +176,8 @@ struct PlayerDeath
 Body s_bodies[64] = {};
 LivePose s_livePose[33] = {};
 PlayerDeath s_deaths[33] = {};
+struct PendingDeath { int killer=0,userid=0,message=0;unsigned generation=0;double queued=0;bool active=false,headshot=false; };
+PendingDeath s_pendingDeaths[33];
 int s_nextSerial = 0;
 int s_pendingEarlyVictim = 0;
 int s_pendingKiller = 0;
@@ -1200,6 +1203,9 @@ void DumpRagdolls()
         if (!body.serial || body.expires < now || !body.corpse ||
             body.corpse->entity.curstate.iuser4 != body.serial) continue;
         ++live;
+        gEngfuncs.Con_Printf("ragdoll_spawn: serial=%d player=%d ready=%d early=%d age=%.3f origin=%.1f,%.1f,%.1f\n",
+            body.serial,body.playerIndex,int(body.ready),int(body.early),now-body.birth,
+            body.deathOrigin.x,body.deathOrigin.y,body.deathOrigin.z);
         if (!body.ready) continue;
         if (body.sleeping) ++sleeping; else ++moving;
         if (live <= 4)
@@ -1289,7 +1295,7 @@ bool OC2_RagdollHideDeadPlayer(int playerIndex, int drawnSequence)
     return s_ragdoll && s_ragdoll->value > 0 && state.dead && state.claimed;
 }
 
-void OC2_RagdollSpawnDeath(int victimIndex, int killerIndex, bool headshot)
+static void SpawnCurrentDeath(int victimIndex, int killerIndex, bool headshot)
 {
     OC2_RagdollInit();
     if (victimIndex < 1 || victimIndex > gEngfuncs.GetMaxClients() ||
@@ -1300,10 +1306,14 @@ void OC2_RagdollSpawnDeath(int victimIndex, int killerIndex, bool headshot)
     BeginDeath(state);
     if (state.claimed) return;
     cl_entity_t *player = gEngfuncs.GetEntityByIndex(victimIndex);
+    // DeathMsg is global, entity updates are PVS-limited. Wait for the
+    // authoritative ClCorpse position when this slot is only an old snapshot.
+    if (!OC2_CurrentPlayerSnapshot(player)) return;
     const LivePose &pose = s_livePose[victimIndex];
     const double now = gEngfuncs.GetClientTime();
     const bool freshPose = pose.valid && pose.model &&
-        now >= pose.time - 0.05 && now - pose.time < 0.5;
+        now >= pose.time - 0.05 && now - pose.time < 0.5 &&
+        (Vector(player->origin) - pose.origin).Length() <= 128.0f;
     model_t *model = freshPose ? pose.model : RenderedPlayerModel(victimIndex);
     if (!model && player) model = player->model;
     if (!model || !model->name[0]) return;
@@ -1323,6 +1333,19 @@ void OC2_RagdollSpawnDeath(int victimIndex, int killerIndex, bool headshot)
         player ? player->curstate.body : 0, victimIndex);
     s_pendingEarlyVictim = s_pendingKiller = 0;
     s_pendingHeadshot = false;
+}
+
+void OC2_RagdollSpawnDeath(int victimIndex, int killerIndex, bool headshot)
+{
+    OC2_RagdollInit();
+    if(victimIndex<1||victimIndex>32||victimIndex>gEngfuncs.GetMaxClients()||!s_ragdoll||s_ragdoll->value<=0)return;
+    PlayerDeath &state=DeathState(victimIndex);BeginDeath(state);
+    if(state.claimed)return;
+    PendingDeath &pending=s_pendingDeaths[victimIndex];pending.active=true;pending.killer=killerIndex;
+    pending.userid=state.userid;pending.generation=state.generation;pending.headshot=headshot;
+    const cl_entity_t *local=gEngfuncs.GetLocalPlayer();
+    const entity_state_t *snapshot=local&&IEngineStudio.GetPlayerState?IEngineStudio.GetPlayerState(local->index-1):NULL;
+    pending.message=snapshot?snapshot->messagenum:0;pending.queued=gEngfuncs.GetClientTime();
 }
 
 bool OC2_RagdollSuppressDelayedCorpse(int playerIndex, const Vector &origin)
@@ -1447,7 +1470,8 @@ bool OC2_RagdollRegister(tempent_s *corpse, int playerIndex)
         if (pose.valid && pose.model &&
             !strcmp(pose.model->name, body.model->name) &&
             pose.boneCount == header->numbones &&
-            now >= pose.time - 0.05 && now - pose.time < 0.5)
+            now >= pose.time - 0.05 && now - pose.time < 0.5 &&
+            (body.deathOrigin - pose.origin).Length() <= 128.0f)
         {
             memcpy(body.baseMatrix, pose.matrix,
                 sizeof(body.baseMatrix[0]) * pose.boneCount);
@@ -1525,6 +1549,24 @@ static void Advance(Body &body, double now)
     body.lastTime = now;
 }
 
+void OC2_RagdollResolveDeaths(double now)
+{
+    // Reliable DeathMsg precedes entity deltas inside a packet. Resolve the
+    // early body here, after packet parsing, against the updated PVS snapshot.
+    for(int player=1;player<=32;++player)if(s_pendingDeaths[player].active)
+    {
+        const PendingDeath pending=s_pendingDeaths[player];
+        const PlayerDeath &state=DeathState(player);
+        const cl_entity_t *local=gEngfuncs.GetLocalPlayer();
+        const entity_state_t *snapshot=local&&IEngineStudio.GetPlayerState?IEngineStudio.GetPlayerState(local->index-1):NULL;
+        if(!snapshot||snapshot->messagenum==pending.message)
+        {if(now-pending.queued>.25||now<pending.queued)s_pendingDeaths[player].active=false;continue;}
+        s_pendingDeaths[player].active=false;
+        if(state.dead&&!state.claimed&&state.userid==pending.userid&&state.generation==pending.generation&&now-pending.queued<=.25)
+            SpawnCurrentDeath(player,pending.killer,pending.headshot);
+    }
+}
+
 void OC2_RagdollTick(double clientTime)
 {
     OC2ColdTimer cold("ragdoll_tick","bodies");
@@ -1569,6 +1611,7 @@ void OC2_RagdollClear()
     for (int i = 0; i < 64; ++i) s_bodies[i] = Body();
     for (int i = 0; i < 33; ++i) s_livePose[i] = LivePose();
     for (int i = 0; i < 33; ++i) s_deaths[i] = PlayerDeath();
+    for (int i = 0; i < 33; ++i) s_pendingDeaths[i] = PendingDeath();
     s_pendingEarlyVictim = s_pendingKiller = 0;
     s_pendingHeadshot = false;
 }

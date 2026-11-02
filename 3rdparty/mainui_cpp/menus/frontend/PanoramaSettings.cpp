@@ -38,6 +38,24 @@ std::vector<std::string> Split(const char *s)
     return parts;
 }
 const char *Categories[]={"键盘 / 鼠标","游戏设置","音频设置","视频设置","自定义准星"};
+bool ValidPlayerName(const std::string &name)
+{
+    if(name.empty()||name.size()>31)return false;
+    bool visible=false;
+    for(size_t i=0;i<name.size();)
+    {
+        const unsigned char c=name[i++];
+        if(c<32||c==127||c=='"'||c=='\\'||c==';'||c=='%')return false;
+        if(c>32)visible=true;
+        if(c<128)continue;
+        int extra=c>=0xc2&&c<=0xdf?1:c>=0xe0&&c<=0xef?2:c>=0xf0&&c<=0xf4?3:-1;
+        if(extra<0||i+extra>name.size())return false;
+        unsigned code=c&((1u<<(6-extra))-1);
+        for(int n=0;n<extra;++n){unsigned char next=name[i++];if((next&0xc0)!=0x80)return false;code=(code<<6)|(next&63);}
+        if((extra==1&&code<0x80)||(extra==2&&code<0x800)||(extra==3&&code<0x10000)||code>0x10ffff||(code>=0xd800&&code<=0xdfff))return false;
+    }
+    return visible;
+}
 }
 
 // These are registration defaults, never read back from config.cfg as defaults.
@@ -76,6 +94,7 @@ const CMenuPanoramaSettings::Setting *CMenuPanoramaSettings::Definitions(int &co
         {0,Binding,"队伍聊天","messagemode2","u",0,0,0,nullptr,nullptr},
         {0,Binding,"语音通话","+voicerecord","k",0,0,0,nullptr,nullptr},
         {0,Binding,"选择队伍","chooseteam","m",0,0,0,nullptr,nullptr},
+        {1,PlayerName,"玩家 ID / 昵称","name","",0,0,0,nullptr,nullptr},
         {1,Choice,"快速切换武器","hud_fastswitch","0",0,1,1,"关闭|开启","0|1"},
         {1,Choice,"持枪手","cl_righthand","1",0,1,1,"左手|右手","0|1"},
         {1,Number,"持枪视野","viewmodel_fov","54",54,68,1,nullptr,nullptr},
@@ -164,6 +183,10 @@ void CMenuPanoramaSettings::_Init()
     SET_EVENT_MULTI(m_displayWindow.onReleased,{static_cast<CMenuPanoramaSettings*>(pSelf->Parent())->CycleDisplayWindow();});
     Button(m_displayApply,"应用显示设置","settings_display_apply");m_displayApply.onReleased=VoidCb(&CMenuPanoramaSettings::ApplyDisplay);
     Button(m_displayCancel,"取消","settings_display_cancel");m_displayCancel.onReleased=VoidCb(&CMenuPanoramaSettings::CancelDisplay);
+    m_playerName.SetNameAndStatus("",nullptr,"settings_player_name");
+    m_playerName.iMaxLength=128;m_playerName.bAllowColorstrings=false;
+    m_playerName.SetCharSize(QM_SMALLFONT);m_playerName.colorBase=Ink();
+    m_playerName.onCvarChange=VoidCb(&CMenuPanoramaSettings::NameChanged);AddItem(m_playerName);
 }
 
 void CMenuPanoramaSettings::_VidInit()
@@ -186,6 +209,7 @@ void CMenuPanoramaSettings::_VidInit()
 void CMenuPanoramaSettings::Show()
 {
     CMenuFramework::Show();m_original.clear();m_dirty=false;m_capture=-1;m_captureKey=-1;
+    m_nameLoading=true;m_playerName.SetBuffer(EngFuncs::GetCvarString("name"));m_nameLoading=false;m_nameInvalid=false;
     for(int key=0;key<256;++key){const char *b=EngFuncs::KEY_GetBinding(key);m_originalBindings[key]=b?b:"";m_touchedBindings[key]=false;}
     Refresh();SetCursorToItem(m_tabs[m_category]);
 }
@@ -203,6 +227,7 @@ void CMenuPanoramaSettings::ChooseTab(CMenuBaseItem *item)
 void CMenuPanoramaSettings::Refresh()
 {
     int count;const Setting *settings=Definitions(count);m_visible.clear();
+    m_playerName.SetVisibility(false);
     for(int i=0;i<count;++i)if(settings[i].category==m_category)m_visible.push_back(i);
     m_scroll=bound(0,m_scroll,Q_max(0,int(m_visible.size())-9));
     for(int i=0;i<9;++i)
@@ -212,6 +237,8 @@ void CMenuPanoramaSettings::Refresh()
         else m_rows[i].SetRect(104,185+i*51,uiStatic.width-174,48);
         m_rows[i].VidInit();
         m_rows[i].SetVisibility(!m_displayOpen&&m_rows[i].index>=0);m_rows[i].SetGrayed(m_rows[i].index>=0&&!Available(settings[m_rows[i].index]));
+        if(m_rows[i].index>=0&&settings[m_rows[i].index].kind==PlayerName)
+        {m_playerName.SetRect(uiStatic.width-400,191+i*51,310,34);m_playerName.VidInit();m_playerName.SetVisibility(!m_displayOpen);}
     }
     for(int i=0;i<5;++i){m_tabs[i].colorBase=i==m_category?AccentColor():Ink();m_tabs[i].SetVisibility(!m_displayOpen);}
     m_crosshairDefaults.SetVisibility(m_category==4&&!m_displayOpen);
@@ -244,6 +271,7 @@ bool CMenuPanoramaSettings::Available(const Setting &setting) const
 
 std::string CMenuPanoramaSettings::Value(const Setting &setting) const
 {
+    if(setting.kind==PlayerName)return EngFuncs::GetCvarString("name");
     if(setting.kind==Binding)
     {
         std::string result;
@@ -280,6 +308,7 @@ void CMenuPanoramaSettings::Adjust(int index,int direction)
 {
     int count;const Setting *settings=Definitions(count);if(index<0||index>=count)return;
     const Setting &setting=settings[index];if(!Available(setting))return;
+    if(setting.kind==PlayerName){SetCursorToItem(m_playerName);return;}
     if(setting.kind==Binding){m_capture=index;m_captureKey=-1;return;}
     if(setting.kind==Resolution){OpenDisplay();return;}
     Remember(setting.key);
@@ -339,6 +368,7 @@ void CMenuPanoramaSettings::PaintRow(Row &row)
     Fill(row,0,height-1,width,1,PackRGBA(255,255,255,12));
     Text(row,16,0,width-350,height,setting.label,m_category==4?16:17,enabled?Ink():Muted(),false,m_category==4?QM_LEFT:QM_CENTER);
     const std::string value=m_capture==row.index?"请按下一个按键…":Value(setting);
+    if(setting.kind==PlayerName)return;
     if(setting.kind==Number&&enabled)
     {
         const float ratio=bound(0.0f,(EngFuncs::GetCvarFloat(setting.key)-setting.minimum)/(setting.maximum-setting.minimum),1.0f);
@@ -407,14 +437,26 @@ bool CMenuPanoramaSettings::MouseMove(int x,int y)
 }
 void CMenuPanoramaSettings::Save()
 {
+    if(std::strcmp(m_playerName.GetBuffer(),EngFuncs::GetCvarString("name")))
+    {
+        const std::string name=m_playerName.GetBuffer();m_nameInvalid=!ValidPlayerName(name);
+        if(m_nameInvalid){SelectCategory(1);SetCursorToItem(m_playerName);return;}
+        EngFuncs::CvarSetString("name",name.c_str());
+    }
     if(!m_dirty)return;EngFuncs::ClientCmd(false,"host_writeconfig\n");m_original.clear();m_dirty=false;
     for(int key=0;key<256;++key){const char *b=EngFuncs::KEY_GetBinding(key);m_originalBindings[key]=b?b:"";m_touchedBindings[key]=false;}
     Refresh();
+}
+void CMenuPanoramaSettings::NameChanged()
+{
+    if(m_nameLoading)return;
+    m_nameInvalid=false;m_dirty=true;m_save.SetGrayed(false);m_revert.SetGrayed(false);
 }
 void CMenuPanoramaSettings::Revert()
 {
     for(const auto &original:m_original)EngFuncs::CvarSetString(original.name.c_str(),original.value.c_str());
     for(int key=0;key<256;++key)if(m_touchedBindings[key]){EngFuncs::KEY_SetBinding(key,m_originalBindings[key].c_str());m_touchedBindings[key]=false;}
+    m_nameLoading=true;m_playerName.SetBuffer(EngFuncs::GetCvarString("name"));m_nameLoading=false;m_nameInvalid=false;
     m_original.clear();m_dirty=false;m_capture=-1;Refresh();
 }
 void CMenuPanoramaSettings::Back()
@@ -556,7 +598,7 @@ void CMenuPanoramaSettings::Draw()
         Fill(*this,scrollbar,185,3,height,PackRGBA(255,255,255,20));
         Fill(*this,scrollbar,185+(height-thumb)*m_scroll/Q_max(1,int(m_visible.size())-9),3,thumb,PackRGBA(210,219,226,135));
     }
-    Text(*this,104,650,uiStatic.width-400,30,m_category==0?"滚轮滚动  ·  点击键位后按新键  ·  删除键清除键位":"滚轮滚动  ·  点击或拖动修改  ·  方向键微调",13,Muted(),false,QM_CENTER);
+    Text(*this,104,650,uiStatic.width-400,30,m_nameInvalid?"请输入有效昵称（最多 31 字节）；不支持控制符或引号等特殊符号":m_category==1?"昵称支持中文  ·  点击保存更改后生效  ·  返回放弃未保存修改":m_category==0?"滚轮滚动  ·  点击键位后按新键  ·  删除键清除键位":"滚轮滚动  ·  点击或拖动修改  ·  方向键微调",13,Muted(),false,QM_CENTER);
     Text(*this,225,690,uiStatic.width-760,48,m_dirty?"已修改":"已保存",13,Muted(),false,QM_CENTER);
     if(m_category==4)PaintCrosshair();
     if(!inGame)m_chrome.Draw();CMenuFramework::Draw();

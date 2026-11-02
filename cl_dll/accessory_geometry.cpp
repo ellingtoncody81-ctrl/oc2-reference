@@ -1037,7 +1037,8 @@ bool BuildMeshCollider(const std::vector<Triangle>& triangles,MeshCollider& out,
 }
 bool RefitMeshCollider(const std::vector<Triangle>& triangles,MeshCollider& c,bool closedGroups)
 {
-    if(c.surfaceOnly!=!closedGroups||triangles.size()!=c.triangles.size()||(!triangles.empty()&&c.nodes.empty()))return BuildMeshCollider(triangles,c,closedGroups);
+    const bool initialiseGroups=c.surfaceOnly&&closedGroups;
+    if((c.surfaceOnly!=!closedGroups&&!initialiseGroups)||triangles.size()!=c.triangles.size()||(!triangles.empty()&&c.nodes.empty()))return BuildMeshCollider(triangles,c,closedGroups);
     for(size_t i=0;i<triangles.size();++i)
     {
         if(triangles[i].group!=c.triangles[i].group)return BuildMeshCollider(triangles,c,closedGroups);
@@ -1054,6 +1055,9 @@ bool RefitMeshCollider(const std::vector<Triangle>& triangles,MeshCollider& c,bo
         node.bounds=rebuilt;
     }
     if(!closedGroups){c.geometrySerial=++colliderSerial;return true;}
+    // Preheated BVH nodes are safe search structure only. Resolve closed
+    // volumes from the first real pose, never from the authored bind pose.
+    if(initialiseGroups){c.surfaceOnly=false;collisionGroups(c);}
     for(CollisionGroup& g:c.groups){g.bounds=emptyBounds();g.closed=g.topologyClosed;}
     for(size_t i=0;i<c.triangles.size();++i)extend(c.groups[c.triangleGroups[i]].bounds,c.triangleBounds[i]);
     for(const CollisionEdgePair& edge:c.closedEdges)
