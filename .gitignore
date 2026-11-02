@@ -326,6 +326,7 @@ scripts/ios/mod-build
 
 # Waf
 build_current
+build_oc2_amd64/
 *waf-*/
 *waf3-*/
 .lock-waf*

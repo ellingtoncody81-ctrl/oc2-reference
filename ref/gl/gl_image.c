@@ -22,6 +22,11 @@ GNU General Public License for more details.
 static gl_texture_t		gl_textures[MAX_TEXTURES];
 static gl_texture_t*	gl_texturesHashTable[TEXTURES_HASH_SIZE];
 static uint		gl_numTextures;
+// Client-owned inventory textures opt in by name. Only one bounded upload is
+// active; its handle stays negative until every mip is ready for rendering.
+static struct { gl_texture_t *texture; rgbdata_t *image; uint mip, row; size_t offset; } gl_inventoryUpload;
+static qboolean gl_inventoryReserve;
+static qboolean gl_inventoryFailed;
 
 #define IsLightMap( tex )	( FBitSet(( tex )->flags, TF_ATLAS_PAGE ))
 /*
@@ -832,6 +837,7 @@ static void GL_BuildMipMap( byte *in, int srcWidth, int srcHeight, int srcDepth,
 
 static void GL_TextureImageRAW( gl_texture_t *tex, GLint side, GLint level, GLint width, GLint height, GLint depth, GLint type, const void *data )
 {
+	if( gl_inventoryReserve ) data = NULL;
 	const GLuint cubeTarget = GL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB;
 	const qboolean subImage = FBitSet( tex->flags, TF_IMG_UPLOADED ) && data != NULL;
 	const rawformat_t rawformat = gEngfuncs.Image_GetPFDesc( type )->rawformat;
@@ -907,6 +913,7 @@ static void GL_TextureImageRAW( gl_texture_t *tex, GLint side, GLint level, GLin
 		if( subImage ) pglTexSubImage2D( tex->target, level, 0, 0, width, height, inFormat, dataType, data );
 		else pglTexImage2D( tex->target, level, tex->format, width, height, 0, inFormat, dataType, data );
 	}
+	if( gl_inventoryReserve && pglGetError() != GL_NO_ERROR ) gl_inventoryFailed = true;
 }
 
 static void GL_TextureImageCompressed( gl_texture_t *tex, GLint side, GLint level, GLint width, GLint height, GLint depth, size_t size, const void *data )
@@ -992,6 +999,12 @@ static qboolean GL_UploadTexture( gl_texture_t *tex, rgbdata_t *pic )
 	}
 
 	GL_SetTextureDimensions( tex, pic->width, pic->height, pic->depth );
+	// Resampling below consumes four-byte pixels. Reject an unsupported DDS
+	// format/size combination rather than reading its mip chain at a wrong stride.
+	if( pic->numMips > 1 && !ImageCompressed( pic->type ) &&
+		(pic->width != tex->width || pic->height != tex->height) &&
+		pic->type != PF_RGBA_32 && pic->type != PF_BGRA_32 )
+		return false;
 	GL_SetTextureFormat( tex, pic->type, pic->flags );
 
 	tex->fogParams[0] = pic->fogParams[0];
@@ -1040,7 +1053,7 @@ static qboolean GL_UploadTexture( gl_texture_t *tex, rgbdata_t *pic )
 				GL_CheckTexImageError( tex );
 			}
 		}
-		else if( Q_max( 1, pic->numMips ) > 1 )	// not-compressed DDS
+		else if( Q_max( 1, pic->numMips ) > 1 && pic->width == tex->width && pic->height == tex->height ) // not-compressed DDS
 		{
 			for( uint j = 0; j < Q_max( 1, pic->numMips ); j++ )
 			{
@@ -1283,6 +1296,11 @@ GL_DeleteTexture
 static void GL_DeleteTexture( gl_texture_t *tex )
 {
 	Assert( tex != NULL );
+	if( gl_inventoryUpload.texture == tex )
+	{
+		gEngfuncs.FS_FreeImage( gl_inventoryUpload.image );
+		memset( &gl_inventoryUpload, 0, sizeof( gl_inventoryUpload ));
+	}
 
 	// already freed?
 	if( !tex->texnum ) return;
@@ -1369,6 +1387,34 @@ void GL_UpdateTexSize( int texnum, int width, int height, int depth )
 GL_LoadTexture
 ================
 */
+static int GL_PumpInventoryUpload( void )
+{
+	gl_texture_t *tex = gl_inventoryUpload.texture;
+	rgbdata_t *pic = gl_inventoryUpload.image;
+	size_t budget = 256 * 1024;
+	GL_Bind( glState.activeTMU, tex - gl_textures );
+	while( budget && gl_inventoryUpload.mip < pic->numMips )
+	{
+		const uint mip = gl_inventoryUpload.mip;
+		const uint width = Q_max( 1, pic->width >> mip ), height = Q_max( 1, pic->height >> mip );
+		const size_t stride = width * 4;
+		const uint rows = Q_min( height - gl_inventoryUpload.row, budget / stride );
+		if( !rows ) break;
+		pglTexSubImage2D( tex->target, mip, 0, gl_inventoryUpload.row, width, rows,
+			pic->type == PF_BGRA_32 ? GL_BGRA : GL_RGBA, GL_UNSIGNED_BYTE,
+			pic->buffer + gl_inventoryUpload.offset + gl_inventoryUpload.row * stride );
+		if( pglGetError() != GL_NO_ERROR ) { GL_DeleteTexture( tex ); return 0; }
+		GL_CheckTexImageError( tex );
+		budget -= rows * stride; gl_inventoryUpload.row += rows;
+		if( gl_inventoryUpload.row == height )
+		{ gl_inventoryUpload.offset += stride * height; gl_inventoryUpload.row = 0; gl_inventoryUpload.mip++; }
+	}
+	if( gl_inventoryUpload.mip < pic->numMips ) return -(int)( tex - gl_textures );
+	gEngfuncs.FS_FreeImage( pic );
+	memset( &gl_inventoryUpload, 0, sizeof( gl_inventoryUpload ));
+	return tex - gl_textures;
+}
+
 int GL_LoadTexture( const char *name, const byte *buf, size_t size, int flags )
 {
 	uint picFlags = 0;
@@ -1379,7 +1425,10 @@ int GL_LoadTexture( const char *name, const byte *buf, size_t size, int flags )
 	// see if already loaded
 	gl_texture_t *tex;
 	if(( tex = GL_TextureForName( name )))
+	{
+		if( gl_inventoryUpload.texture == tex ) return GL_PumpInventoryUpload();
 		return (tex - gl_textures);
+	}
 
 	if( FBitSet( flags, TF_NOFLIP_TGA ))
 		SetBits( picFlags, IL_DONTFLIP_TGA );
@@ -1396,15 +1445,30 @@ int GL_LoadTexture( const char *name, const byte *buf, size_t size, int flags )
 	// allocate the new one
 	tex = GL_AllocTexture( name, flags );
 	GL_ProcessImage( tex, pic );
+	GL_SetTextureTarget( tex, pic );
+	GL_SetTextureDimensions( tex, pic->width, pic->height, pic->depth );
+	const qboolean streaming = !gl_inventoryUpload.texture && !Q_strncmp( name, "#oc2_stream_", 12 ) &&
+		(pic->type == PF_RGBA_32 || pic->type == PF_BGRA_32) && pic->numMips > 1 &&
+		tex->target == GL_TEXTURE_2D && pic->depth <= 1 && !FBitSet( pic->flags, IMAGE_CUBEMAP ) &&
+		tex->width == pic->width && tex->height == pic->height;
+	gl_inventoryReserve = streaming;
+	gl_inventoryFailed = false;
 
-	if( !GL_UploadTexture( tex, pic ))
+	const qboolean uploaded = GL_UploadTexture( tex, pic );
+	gl_inventoryReserve = false;
+	if( !uploaded || gl_inventoryFailed )
 	{
-		memset( tex, 0, sizeof( gl_texture_t ));
+		GL_DeleteTexture( tex );
 		gEngfuncs.FS_FreeImage( pic ); // release source texture
 		return 0;
 	}
 
 	GL_ApplyTextureParams( tex ); // update texture filter, wrap etc
+	if( streaming )
+	{
+		gl_inventoryUpload.texture = tex; gl_inventoryUpload.image = pic;
+		return -(int)( tex - gl_textures );
+	}
 	gEngfuncs.FS_FreeImage( pic ); // release source texture
 
 	// NOTE: always return texnum as index in array or engine will stop work !!!
