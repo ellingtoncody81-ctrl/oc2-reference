@@ -1262,7 +1262,9 @@ static void R_StudioEntityLight( alight_t *lightinfo )
 		if( el->die < g_studio.time || el->radius <= 0.0f )
 			continue;
 
-		if(( el->key & 0xFFF ) == ent->index )
+		// Key zero is an unbound world light, including muzzle flashes.
+		// The viewmodel also has index zero; never move those lights to it.
+		if( el->key && ( el->key & 0xFFF ) == ent->index )
 		{
 			int	att = (el->key >> 12) & 0xF;
 
@@ -1434,7 +1436,7 @@ static void R_LightLambert( vec4_t light[MAX_LOCALLIGHTS], const vec3_t normal, 
 			float temp = r * light[i][3];
 
 			vec3_t localLight;
-			VectorAddScalar( g_studio.locallightcolor[i], temp, localLight );
+			VectorScale( g_studio.locallightcolor[i], temp, localLight );
 			VectorAdd( finalLight, localLight, finalLight );
 		}
 	}
