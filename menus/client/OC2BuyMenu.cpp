@@ -436,8 +436,11 @@ bool UI_OC2BuyMenu_Show()
 {
 	if (!g_pOc2BuyMenu) return false;
 	oc2_buy::State state;
-	if (g_pOc2BuyMenu->GetState(state) && state.canBuy && !menu.IsVisible())
-		menu.Show();
+	if (g_pOc2BuyMenu->GetState(state))
+	{
+		if(state.canBuy){if(!menu.IsVisible())menu.Show();}
+		else g_pOc2BuyMenu->SetOpen(true); // report the rejected explicit open request
+	}
 	return true;
 }
 
