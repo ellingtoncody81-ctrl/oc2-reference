@@ -15,7 +15,7 @@ const char *const kFlame = "sprites/flame1.spr";
 const char *const kBurnSound = "weapons/molotov-1.wav"; // verified eight-second sample
 const char *const kImpactSound = "weapons/molotov_hit1.wav";
 EHANDLE s_pools[kPools], s_projectiles[kProjectiles];
-struct SmokeCloud { Vector origin; float start = 0, end = 0; bool active = false, modern = false; };
+struct SmokeCloud { Vector origin; float start = 0, end = 0; int team = 0; bool active = false, modern = false; };
 SmokeCloud s_clouds[kClouds];
 int s_flame = 0, s_puff = 0, s_damageEvents = 0;
 float s_damageAmount = 0;
@@ -171,11 +171,12 @@ public:
 		SetThink(&COC2Inferno::FireThink);
 		pev->nextthink = m_start+0.1f;
 	}
-	bool Start(entvars_t *owner, const Vector &point, const Vector &normal, const Vector &velocity, bool incendiary)
+	bool Start(entvars_t *owner, const Vector &point, const Vector &normal, const Vector &velocity, bool incendiary, int team)
 	{
 		pev->iuser1 = incendiary ? 1 : 0; // Keep the thrown item's identity for later burn kills.
 		m_owner = owner ? CBaseEntity::Instance(owner) : nullptr;
 		m_userid = (owner && (owner->flags & FL_CLIENT)) ? GETPLAYERUSERID(ENT(owner)) : 0;
+		m_team = team;
 		m_origin = point;
 		const Vector plane = Unit(normal);
 		m_splash = velocity-plane*DotProduct(velocity, plane);
@@ -197,9 +198,12 @@ public:
 	void Extinguish(const Vector &smoke)
 	{
 		if (m_stopped) return;
+		const int before=BurningCount();
 		const bool all = SmokeContains(m_origin, smoke);
 		for (int i=0; i<m_count; ++i)
 			if (m_cells[i].burning && (all || SmokeContains(m_cells[i].point, smoke))) KillCell(i);
+		if(before>BurningCount()&&CVAR_GET_FLOAT("developer")>0)
+			ALERT(at_console,"oc2inferno_extinguished: t=%.3f team=%d cells=%d age=%.3f\n",gpGlobals->time,m_team,before-BurningCount(),Age());
 		if (!BurningCount()) Stop();
 	}
 	bool SmokeTouching(const Vector &point, CBaseEntity *ignore)
@@ -225,6 +229,8 @@ public:
 		return count;
 	}
 	float Age() const { return gpGlobals->time-m_start; }
+	int OwnerTeam() const { return m_team; }
+	float Remaining() const { return m_end-gpGlobals->time; }
 	bool Nearest(const Vector &point, float &distance, Vector &fire) const
 	{
 		bool found=false;
@@ -403,7 +409,7 @@ private:
 	EHANDLE m_owner;
 	Vector m_origin, m_splash;
 	float m_start = 0, m_end = 0, m_nextDamage = 0, m_lastThink = 0;
-	int m_count = 0, m_userid = 0;
+	int m_count = 0, m_userid = 0, m_team = 0;
 	bool m_stopped = false;
 };
 
@@ -438,6 +444,8 @@ public:
 	{
 		m_owner = owner ? CBaseEntity::Instance(owner) : nullptr;
 		m_userid = owner && (owner->flags & FL_CLIENT) ? GETPLAYERUSERID(ENT(owner)) : 0;
+		CBaseEntity *entity = m_owner;
+		m_team = entity && entity->IsPlayer() ? static_cast<CBasePlayer *>(entity)->m_iTeam : 0;
 		pev->owner = owner ? ENT(owner) : nullptr;
 	}
 	void SetVariant(bool incendiary)
@@ -459,6 +467,7 @@ public:
 		if (m_finished || !other || other->edict() == pev->owner || other->pev->solid == SOLID_TRIGGER || other->pev->solid == SOLID_NOT) return;
 		if (!std::isfinite(gpGlobals->time) || !Finite(pev->origin) || !Finite(pev->velocity)) { RemoveProjectile(); return; }
 		TraceResult trace = UTIL_GetGlobalTrace();
+		if(other->IsBSPModel())OC2_BotUtilityBounce(this,trace.vecPlaneNormal);
 		const Vector start = pev->origin-Unit(pev->velocity)*4, end = pev->origin+Unit(pev->velocity)*4;
 		if (Sky(trace,start,end)) { RemoveProjectile(); return; }
 		if (gpGlobals->time >= m_nextSound)
@@ -517,6 +526,7 @@ private:
 	void Ignite(Vector point, const Vector &normal)
 	{
 		if (m_finished) return;
+		OC2_BotUtilityEffect(this,point);
 		bool burning = false;
 		const int slot = FreeSlot(s_pools,kPools);
 		if (slot >= 0 && SurfacePoint(point) && !InSmoke(point))
@@ -527,7 +537,7 @@ private:
 				pool->Spawn();
 				const Vector splash = m_initialDirection*pev->velocity.Length();
 				s_pools[slot] = pool;
-				burning = pool->Start(OwnerVars(m_owner,m_userid),point,normal,splash,pev->iuser1 != 0);
+				burning = pool->Start(OwnerVars(m_owner,m_userid),point,normal,splash,pev->iuser1 != 0,m_team);
 				if (!burning) pool->Stop();
 			}
 		}
@@ -539,7 +549,7 @@ public:
 private:
 	EHANDLE m_owner;
 	float m_deadline = 0, m_dampTime = 0, m_nextSound = 0, m_lastThink = 0, m_nextImpactDamage = 0;
-	int m_userid = 0;
+	int m_userid = 0, m_team = 0;
 	bool m_finished = false;
 };
 
@@ -570,7 +580,7 @@ CGrenade *OC2_ThrowMolotov(entvars_t *owner,const Vector &source,const Vector &v
 	return grenade;
 }
 
-void OC2_InfernoSmokeDetonate(const Vector &origin, bool modern)
+void OC2_InfernoSmokeDetonate(const Vector &origin, bool modern, int team)
 {
 	if (!Finite(origin) || !std::isfinite(gpGlobals->time)) return;
 	int slot = 0;
@@ -584,6 +594,7 @@ void OC2_InfernoSmokeDetonate(const Vector &origin, bool modern)
 	s_clouds[slot].end = gpGlobals->time+kSmokeLifetime;
 	s_clouds[slot].active = true;
 	s_clouds[slot].modern = modern;
+	s_clouds[slot].team = team;
 	for (int i=0; i<kPools; ++i)
 	{
 		CBaseEntity *entity = s_pools[i];
@@ -668,4 +679,28 @@ bool OC2_InfernoDanger(const Vector &point)
 {
 	Vector fire;
 	return OC2_InfernoNearest(point,85,&fire)&&std::fabs(point.z-fire.z)<60;
+}
+
+bool OC2_InfernoNearTeam(const Vector &point,float range,int team,float remaining)
+{
+	for(auto &handle:s_pools)
+	{
+		CBaseEntity *entity=handle;
+		if(!entity)continue;
+		auto *pool=static_cast<COC2Inferno *>(entity);
+		if(team && pool->OwnerTeam()!=team)continue;
+		if(pool->Remaining()<remaining)continue;
+		float distance=range*range;Vector fire;
+		if(!pool->Nearest(point,distance,fire))continue;
+		TraceResult tr;UTIL_TraceLine(fire+Vector(0,0,24),point+Vector(0,0,24),ignore_monsters,nullptr,&tr);
+		if(!tr.fStartSolid&&!tr.fAllSolid&&tr.flFraction==1)return true;
+	}
+	return false;
+}
+bool OC2_LegacySmokeNearTeam(const Vector &point,float range,int team)
+{
+	for(const auto &cloud:s_clouds)
+		if(cloud.active&&!cloud.modern&&cloud.end>gpGlobals->time&&(!team||cloud.team==team)
+			&&(cloud.origin-point).LengthSquared()<range*range)return true;
+	return false;
 }

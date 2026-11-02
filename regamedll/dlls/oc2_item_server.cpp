@@ -309,6 +309,13 @@ void Dump()
   const auto &a=entry.second;
   ALERT(at_console,"oc2item: serial=%d entity=%d owner=%d box=%d weapon=%d definition=%d skin=%d stickers=%d/%d/%d/%d origin=%d flags=%d\n",
    a.serial,a.entity,a.owner,a.box,a.weapon,a.definition,a.skin,a.stickers[0],a.stickers[1],a.stickers[2],a.stickers[3],a.originUserid,a.flags);
+   auto found=issued.find(a.serial);
+   if(found!=issued.end())if(CBaseEntity *entity=found->second)
+   {
+    const auto &appearance=static_cast<CBasePlayerItem *>(entity)->m_oc2Appearance;
+    ALERT(at_console,"oc2item_accessory: serial=%d owner=%d stattrak=%d charm=%d pattern=%d count=%u\n",
+     a.serial,a.owner,appearance.accessory.stattrak,appearance.accessory.charm,appearance.charm,appearance.count);
+   }
  }
  for(int i=1;i<=gpGlobals->maxClients&&i<=32;++i)
  {
@@ -507,7 +514,7 @@ void TestCommand(CBasePlayer *caller)
  }
  else
  {
-  if(value!=WEAPON_KNIFE&&oc2_accessories::Index(value)<0&&
+   if(value!=WEAPON_KNIFE&&value!=WEAPON_TASER&&oc2_accessories::Index(value)<0&&
      !TestUtilityWeapon(value))return;
   const auto *info=GetWeaponInfo(value);
   if(!info||!info->entityName)return;
@@ -622,9 +629,15 @@ void OC2_ItemsAcquire(CBasePlayerItem *item,CBasePlayer *player)
    a.accessory=*config;a.accessoryReady=true;
    if(player->IsBot())
    {
-    a.accessory.stattrak=true;a.accessory.charm=true;
-    std::vector<int> choices;for(const auto &entry:catalog)if(entry.kind==Kind::Sticker&&!IsTransparent(entry))choices.push_back(entry.id);
-    a.charm=Pick(choices,BotSeed(player)+unsigned(item->m_iId));
+     // Decide only once for this item instance; transfers and possession keep
+     // both independent choices. The catalogue already caches valid stickers.
+     unsigned seed=BotSeed(player)^(unsigned(item->m_iId)*0x9e3779b9u)^(a.serial*0x85ebca6bu);
+     seed^=seed>>16;seed*=0x7feb352du;seed^=seed>>15;
+     a.accessory.stattrak=(seed%100)<60;
+     a.accessory.charm=((seed>>8)%100)<55;
+     // -1 is the protocol's explicit no-charm selection. A positive pattern
+     // otherwise enables the charm in both world and first-person rendering.
+     a.charm=a.accessory.charm?Pick(stickers,seed):-1;
    }
   }
  }

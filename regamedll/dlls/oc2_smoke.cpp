@@ -1,6 +1,7 @@
 #include "precompiled.h"
 #include "effects.h"
 #include "oc2_smoke.h"
+#include "oc2_inferno.h"
 #include <cmath>
 
 // GoldSrc adaptation of Trinity Cube / z0h1r-LK's tc_smokegrenade_ex 0.4p1.
@@ -15,7 +16,7 @@ const char *const Sprite = "sprites/trinity_cubes/sg_smoke.spr";
 const char *const Sound = "trinity_cubes/sg_explode.wav";
 cvar_t enabled = {"oc2_smoke", "1", FCVAR_SERVER};
 struct Puff { EHANDLE sprite; Vector point; float blast = 0, clearUntil = 0; };
-struct Cloud { EHANDLE grenade; Vector origin; float start = 0; Puff puffs[Puffs]; };
+struct Cloud { EHANDLE grenade; Vector origin; float start = 0; int team = 0; Puff puffs[Puffs]; };
 Cloud clouds[Clouds];
 int spriteIndex = 0, blasts = 0;
 float Clamp(float x, float lo, float hi) { return x < lo ? lo : x > hi ? hi : x; }
@@ -75,6 +76,7 @@ bool OC2_SmokeCreate(CGrenade *grenade)
     Cloud &c = *cloud;
     Remove(c, false);
     c.grenade = grenade;
+    c.team = grenade->m_iTeam;
     c.start = gpGlobals->time;
     c.origin = grenade->pev->origin+Vector(0, 0, 24);
     const Vector offsets[Puffs] = {Vector(55,0,0), Vector(-55,0,0), Vector(0,55,0), Vector(0,-55,0),
@@ -187,6 +189,19 @@ bool OC2_SmokeBlocks(const Vector &from, const Vector &to)
         if (total > 70) return true;
     }
     return false;
+}
+bool OC2_SmokeNearTeam(const Vector &point,float range,int team)
+{
+    if(!Finite(point)||range<=0)return false;
+    for(const auto &c:clouds)if(c.grenade&&(!team||c.team==team))
+        for(const auto &p:c.puffs)if(Density(c,p)>.15f)
+        {
+            const Vector pos=Position(c,p);
+            if((pos-point).LengthSquared()>range*range)continue;
+            TraceResult tr;UTIL_TraceLine(point,pos,ignore_monsters,nullptr,&tr);
+            if(!tr.fStartSolid&&!tr.fAllSolid&&tr.flFraction==1)return true;
+        }
+    return OC2_LegacySmokeNearTeam(point,range+140,team);
 }
 void OC2_SmokeDump()
 {

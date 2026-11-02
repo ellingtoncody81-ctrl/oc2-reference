@@ -31,6 +31,7 @@
 #include "oc2_weapon_pickup.h"
 #include "oc2_spec_stats.h"
 #include "oc2_inferno.h"
+#include "oc2_bot_tactics.h"
 #include "wpn_shared/wpn_molotov.h"
 #include <limits.h>
 #include "wpn_shared/oc2_weapon_params.h"
@@ -3592,16 +3593,18 @@ LINK_HOOK_CLASS_CHAIN(CGrenade *, CBasePlayer, ThrowGrenade, (CBasePlayerWeapon 
 
 CGrenade *CBasePlayer::__API_HOOK(ThrowGrenade)(CBasePlayerWeapon *pWeapon, VectorRef vecSrc, VectorRef vecThrow, float time, unsigned short usEvent)
 {
+	if(!OC2_BotValidateUtilityThrow(this,pWeapon->m_iId,vecSrc,vecThrow))return nullptr;
+	CGrenade *grenade=nullptr;
 	switch (pWeapon->m_iId)
 	{
-	case WEAPON_HEGRENADE:    return CGrenade::ShootTimed2(pev, vecSrc, vecThrow, time, m_iTeam, usEvent);
-	case WEAPON_FLASHBANG:    return CGrenade::ShootTimed(pev, vecSrc, vecThrow, time);
-	case WEAPON_SMOKEGRENADE: return CGrenade::ShootSmokeGrenade(pev, vecSrc, vecThrow, time, usEvent);
-	case WEAPON_MOLOTOV: return OC2_ThrowMolotov(pev,vecSrc,vecThrow,
-		(pWeapon->m_iWeaponState & CMolotovGrenade::INCENDIARY_STATE) != 0);
+	case WEAPON_HEGRENADE:    grenade=CGrenade::ShootTimed2(pev, vecSrc, vecThrow, time, m_iTeam, usEvent);break;
+	case WEAPON_FLASHBANG:    grenade=CGrenade::ShootTimed(pev, vecSrc, vecThrow, time);break;
+	case WEAPON_SMOKEGRENADE: grenade=CGrenade::ShootSmokeGrenade(pev, vecSrc, vecThrow, time, usEvent);break;
+	case WEAPON_MOLOTOV: grenade=OC2_ThrowMolotov(pev,vecSrc,vecThrow,
+		(pWeapon->m_iWeaponState & CMolotovGrenade::INCENDIARY_STATE) != 0);break;
 	}
-
-	return nullptr;
+	if(grenade)OC2_BotUtilityThrown(grenade,this,pWeapon->m_iId);
+	return grenade;
 }
 
 LINK_HOOK_CLASS_VOID_CHAIN(CBasePlayer, AddAccount, (int amount, RewardType type, bool bTrackChange), amount, type, bTrackChange)

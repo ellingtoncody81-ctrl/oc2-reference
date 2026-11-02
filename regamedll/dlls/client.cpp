@@ -261,6 +261,8 @@ void LinkUserMessages()
 	OC2_SmokeRegister();
 	OC2_MatchRegister();
 	ADD_SERVER_COMMAND("oc2_bot_tactics_dump",OC2_BotTacticsDump);
+	ADD_SERVER_COMMAND("oc2_bot_tactics_probe",OC2_BotTacticsProbe);
+	ADD_SERVER_COMMAND("oc2_bot_tactics_fixture",OC2_BotTacticsFixture);
 }
 
 void WriteSigonMessages()
@@ -3778,6 +3780,7 @@ void EXT_FUNC ParmsChangeLevel()
 
 void EXT_FUNC StartFrame()
 {
+	OC2_BotTacticsFrame();
 	if (g_pGameRules)
 	{
 		g_pGameRules->Think();

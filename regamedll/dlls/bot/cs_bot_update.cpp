@@ -170,6 +170,9 @@ void CCSBot::Upkeep()
 		}
 
 		float driftAmplitude = 2.0f;
+		// Ambient gaze drift must not pull a validated grenade line-up away
+		// from its wall/landing point while the pin is held or the flash pops.
+		if (OC2_BotUtilityAiming(this)) driftAmplitude = 0.0f;
 
 		// have view "drift" very slowly, so view looks "alive"
 		if (IsUsingSniperRifle() && IsUsingScope())
