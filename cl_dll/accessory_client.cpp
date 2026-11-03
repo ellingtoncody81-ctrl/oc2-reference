@@ -343,7 +343,7 @@ geo::SwingState swing;
 struct Motion
 {
  unsigned searchCursor=0;
- double searchRetry=0;
+ double searchRetry=0,homeRetry=0;
  double time=-1;float anchor[3]{},velocity[3]{};
  int weapon=0;unsigned token=0,revision=0;
  const studiohdr_t *header=nullptr;bool left=false;
@@ -817,6 +817,13 @@ geo::SwingOutput RecoverCharmFoot(const geo::SwingOutput &current,const geo::Swi
  return result;
 }
 
+bool CharmIdleSequence(const studiohdr_t *header,int sequence)
+{
+ if(!header||sequence<0||sequence>=header->numseq)return false;
+ const auto *descriptions=reinterpret_cast<const mstudioseqdesc_t *>(reinterpret_cast<const byte *>(header)+header->seqindex);
+ return strstr(descriptions[sequence].label,"idle")!=nullptr;
+}
+
 Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
  const std::array<Matrix,MAXSTUDIOBONES>& base,int body,bool left,Placement desired)
 {
@@ -875,6 +882,23 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
    if(!found){CharmFailure();PosePlacement(r,header,base,body,true,left,desired,false,false);return desired;}
    motion.bias=neutral.angles;motion.restFoot=motion.foot;motion.biasReady=true;
   motion.safeLocal=neutral.local;motion.safeAngles=neutral.angles;motion.charmSafe=true;
+ }
+ // A first draw/inspect frame can require a temporary nonzero pose even
+ // though the saved, unrotated attachment is clear once the gun is idle.
+ // Never make that transient animation bias the permanent rest direction.
+ // The home endpoint is checked here; every displayed recovery segment still
+ // goes through the normal complete-mesh CCD and final posed-mesh check below.
+ if((motion.bias.pitch||motion.bias.yaw||motion.restFoot.pitch||motion.restFoot.yaw)&&
+    r.m_clTime>=motion.homeRetry&&CharmIdleSequence(charmGun.header,r.m_pCurrentEntity->curstate.sequence))
+ {
+  const auto heldFoot=motion.foot;motion.foot=geo::SwingOutput();
+  const Placement home=pose(geo::SwingOutput());motion.foot=heldFoot;
+  if(free(home))
+  {
+   motion.bias=RecoverCharmFoot(motion.bias,geo::SwingOutput(),r.m_clTime-motion.time);
+   motion.restFoot=geo::SwingOutput();
+  }
+  else motion.homeRetry=r.m_clTime+.25;
  }
  desired.angles.pitch+=motion.bias.pitch;desired.angles.yaw+=motion.bias.yaw;
  // Animation avoidance may articulate the support temporarily. Always aim
