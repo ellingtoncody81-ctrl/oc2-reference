@@ -3486,6 +3486,10 @@ R_RunViewmodelEvents
 */
 void R_RunViewmodelEvents( void )
 {
+	// Menu item scenes own their models; the live weapon must not join them.
+	if( !FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
+		return;
+
 	if( r_drawviewmodel->value == 0 )
 		return;
 
@@ -3544,6 +3548,10 @@ void R_DrawViewModel( void )
 	float bounds[2], gl_projection_before[16];
 	qboolean custom_projection = false;
 	qboolean check_gl = false;
+
+	// Also exclude uncached inventory previews opened during a live match.
+	if( !FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
+		return;
 
 	R_GatherPlayerLight( view );
 
