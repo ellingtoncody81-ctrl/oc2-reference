@@ -172,7 +172,7 @@ bool GetItem(int index, oc2_buy::Item &item)
 		item.count = armor; item.limit = 100; item.owned = armor >= 100 && helmet;
 		// ReGameDLL BuyItem: full vest needs only a helmet; a damaged vest
 		// with a helmet pays for kevlar, not a second helmet.
-		item.price = armor >= 100 && !helmet ? 350 : helmet ? 650 : 1000;
+		item.price = armor >= 100 ? (helmet ? 1000 : 350) : (helmet ? 650 : 1000);
 		break;
 	case Defuser:
 		item.owned = hasItemStatus ? (itemStatus & 2) != 0 : local && g_PlayerExtraInfo[local].has_defuse_kit;
@@ -222,6 +222,7 @@ void Dump()
 	gEngfuncs.Con_Printf("buyequipment: authoritative=%d version=%d zeus_bought=%d messages=%d fire_variant=%d hostage_kit_mode=%d item_status=%d\n",
 		int(hasEquipmentState),equipmentVersion,zeusBought,equipmentMessages,fireVariant,
 		int(buy_menu_state::HostageRescueKitMode()),itemStatus);
+	gEngfuncs.Con_Printf("buymenu_armor: armor=%d helmet=%d\n",gHUD.m_Battery.GetArmor(),int(gHUD.m_Battery.HasHelmet()));
 	if (gEngfuncs.Cmd_Argc() >= 2 && !strcmp(gEngfuncs.Cmd_Argv(1),"items"))
 		for (int i = 0; i < kItems; ++i)
 		{

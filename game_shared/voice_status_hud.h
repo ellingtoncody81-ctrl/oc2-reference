@@ -94,14 +94,33 @@ public:
 
 		gEngfuncs.pfnFillRGBABlend( x, y, wide, tall, m_bgColor.r, m_bgColor.g, m_bgColor.b, m_bgColor.a );
 
-		gRenderAPI.GL_SelectTexture( 0 );
-		gRenderAPI.GL_Bind( 0, g_VoiceLabelIcon );
-		gEngfuncs.pTriAPI->RenderMode( kRenderTransTexture );
-		gEngfuncs.pTriAPI->Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
-		DrawUtils::Draw2DQuad( x * gHUD.m_flScale,
-		                       ( y + offset ) * gHUD.m_flScale,
-		                       ( x + iconsize ) * gHUD.m_flScale,
-		                       ( y + iconsize + offset ) * gHUD.m_flScale );
+		// Horizontal runs of equal alpha from the original 16x16 speaker4.tga.
+		// FillRGBABlend applies the HUD scale itself, just like the label background.
+		struct SpeakerRun { unsigned char row, first, end, alpha; };
+		static const SpeakerRun speaker[] = {
+			{2,12,13,227},
+			{3,5,6,227}, {3,13,14,227},
+			{4,4,6,227}, {4,10,11,227}, {4,13,14,227},
+			{5,3,6,227}, {5,10,11,227}, {5,14,15,227},
+			{6,0,4,227}, {6,4,5,255}, {6,5,6,227}, {6,7,8,227}, {6,11,12,227}, {6,14,15,227},
+			{7,0,5,255}, {7,5,6,227}, {7,8,9,227}, {7,11,12,227}, {7,14,15,227},
+			{8,0,5,255}, {8,5,6,227}, {8,8,9,227}, {8,11,12,227}, {8,14,15,227},
+			{9,0,4,227}, {9,4,5,255}, {9,5,6,227}, {9,7,8,227}, {9,11,12,227}, {9,14,15,227},
+			{10,3,6,227}, {10,10,11,227}, {10,14,15,227},
+			{11,4,6,227}, {11,10,11,227}, {11,13,14,227},
+			{12,5,6,227}, {12,13,14,227},
+			{13,12,13,227}
+		};
+		for ( unsigned int i = 0; i < sizeof( speaker ) / sizeof( speaker[0] ); ++i )
+		{
+			const SpeakerRun &run = speaker[i];
+			int left = x + iconsize * run.first / 16;
+			int right = x + iconsize * run.end / 16;
+			int top = y + offset + iconsize * run.row / 16;
+			int bottom = y + offset + iconsize * ( run.row + 1 ) / 16;
+			if ( right > left && bottom > top )
+				gEngfuncs.pfnFillRGBABlend( left, top, right - left, bottom - top, 255, 255, 255, run.alpha );
+		}
 
 		int textx = x + iconsize + offset;
 		int texty = y + ( tall - gHUD.GetCharHeight() ) / 2;

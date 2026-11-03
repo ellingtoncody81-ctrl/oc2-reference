@@ -6,6 +6,7 @@
 #include "oc2_match_rules.h"
 #include "oc2_bot_tactics.h"
 #include "oc2_item_server.h"
+#include "oc2_weapon_pickup.h"
 #include "../../../../common/oc2_avatars.h"
 
 int gmsgWeapPickup = 0;
@@ -3387,13 +3388,13 @@ void EXT_FUNC InternalCommand(edict_t *pEntity, const char *pcmd, const char *pa
 				{
 					if (pPlayer->m_pActiveItem && pPlayer->m_pActiveItem->m_iId == WEAPON_C4)
 					{
-						pPlayer->DropPlayerItem("weapon_c4");
+						OC2_PickupSoundOnLanding(pPlayer->DropPlayerItem("weapon_c4"));
 					}
 					else
 						pPlayer->DropShield();
 				}
 				else
-					pPlayer->DropPlayerItem(parg1);
+					OC2_PickupSoundOnLanding(pPlayer->DropPlayerItem(parg1));
 			}
 			else if (FStrEq(pcmd, "fov"))
 			{

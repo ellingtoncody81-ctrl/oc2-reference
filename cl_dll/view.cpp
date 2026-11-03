@@ -206,7 +206,8 @@ float V_CurrentADSWorldFOV() { return s_ADSWorldFov; }
 static float s_ADSScreenX=0,s_ADSScreenY=0,s_ADSScreenRadius=0;
 static float s_ADSFrontX=0,s_ADSFrontY=0;
 static bool s_ADSFrontValid=false;
-static bool s_ADSObserved=false,s_ADSDotVisible=false,s_ADSPaused=false;
+static bool s_ADSObserved=false,s_ADSDotVisible=false,s_ADSPaused=false,s_ADSCrosshairOwned=false;
+static int s_ADSDotPixels=0;
 static float s_ADSRelative[3]={0,0,0};
 static float s_ADSMotionPosition[3]={0,0,0},s_ADSMotionAngles[3]={0,0,0};
 static float s_ADSMotionBobGain=0,s_ADSMotionInertiaGain=0,s_ADSMotionSpeed=0;
@@ -342,12 +343,17 @@ void V_ObserveADSSight(cl_entity_s *entity,const char *bone,const float matrix[3
 
 bool V_DrawADSCrosshair()
 {
-	s_ADSDotVisible=false;
-	if (!view_ads::Supported(s_ADS.weapon) || s_ADS.amount<=.5f || g_iUser1 ||
+	s_ADSDotVisible=false;s_ADSCrosshairOwned=false;s_ADSDotPixels=0;
+ const auto *profile=view_ads::Get(s_ADS.weapon);
+ const bool optic=profile&&profile->radius>0;
+ // Own the entire optical-sight transition. Otherwise the legacy zoom sprite
+ // draws for its first half, flashing a much larger dot before the small one.
+ if (!view_ads::Supported(s_ADS.weapon) || (optic?(!s_ADS.sighted&&s_ADS.amount<=0):s_ADS.amount<=.5f) || g_iUser1 ||
 		gHUD.m_Health.m_iHealth<=0 || CL_IsThirdPerson()) return false;
+	s_ADSCrosshairOwned=true;
 	if (gHUD.m_iHideHUDDisplay&(HIDEHUD_CROSSHAIR|HIDEHUD_ALL)) return true;
-	const auto *profile=view_ads::Get(s_ADS.weapon);
 	if (profile && profile->radius<=0) return true; // actual iron sights, no fabricated dot
+ if (s_ADS.amount<=.5f) return true; // aperture has not opened onto the aiming ray yet
 	// A Source-style collimated dot stays on the aiming ray, but is visible only
 	// inside the actually rendered aperture (including recoil and left hand).
 	const float age=gEngfuncs.GetClientTime()-s_ADSObservedTime;
@@ -355,12 +361,12 @@ bool V_DrawADSCrosshair()
 	if (!s_ADSObserved || age<0 || age>.1f || radius<=0 ||
 		s_ADSScreenX*s_ADSScreenX+s_ADSScreenY*s_ADSScreenY>radius*radius) return true;
 	const int alpha=int(view_ads::Clamp((s_ADS.amount-.5f)*2,0,1)*230);
-	const int dot=max(1,int(ScreenHeight/540.0f));
+	// One fixed, larger optical dot for both sights throughout ADS.
+	const int dot=max(2,int(ScreenHeight/270.0f));
 	const int x=ScreenWidth/2,y=ScreenHeight/2;
 	const int red=s_ADS.weapon==8?60:255,green=s_ADS.weapon==8?255:55;
-	FillRGBA(x-dot,y-dot,dot*2+1,dot*2+1,red,green,50,alpha/4);
 	FillRGBABlend(x-dot/2,y-dot/2,max(1,dot),max(1,dot),red,green,50,alpha);
-	s_ADSDotVisible=true;
+	s_ADSDotVisible=true;s_ADSDotPixels=dot;
 	return true;
 }
 
@@ -375,10 +381,10 @@ static void V_DumpBob()
 static void V_DumpADS()
 {
 	cl_entity_t *view=gEngfuncs.GetViewModel();
-	gEngfuncs.Con_Printf("ads: time=%.5f id=%d amount=%.5f gain=%.5f sighted=%d raw=%.3f world=%.3f lens_valid=%d lens_px=%.3f/%.3f radius=%.3f age=%.4f body=%d relative=%.4f/%.4f/%.4f dot=%d paused=%d\n",
+	gEngfuncs.Con_Printf("ads: time=%.5f id=%d amount=%.5f gain=%.5f sighted=%d raw=%.3f world=%.3f lens_valid=%d lens_px=%.3f/%.3f radius=%.3f age=%.4f body=%d relative=%.4f/%.4f/%.4f dot=%d paused=%d reticle_owned=%d dot_px=%d\n",
 		s_ADS.lastTime,s_ADS.weapon,s_ADS.amount,view_ads::Gain(s_ADS.amount),int(s_ADS.sighted),g_lastFOV,s_ADSWorldFov,
 		int(s_ADSObserved),s_ADSScreenX,s_ADSScreenY,s_ADSScreenRadius,gEngfuncs.GetClientTime()-s_ADSObservedTime,
-		view?view->curstate.body:0,s_ADSRelative[0],s_ADSRelative[1],s_ADSRelative[2],int(s_ADSDotVisible),int(s_ADSPaused));
+		view?view->curstate.body:0,s_ADSRelative[0],s_ADSRelative[1],s_ADSRelative[2],int(s_ADSDotVisible),int(s_ADSPaused),int(s_ADSCrosshairOwned),s_ADSDotPixels);
 	gEngfuncs.Con_Printf("aimline: front_valid=%d front_px=%.3f/%.3f\n",int(s_ADSFrontValid),s_ADSFrontX,s_ADSFrontY);
 	gEngfuncs.Con_Printf("adsmotion: bob_gain=%.6f inertia_gain=%.6f speed_ratio=%.6f applied_pos=%.6f/%.6f/%.6f applied_angles=%.6f/%.6f/%.6f\n",
 		s_ADSMotionBobGain,s_ADSMotionInertiaGain,s_ADSMotionSpeed,

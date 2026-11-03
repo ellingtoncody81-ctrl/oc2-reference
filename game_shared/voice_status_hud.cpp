@@ -364,7 +364,7 @@ CVoiceLabel *CVoiceStatusHud::GetFreeVoiceLabel()
 
 void CVoiceStatusHud::RepositionLabels()
 {
-	// find starting position to draw from, along right-hand side of screen
+	// Keep radio/voice labels together at the left edge, below the radar.
 	int y = ScreenHeight / 2;
 
 	// Reposition active labels.
@@ -374,7 +374,7 @@ void CVoiceStatusHud::RepositionLabels()
 
 		int textWide, textTall;
 		pLabel->GetContentSize( textWide, textTall );
-		pLabel->SetBounds( ScreenWidth - textWide - 8, y ); // if you adjust the x pos also play with VoiceVGUILabel in voice_status_hud.h
+		pLabel->SetBounds( 8, y );
 
 		y += textTall + 2;
 	}
