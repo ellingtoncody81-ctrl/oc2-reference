@@ -361,8 +361,8 @@ bool V_DrawADSCrosshair()
 	if (!s_ADSObserved || age<0 || age>.1f || radius<=0 ||
 		s_ADSScreenX*s_ADSScreenX+s_ADSScreenY*s_ADSScreenY>radius*radius) return true;
 	const int alpha=int(view_ads::Clamp((s_ADS.amount-.5f)*2,0,1)*230);
-	// Both optics share the same small AUG-green dot throughout ADS.
-	const int dot=max(1,int(ScreenHeight/540.0f));
+	// Both optics share a medium AUG-green dot throughout ADS.
+	const int dot=max(1,int(ScreenHeight/360.0f));
 	const int x=ScreenWidth/2,y=ScreenHeight/2;
 	FillRGBABlend(x-dot/2,y-dot/2,max(1,dot),max(1,dot),60,255,50,alpha);
 	s_ADSDotVisible=true;s_ADSDotPixels=dot;
