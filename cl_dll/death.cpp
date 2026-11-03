@@ -83,9 +83,11 @@ bool PlayHeadshotFeedback(bool confirmedKill, const kill_feedback::Event &event)
 	const cl_entity_t *local = gEngfuncs.GetLocalPlayer();
 	if (!local || local->index != event.local) return false;
 	float origin[3] = {local->origin[0],local->origin[1],local->origin[2]};
+	static const char *samples[] = {"player/headshot1.wav","player/headshot2.wav","player/headshot3.wav"};
+	const char *sample = samples[gEngfuncs.pfnRandomLong(0,2)];
 	// This is the killer's confirmation, not an impact at the victim. AUTO
 	// avoids pickup/reload sounds replacing it on the shared ITEM channel.
-	gEngfuncs.pEventAPI->EV_PlaySound(event.local,origin,CHAN_AUTO,"player/headshot1.wav",1.0f,ATTN_NONE,0,PITCH_NORM);
+	gEngfuncs.pEventAPI->EV_PlaySound(event.local,origin,CHAN_AUTO,sample,1.0f,ATTN_NONE,0,PITCH_NORM);
 	return true;
 }
 
