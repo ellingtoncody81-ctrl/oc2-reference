@@ -987,6 +987,11 @@ void OC2_InventoryVidInit()
 {
  CheckSession();
  oc2_texture_stream::Reset();++texturePrefetchEpoch;
+ // A video-mode restart can preserve the renderer's current frame id while
+ // replacing its GL context. Do not carry the old per-frame upload throttle
+ // into the rebuilt texture cache; otherwise the active weapon can remain on
+ // fallback materials until another viewmodel draw happens to refresh it.
+ textureVisibleFrame=-1;textureUploadFrame=-1;textureUploadsThisFrame=0;textureUploadMs=0;
  ClearItemQueryIndex();
  worldHandLayouts.clear();
  OC2_WorldAccessoriesReset();
