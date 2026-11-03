@@ -756,6 +756,23 @@ int StickerTexture(int id,int maxDimension=0)
  const Entry *entry=Resource(id);
  return entry&&entry->kind==Kind::Sticker?Texture(entry->file,true,maxDimension):0;
 }
+
+int PendingCharmTexture()
+{
+ // A requested image can span several bounded uploads. Never substitute a
+ // different picture during that interval, even when a model/skin changes.
+ static int handle=0;static const char *name="*oc2_charm_pending";
+ const char *known=handle&&gRenderAPI.GL_TextureName?gRenderAPI.GL_TextureName(handle):nullptr;
+ if(known&&!strcmp(known,name))return handle;
+ const byte tga[22]={0,0,2,0,0,0,0,0,0,0,0,0,1,0,1,0,32,40,0,0,0,0};
+ handle=gRenderAPI.GL_LoadTexture?gRenderAPI.GL_LoadTexture(name,tga,sizeof(tga),TF_CLAMP|TF_NOMIPMAP):0;
+ return handle;
+}
+int CharmTexture(int id,int maxDimension=0)
+{
+ const int texture=StickerTexture(id,maxDimension);
+ return texture?texture:PendingCharmTexture();
+}
 bool MaterialMatches(const std::string &list,const char *name)
 {
  const std::size_t length=std::strlen(name);std::size_t begin=0;
@@ -1197,7 +1214,7 @@ bool OC2_InventoryWorldAccessories(model_s *model,int player,int serial,int enti
  if(!item||!item->accessoryReady||item->weapon!=weapon)return false;
  config=item->accessory;count=item->count;instance=item->serial;
  if(item->charm)config.charm=item->charm>0;
- pattern=item->charm>0?StickerTexture(item->charm,256):0;
+ pattern=item->charm>0?CharmTexture(item->charm,256):0;
  if(!item->charm&&config.sticker>0)pattern=OC2_LegacyCharmTexture(config.sticker);
  return config.stattrak||config.charm;
 }
@@ -1226,8 +1243,8 @@ bool OC2_InventoryCharmOverride(int weapon,int &texture,bool &hide)
  if(!selection)return false;
  const Entry *entry=Resource(selection);
  hide=selection<0||(entry&&IsTransparent(*entry));
- if(!hide)texture=StickerTexture(selection);
- return hide||texture!=0;
+ if(!hide)texture=CharmTexture(selection);
+ return true; // The authoritative selection exists even while it is loading.
 }
 OC2_InventoryModelScope::OC2_InventoryModelScope(cl_entity_s *view)
 {
