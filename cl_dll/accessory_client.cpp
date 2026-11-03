@@ -351,7 +351,12 @@ struct Motion
  geo::Mount requested[2];
  bool requestedResolved[2]{};
  bool charmSafe=false,biasReady=false,charmRepose=false;
- geo::SwingOutput safeAngles,bias,foot;
+ geo::SwingOutput safeAngles,bias,foot,restFoot;
+ bool swingBasisReady=false;
+ geo::SwingOutput basisBias,basisFoot;
+ float basisLength=0,swingBasis[3][3]{};
+ const studiohdr_t *swingHeader=nullptr;
+ int swingBone=-1;float swingCenter[3]{};
  std::array<Matrix,MAXSTUDIOBONES> safeLocal;
 } motion;
 bool SameCustomization(const WeaponConfig &a,const WeaponConfig &b)
@@ -381,9 +386,10 @@ void SynchronizeMotion(const WeaponConfig &cfg,int weapon,const studiohdr_t *hea
 }
 void DumpMotion()
 {
- gEngfuncs.Con_Printf("oc2accessory_pose_state: token=%u bias_ready=%d safe=%d repose=%d bias=%.6f/%.6f foot=%.6f/%.6f safe_angles=%.6f/%.6f length=%.6f pendant_drop=%.6f\n",
+ gEngfuncs.Con_Printf("oc2accessory_pose_state: token=%u bias_ready=%d safe=%d repose=%d bias=%.6f/%.6f foot=%.6f/%.6f safe_angles=%.6f/%.6f length=%.6f pendant_drop=%.6f rest_foot=%.6f/%.6f\n",
   motion.token,int(motion.biasReady),int(motion.charmSafe),int(motion.charmRepose),motion.bias.pitch,motion.bias.yaw,
-  motion.foot.pitch,motion.foot.yaw,motion.safeAngles.pitch,motion.safeAngles.yaw,motion.config.length,diag.pendantDrop);
+  motion.foot.pitch,motion.foot.yaw,motion.safeAngles.pitch,motion.safeAngles.yaw,motion.config.length,diag.pendantDrop,
+  motion.restFoot.pitch,motion.restFoot.yaw);
 }
 std::map<const studiohdr_t *,std::array<Matrix,MAXSTUDIOBONES>> addonBind;
 geo::MountCache *weaponSurface=nullptr;
@@ -607,6 +613,52 @@ void CharmPose(studiohdr_t *h,const geo::SwingOutput &angles,float length,std::a
  }
 }
 
+bool BuildCharmSwingBasis(studiohdr_t *header,const geo::SwingOutput &rest,const geo::SwingOutput &foot,
+ float length,int bone,const float center[3],float basis[3][3])
+{
+ if(bone<0||bone>=header->numbones)return false;
+ std::array<Matrix,MAXSTUDIOBONES> neutral,perturbed;
+ for(int axis=0;axis<2;++axis)
+ {
+  auto angle=rest;if(axis)angle.yaw-=.25f;else angle.pitch-=.25f;
+  CharmPose(header,angle,length,neutral,foot);
+  float origin[3];Point(neutral[bone].m,center,origin);
+  if(axis)angle.yaw+=.5f;else angle.pitch+=.5f;
+  CharmPose(header,angle,length,perturbed,foot);
+  float point[3];Point(perturbed[bone].m,center,point);
+  for(int i=0;i<3;++i)basis[axis?0:2][i]=(point[i]-origin[i])*(axis?1.f:-1.f);
+  if(Dot(basis[axis?0:2],basis[axis?0:2])<1e-12f)return false;
+  Unit(basis[axis?0:2]);
+ }
+ const float *z=basis[2],*x=basis[0];
+ basis[1][0]=z[1]*x[2]-z[2]*x[1];basis[1][1]=z[2]*x[0]-z[0]*x[2];basis[1][2]=z[0]*x[1]-z[1]*x[0];
+ if(Dot(basis[1],basis[1])<1e-8f)return false;
+ Unit(basis[1]);return true;
+}
+bool CurrentCharmSwingBasis(studiohdr_t *header)
+{
+ if(!motion.biasReady)return false;
+ if(motion.swingHeader!=header)
+ {
+  motion.swingHeader=header;motion.swingBasisReady=false;motion.swingBone=-1;
+  std::fill(motion.swingCenter,motion.swingCenter+3,0.f);
+  const auto bones=reinterpret_cast<const mstudiobone_t *>(reinterpret_cast<const byte *>(header)+header->boneindex);
+  for(int i=0;i<header->numbones;++i)if(!strcmp(bones[i].name,"skin_10")){motion.swingBone=i;break;}
+  unsigned count=0;
+  for(const auto &triangle:Mesh(header).triangles)for(const auto &corner:triangle.corner)if(corner.bone==motion.swingBone)
+  {for(int i=0;i<3;++i)motion.swingCenter[i]+=corner.p[i];++count;}
+  if(count)for(float &value:motion.swingCenter)value/=count;else motion.swingBone=-1;
+ }
+ if(motion.swingBone<0)return false;
+ if(motion.swingBasisReady&&motion.basisLength==frameConfig.length&&
+    motion.basisBias.pitch==motion.bias.pitch&&motion.basisBias.yaw==motion.bias.yaw&&
+    motion.basisFoot.pitch==motion.foot.pitch&&motion.basisFoot.yaw==motion.foot.yaw)return true;
+ motion.swingBasisReady=false;
+ if(!BuildCharmSwingBasis(header,motion.bias,motion.foot,frameConfig.length,motion.swingBone,motion.swingCenter,motion.swingBasis))return false;
+ motion.basisBias=motion.bias;motion.basisFoot=motion.foot;motion.basisLength=frameConfig.length;
+ motion.swingBasisReady=true;return true;
+}
+
 struct Placement
 {
  geo::Frame frame,anchorFrame;
@@ -730,12 +782,39 @@ Placement EvaluatePlacement(CStudioModelRenderer &r,studiohdr_t *header,const st
    for(int i=0;i<3;++i){p.velocity[i]=float((p.frame.origin[i]-motion.anchor[i])/dt);acceleration[i]=std::max(-400.f,std::min(400.f,float((p.velocity[i]-motion.velocity[i])/dt)));}
   input.anchorAcceleration[0]=Dot(acceleration,p.frame.axisX);input.anchorAcceleration[1]=Dot(acceleration,p.frame.axisY);input.anchorAcceleration[2]=Dot(acceleration,p.frame.normal);
   const float gravity[3]={0,0,-80};input.gravity[0]=Dot(gravity,p.frame.axisX);input.gravity[1]=Dot(gravity,p.frame.axisY);input.gravity[2]=Dot(gravity,p.frame.normal);
+   // Rest/avoidance rotations can reverse the model's hinge axes. Project
+   // inertia through the actual skinned pendant response, not the gun axes.
+   if(CurrentCharmSwingBasis(header))
+   {
+    float localAcceleration[3],localGravity[3];
+    std::copy(input.anchorAcceleration,input.anchorAcceleration+3,localAcceleration);
+    std::copy(input.gravity,input.gravity+3,localGravity);
+    for(int i=0;i<3;++i)
+    {
+     input.anchorAcceleration[i]=Dot(localAcceleration,motion.swingBasis[i]);
+     input.gravity[i]=Dot(localGravity,motion.swingBasis[i]);
+    }
+   }
   input.teleport=motion.time>=0&&(dt<0||dt>.25);
   geo::SwingConfig cfg;cfg.amplitude=1;cfg.maxAngle=frameConfig.amplitude;cfg.length=frameConfig.length*2.5f;cfg.stiffness=frameConfig.stiffness;cfg.damping=frameConfig.damping;
   p.swingState=swing;p.angles=geo::UpdateSwing(p.swingState,cfg,input);
  }
   if(!charm)PosePlacement(r,header,base,body,false,left,p,false,true);
  return p;
+}
+
+geo::SwingOutput RecoverCharmFoot(const geo::SwingOutput &current,const geo::SwingOutput &rest,double dt)
+{
+ geo::SwingOutput result=current;
+ if(!std::isfinite(dt)||dt<=0)return result;
+ const float blend=float(1-std::exp(-12*std::max(0.,std::min(.05,dt))));
+ const auto recover=[&](float value,float target)
+ {
+  const float delta=std::remainder(target-value,360.f);
+  return std::fabs(delta)<.01f?target:value+delta*blend;
+ };
+ result.pitch=recover(current.pitch,rest.pitch);result.yaw=recover(current.yaw,rest.yaw);
+ return result;
 }
 
 Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
@@ -794,14 +873,17 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
    bool found=hangingFree(neutral);
   if(!found)found=seekRest(neutral);
    if(!found){CharmFailure();PosePlacement(r,header,base,body,true,left,desired,false,false);return desired;}
-  motion.bias=neutral.angles;motion.biasReady=true;
+   motion.bias=neutral.angles;motion.restFoot=motion.foot;motion.biasReady=true;
   motion.safeLocal=neutral.local;motion.safeAngles=neutral.angles;motion.charmSafe=true;
  }
- desired.angles.pitch+=motion.bias.pitch;desired.angles.yaw+=motion.bias.yaw;desired.foot=motion.foot;
+ desired.angles.pitch+=motion.bias.pitch;desired.angles.yaw+=motion.bias.yaw;
+ // Animation avoidance may articulate the support temporarily. Always aim
+ // back at the original rest support, through the same complete mesh CCD.
+ desired.foot=RecoverCharmFoot(motion.foot,motion.restFoot,r.m_clTime-motion.time);
  PosePlacement(r,header,base,body,true,left,desired,false,false);
  const bool desiredFree=free(desired);
  bool desiredUnchanged=true;
- Placement previous=desired;previous.local=motion.safeLocal;previous.angles=motion.safeAngles;
+ Placement previous=desired;previous.local=motion.safeLocal;previous.angles=motion.safeAngles;previous.foot=motion.foot;
  PosePlacement(r,header,base,body,true,left,previous,!motion.charmRepose,false);
  bool previousFree=motion.charmSafe&&free(previous);
  if(!previousFree)
@@ -819,7 +901,6 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
   else if(seek(motion.bias.pitch,motion.bias.yaw))found=true;
    if(!found)found=seekRest(previous);
   if(!found){CharmFailure();return desired;}
-  desired.foot=motion.foot;
   PosePlacement(r,header,base,body,true,left,desired,false,false);
   desiredUnchanged=false;
   previousFree=true;
@@ -841,6 +922,8 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
    accepted.local[i].m[a][b]=previous.local[i].m[a][b]+(desired.local[i].m[a][b]-previous.local[i].m[a][b])*f;
   accepted.angles.pitch=previous.angles.pitch+(desired.angles.pitch-previous.angles.pitch)*f;
   accepted.angles.yaw=previous.angles.yaw+(desired.angles.yaw-previous.angles.yaw)*f;
+   accepted.foot.pitch=previous.foot.pitch+(desired.foot.pitch-previous.foot.pitch)*f;
+   accepted.foot.yaw=previous.foot.yaw+(desired.foot.yaw-previous.foot.yaw)*f;
   PosePlacement(r,header,base,body,true,left,accepted,true,false);
   desired=std::move(accepted);
   for(int i=0;i<2;++i)
@@ -865,7 +948,8 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
   }
  }
  if(!desiredFree)++charmStats.solved;
- motion.safeLocal=desired.local;motion.safeAngles=desired.angles;motion.charmSafe=true;motion.charmRepose=false;
+ motion.safeLocal=desired.local;motion.safeAngles=desired.angles;motion.foot=desired.foot;
+ motion.charmSafe=true;motion.charmRepose=false;
  return desired;
 }
 

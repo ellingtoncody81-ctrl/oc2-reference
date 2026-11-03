@@ -546,10 +546,11 @@ int CHudRadar::MsgFunc_BombDrop(const char *pszName, int iSize, void *pbuf)
 	g_PlayerExtraInfo[33].nextflash = true;
 
 	int Flag = reader.ReadByte();
-	g_PlayerExtraInfo[33].playerclass = Flag;
+	// Flag 2 is a server-confirmed CT sighting of a dropped bomb.
+	g_PlayerExtraInfo[33].playerclass = Flag == 2 ? 0 : Flag;
 	gHUD.m_RadarModern.NoteBombDrop( Flag, g_PlayerExtraInfo[33].origin, gEngfuncs.GetClientTime() );
 
-	if( Flag ) // bomb planted
+	if( Flag == 1 ) // bomb planted
 	{
 		gHUD.m_SpectatorGui.m_bBombPlanted = 0;
 		gHUD.m_Timer.m_iFlags = 0;

@@ -1668,16 +1668,22 @@ SwingOutput UpdateSwing(SwingState& state,const SwingConfig& config,const SwingI
     while(state.simulationTime+step<=input.time+1e-12)
     {
         const double alpha=clamp((state.simulationTime+step*.5-state.lastTime)/elapsed,0,1);
-        V force;
+        V force,restGravity;
         double* f[3]={&force.x,&force.y,&force.z};
+        double* g[3]={&restGravity.x,&restGravity.y,&restGravity.z};
         for(int i=0;i<3;++i)
         {
             double gravity=state.gravity[i]+(input.gravity[i]-state.gravity[i])*alpha;
             double acceleration=state.acceleration[i]+(input.anchorAcceleration[i]-state.acceleration[i])*alpha;
-            *f[i]=clamp(gravity,-2000,2000)-clamp(acceleration,-10000,10000);
+            *g[i]=clamp(gravity,-2000,2000);
+            *f[i]=*g[i]-clamp(acceleration,-10000,10000);
         }
-        double a[2]={(force.y*std::sin(state.angle[0])-force.z*std::cos(state.angle[0]))/length,
-                     (force.x*std::cos(state.angle[1])+force.y*std::sin(state.angle[1]))/length};
+        // The configured/collision-certified rest pose is supported by the
+        // mounting joint. Balance its static gravity torque so an inclined
+        // gun frame cannot slowly pull that pose into a different equilibrium.
+        // Inertial forcing and gravity's restoring torque still drive the swing.
+        double a[2]={(force.y*std::sin(state.angle[0])-force.z*std::cos(state.angle[0])+restGravity.z)/length,
+                     (force.x*std::cos(state.angle[1])+force.y*std::sin(state.angle[1])-restGravity.x)/length};
         for(int i=0;i<2;++i)
         {
             state.previousAngle[i]=state.angle[i];

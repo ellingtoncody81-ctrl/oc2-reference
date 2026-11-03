@@ -310,7 +310,7 @@ void CHudRadarModern::Reset( void )
 	// ResetHUD may be a mid-round fullupdate. Preserve deaths and C4 state.
 	// A fullupdate can itself send a BombDrop sync, so do not mistake that
 	// immediate message for the weapon box's periodic broadcast.
-	if( m_bBombDropActive )
+	if( m_bBombDropActive && m_iBombDropTeam == TEAM_TERRORIST )
 		m_flBombLastDropMessage = gEngfuncs.GetClientTime();
 	m_bBombDrawn = false;
 }
@@ -319,6 +319,7 @@ void CHudRadarModern::ResetRound()
 {
 	m_bBombDropActive = false;
 	m_bBombDropPositionKnown = false;
+	m_iBombDropTeam = 0;
 	m_flBombLastDropMessage = 0.0f;
 	m_iBombDropMessages = 0;
 	m_vecBombMessage = Vector( 0, 0, 0 );
@@ -355,20 +356,26 @@ void CHudRadarModern::ResetRound()
 
 void CHudRadarModern::NoteBombDrop( int flag, const Vector &origin, float time )
 {
+	const int team = RadarTeamOf( gHUD.m_Scoreboard.m_iPlayerNum );
+	// Flag 0 may be an unconditional fullupdate, including for CTs.
+	// Only flag 2 certifies a server-side CT sighting.
+	if( ( team == TEAM_CT && flag == 0 ) || ( flag == 2 && team != TEAM_CT ) )
+		return;
 	m_vecBombMessage = origin;
 	m_bBombDrawn = false;
-	if( flag != 0 )
+	if( flag == 1 )
 	{
 		m_bBombDropActive = false;
 		m_bBombDropPositionKnown = false;
 		m_iBombDropMessages = 0;
 		return;
 	}
-	if( !m_bBombDropActive )
+	if( !m_bBombDropActive || m_iBombDropTeam != team )
 	{
 		m_bBombDropActive = true;
 		m_bBombDropPositionKnown = false;
 		m_iBombDropMessages = 1;
+		m_iBombDropTeam = team;
 	}
 	else
 	{
@@ -382,6 +389,13 @@ void CHudRadarModern::NoteBombDrop( int flag, const Vector &origin, float time )
 			m_vecBombAccepted = origin;
 		}
 	}
+	// Unlike the T throw notification, a CT drop message comes only from a
+	// server-confirmed spotting of the actual weapon box.
+	if( flag == 2 )
+	{
+		m_bBombDropPositionKnown = true;
+		m_vecBombAccepted = origin;
+	}
 	m_flBombLastDropMessage = time;
 }
 
@@ -389,6 +403,7 @@ void CHudRadarModern::NoteBombPickup()
 {
 	m_bBombDropActive = false;
 	m_bBombDropPositionKnown = false;
+	m_iBombDropTeam = 0;
 	m_flBombLastDropMessage = 0.0f;
 	m_iBombDropMessages = 0;
 	m_bBombDrawn = false;
@@ -2346,12 +2361,19 @@ void CHudRadarModern::DrawObjectiveLabels()
 void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 {
 	const extra_player_info_t &bomb = g_PlayerExtraInfo[33];
-	if( bomb.dead || !bomb.radarflashes ||
-		( bomb.playerclass == 0 && localTeam != TEAM_TERRORIST ) ) return;
+	if( bomb.dead || !bomb.radarflashes ) return;
 	const bool planted = bomb.playerclass == 1;
-	// A first drop message is the thrower's position. Only a later periodic
-	// message may supply the dropped-box position; time alone never draws it.
+	if( !planted && ( localTeam != m_iBombDropTeam ||
+		( localTeam != TEAM_TERRORIST && localTeam != TEAM_CT ) ) ) return;
+	// T requires a later box update; CT requires a confirmed sighting.
 	if( !planted && !m_bBombDropPositionKnown ) return;
+	float dropAlpha = 1.0f;
+	if( !planted && localTeam == TEAM_CT )
+	{
+		const float age = flTime - m_flBombLastDropMessage;
+		if( age < 0.0f || age >= 8.0f ) return;
+		dropAlpha = 1.0f - age / 8.0f;
+	}
 	const Vector vecBomb = planted ? bomb.origin : m_vecBombAccepted;
 	if( vecBomb == Vector( 0, 0, 0 ) ) return;
 	CClientSprite *sprite = s_spr[SPR_C4];
@@ -2372,9 +2394,9 @@ void CHudRadarModern::DrawBomb( int localTeam, float flTime )
 		// Dropped: amber, the same size as a player dot, no backing plate.
 		const int gg = bright ? 175 : 115;
 		const int iBlipR = BlipRadiusFor( m_iRadius );
-		FillDisc( x, y, iBlipR + 1, 0, 0, 0, 140 );
-		FillDisc( x, y, iBlipR, 255, gg, 20, 240 );
-		FillRGBABlend( x - 2, y - 2, 5, 5, 255, 255, 255, 235 );
+		FillDisc( x, y, iBlipR + 1, 0, 0, 0, int( 140 * dropAlpha ) );
+		FillDisc( x, y, iBlipR, 255, gg, 20, int( 240 * dropAlpha ) );
+		FillRGBABlend( x - 2, y - 2, 5, 5, 255, 255, 255, int( 235 * dropAlpha ) );
 		return;
 	}
 

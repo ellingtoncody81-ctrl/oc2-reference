@@ -2004,6 +2004,26 @@ void CWeaponBox::BombThink()
 	if (!m_bIsBomb)
 		return;
 
+	// Share a dropped bomb with CTs only while a living CT can actually see it.
+	// Test from the eyes to a point above the box so the floor does not mask it.
+	bool ctSpotted = false;
+	Vector bombSpot = pev->origin + Vector(0, 0, 4);
+	for (int i = 1; i <= gpGlobals->maxClients; ++i)
+	{
+		CBasePlayer *spotter = static_cast<CBasePlayer *>(UTIL_PlayerByIndex(i));
+		if (!spotter || !spotter->IsPlayer() || spotter->IsDormant() ||
+			spotter->m_iTeam != CT || spotter->pev->deadflag != DEAD_NO || spotter->IsBlind())
+			continue;
+		Vector eye = spotter->EyePosition();
+		if (spotter->IsLookingAtPosition(&bombSpot, 45.0f) &&
+			TheBots && !TheBots->IsLineBlockedBySmoke(&eye, &bombSpot) &&
+			spotter->FVisible(bombSpot))
+		{
+			ctSpotted = true;
+			break;
+		}
+	}
+
 	CBasePlayer *pPlayer = nullptr;
 	while ((pPlayer = UTIL_FindEntityByClassname(pPlayer, "player")))
 	{
@@ -2015,13 +2035,16 @@ void CWeaponBox::BombThink()
 
 		CBasePlayer *pTempPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pPlayer->pev);
 
-		if (pTempPlayer->pev->deadflag == DEAD_NO && pTempPlayer->m_iTeam == TERRORIST)
+		if (pTempPlayer->pev->deadflag == DEAD_NO &&
+			(pTempPlayer->m_iTeam == TERRORIST || (ctSpotted && pTempPlayer->m_iTeam == CT)))
 		{
 			MESSAGE_BEGIN(MSG_ONE, gmsgBombDrop, nullptr, pTempPlayer->edict());
 				WRITE_COORD(pev->origin.x);
 				WRITE_COORD(pev->origin.y);
 				WRITE_COORD(pev->origin.z);
-				WRITE_BYTE(BOMB_FLAG_DROPPED);
+				// Flag 2 identifies a confirmed CT spot, distinct from the
+				// unconditional dropped-bomb fullupdate (flag 0).
+				WRITE_BYTE(pTempPlayer->m_iTeam == CT ? 2 : BOMB_FLAG_DROPPED);
 			MESSAGE_END();
 		}
 	}
@@ -2363,9 +2386,12 @@ void CWeaponBox::Touch(CBaseEntity *pOther)
 
 							CBasePlayer *pTempPlayer = GetClassPtr<CCSPlayer>((CBasePlayer *)pEntity->pev);
 
-							if (pTempPlayer->pev->deadflag == DEAD_NO && pTempPlayer->m_iTeam == TERRORIST)
+							// Clear the dropped marker for CT as well, without
+							// revealing the new carrier's name to the opposing team.
+							if (pTempPlayer->pev->deadflag == DEAD_NO &&
+								(pTempPlayer->m_iTeam == TERRORIST || pTempPlayer->m_iTeam == CT))
 							{
-								if (pTempPlayer != pPlayer)
+								if (pTempPlayer->m_iTeam == TERRORIST && pTempPlayer != pPlayer)
 								{
 									ClientPrint(pTempPlayer->pev, HUD_PRINTCENTER, "#Game_bomb_pickup", STRING(pPlayer->pev->netname));
 								}

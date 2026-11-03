@@ -214,6 +214,7 @@ public:
 	// box broadcast. Message transitions are tracked even while HUD is hidden.
 	bool  m_bBombDropActive;
 	bool  m_bBombDropPositionKnown;
+	int   m_iBombDropTeam;
 	float m_flBombLastDropMessage;
 	int   m_iBombDropMessages;
 	Vector m_vecBombMessage;
