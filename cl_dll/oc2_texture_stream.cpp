@@ -17,7 +17,7 @@ namespace oc2_texture_stream
 namespace
 {
 using Key=std::pair<std::string,int>;
-struct Job {Status status=Status::Pending;std::vector<unsigned char> data;bool resized=false,dds=false;unsigned age=0;};
+struct Job {Status status=Status::Pending;std::vector<unsigned char> data;bool resized=false,dds=false;int priority=0;unsigned age=0;};
 struct State
 {
  std::mutex mutex;std::condition_variable changed;std::thread worker;
@@ -25,7 +25,7 @@ struct State
  std::string directory;Prepare prepare=nullptr;
  unsigned generation=0,clock=0;bool stop=false;std::size_t readyBytes=0;
 } state;
-constexpr std::size_t readyBudget=64u*1024u*1024u;
+constexpr std::size_t readyBudget=(sizeof(void*)>=8?256u:64u)*1024u*1024u;
 bool Read(const std::string &path,std::vector<unsigned char> &data)
 {
 #ifdef _WIN32
@@ -62,7 +62,7 @@ void Run()
    if(state.stop)return;
    auto found=state.jobs.find(key);
    if(generation==state.generation&&found!=state.jobs.end())
-   {result.age=found->second.age;state.readyBytes+=result.data.size();found->second=std::move(result);}
+   {result.age=found->second.age;result.priority=found->second.priority;state.readyBytes+=result.data.size();found->second=std::move(result);}
   }
  }
 }
@@ -82,33 +82,48 @@ void Shutdown()
  {std::lock_guard<std::mutex> lock(state.mutex);state.stop=true;state.changed.notify_all();}
  if(state.worker.joinable())state.worker.join();Reset();
 }
-void Request(const std::string &path,int limit,bool priority)
+void Request(const std::string &path,int limit,int priority)
 {
  if(path.empty()||path.size()>=256||path.find("..")!=std::string::npos||path.find(':')!=std::string::npos||path[0]=='/'||path[0]=='\\')return;
+ priority=std::max(0,std::min(3,priority));
  std::lock_guard<std::mutex> lock(state.mutex);const Key key(path,limit);
  if(state.stop)return;
- auto existing=state.jobs.find(key);if(existing!=state.jobs.end())existing->second.age=++state.clock;
- // Obsolete round/loadout results must not fill staging and starve new jobs.
- while(state.readyBytes>=readyBudget||state.jobs.size()>=512)
+ auto existing=state.jobs.find(key);
+ const auto enqueue=[&](const Key &queued,int urgent){
+  const auto position=urgent?std::find_if(state.queue.begin(),state.queue.end(),[urgent](const Key &other){
+   const auto job=state.jobs.find(other);return job==state.jobs.end()||job->second.priority<urgent;}):state.queue.end();
+  state.queue.insert(position,queued);
+ };
+ if(existing!=state.jobs.end())
+ {
+  existing->second.age=++state.clock;
+  // Promote only once; repeated prefetch must not reverse the urgent FIFO.
+  if(priority>existing->second.priority)
+  {
+   existing->second.priority=priority;
+   const auto queued=std::find(state.queue.begin(),state.queue.end(),key);
+   if(queued!=state.queue.end()){state.queue.erase(queued);enqueue(key,priority);}
+  }
+  if(existing->second.status!=Status::Pending){state.changed.notify_one();return;}
+ }
+ // A pending request can already be behind obsolete decoded results. Make
+ // room even for existing jobs, while preserving recently requested ready
+ // foreground images from speculative eviction.
+ while(state.readyBytes>=readyBudget||(existing==state.jobs.end()&&state.jobs.size()>=512))
  {
   auto oldest=state.jobs.end();
   for(auto i=state.jobs.begin();i!=state.jobs.end();++i)
-   if(i->first!=key&&i->second.status!=Status::Pending&&(oldest==state.jobs.end()||i->second.age<oldest->second.age))oldest=i;
-  if(oldest==state.jobs.end())break;
+   if(i->first!=key&&i->second.status!=Status::Pending&&
+      (!i->second.priority||priority||unsigned(state.clock-i->second.age)>512)&&
+      (oldest==state.jobs.end()||i->second.priority<oldest->second.priority||
+       (i->second.priority==oldest->second.priority&&i->second.age<oldest->second.age)))oldest=i;
+  if(oldest==state.jobs.end()){state.changed.notify_one();return;}
   state.readyBytes-=oldest->second.data.size();state.jobs.erase(oldest);
  }
- if(existing!=state.jobs.end())
- {
-  if(priority&&existing->second.status==Status::Pending)
-  {
-   const auto queued=std::find(state.queue.begin(),state.queue.end(),key);
-   if(queued!=state.queue.end()){state.queue.erase(queued);state.queue.push_front(key);}
-  }
-  state.changed.notify_one();return;
- }
- if(state.jobs.size()>=512)return;
- Job job;job.age=++state.clock;state.jobs.emplace(key,std::move(job));
- if(priority)state.queue.push_front(key);else state.queue.push_back(key);state.changed.notify_one();
+ if(existing!=state.jobs.end()){state.changed.notify_one();return;}
+
+ Job job;job.age=++state.clock;job.priority=priority;state.jobs.emplace(key,std::move(job));
+ enqueue(key,priority);state.changed.notify_one();
 }
 Status Take(const std::string &path,int limit,std::vector<unsigned char> &data,bool &resized,bool &dds)
 {

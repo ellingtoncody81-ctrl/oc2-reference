@@ -8,6 +8,6 @@ enum class Status {Pending,Ready,Failed};
 void Start(const char *directory,Prepare prepare);
 void Reset();
 void Shutdown();
-void Request(const std::string &path,int limit,bool priority=false);
+void Request(const std::string &path,int limit,int priority=0);
 Status Take(const std::string &path,int limit,std::vector<unsigned char> &data,bool &resized,bool &dds);
 }

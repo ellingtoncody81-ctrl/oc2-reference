@@ -128,7 +128,7 @@ struct DrawRecord {int serial=0,entity=0,context=0,swaps=0;double time=0;std::st
 std::map<std::pair<int,int>,DrawRecord> draws;
 struct Diagnostics
 {
- int weapon=0,knife=0,skin=0,swaps=0;
+ int weapon=0,knife=0,skin=0,swaps=0,bodyTexture=0;bool pendingBody=false;
  std::array<int,4> stickers{},slotTextures{};
  std::uint64_t instance=0;
  std::string model;
@@ -181,6 +181,14 @@ const oc2_item::Appearance *PlayerItem(int player,int weapon=0,bool active=true)
  if(hit==index.end())return nullptr;
  const auto found=items.find(hit->second);
  return found==items.end()?nullptr:&found->second;
+}
+// Predicted switching can precede the Active flag update. Resolve by the
+// actual viewmodel weapon within this player's authoritative owned instances;
+// never borrow the previously active gun's skin or attachment configuration.
+const oc2_item::Appearance *ViewItem(int weapon)
+{
+ const int player=ViewPlayer();const auto *active=PlayerItem(player,weapon);
+ return active?active:PlayerItem(player,weapon,false);
 }
 const oc2_item::Appearance *WorldItem(int entity,int weapon=0)
 {
@@ -399,9 +407,12 @@ void ReleaseTextures()
 { CancelTextureUpload();for(const auto &v:textures)ReleaseTexture(v.second);textures.clear();textureBlockedFrame.clear();textureKnownCost.clear();textureVariantAliases.clear();overlayLayouts.clear();materialLayouts.clear();textureBytes=0; }
 std::uint64_t TextureBudgetBytes()
 {
- const float mb=textureBudget&&std::isfinite(textureBudget->value)?textureBudget->value:768.f;
- return std::uint64_t(std::max(32.f,std::min(1024.f,mb)))*1024u*1024u;
+ const float fallback=sizeof(void*)>=8?1536.f:768.f;
+ const float maximum=sizeof(void*)>=8?4096.f:1024.f;
+ const float mb=textureBudget&&std::isfinite(textureBudget->value)?textureBudget->value:fallback;
+ return std::uint64_t(std::max(32.f,std::min(maximum,mb)))*1024u*1024u;
 }
+std::size_t TextureMaximumEntries(){return sizeof(void*)>=8?512:256;}
 bool EvictTexture();
 void BeginTextureDraw()
 {
@@ -616,7 +627,7 @@ void PrepareStreamImage(std::vector<byte> &data,int limit,bool &resized,bool &dd
 }
 bool PrepareTexture(const std::string &key)
 {
- while(textures.size()>=256||textureBytes>=TextureBudgetBytes())
+ while(textures.size()>=TextureMaximumEntries()||textureBytes>=TextureBudgetBytes())
   if(!EvictTexture()){textureBlockedFrame[key]=textureVisibleFrame;++textureStats.blocked;return false;}
  const auto known=textureKnownCost.find(key);
  if(known!=textureKnownCost.end())
@@ -694,7 +705,7 @@ int Texture(const std::string &path,bool sticker,int maxDimension=0,bool priorit
  if(textureStreaming&&textureStreaming->value!=0)
  {
   const int limit=key==requested?maxDimension:0;
-   oc2_texture_stream::Request(path,limit,priority);
+   oc2_texture_stream::Request(path,limit,priority?3:0);
   if(textureUploadsThisFrame>=1||textureUploadMs>=2)return 0;
   const auto status=oc2_texture_stream::Take(path,limit,streamed,streamResized,streamDds);
   if(status==oc2_texture_stream::Status::Pending)return 0;
@@ -930,9 +941,9 @@ void Dump()
 {
  ReadState(true);
  const auto &d=diagnostics;
- gEngfuncs.Con_Printf("oc2inventory: weapon=%d instance=%llu knife=%d equipped_knife=%d skin=%d swaps=%d revision=%u catalog=%u file=%d enabled=%d error=%d texture_cache=%u model=%s\n",
+ gEngfuncs.Con_Printf("oc2inventory: weapon=%d instance=%llu knife=%d equipped_knife=%d skin=%d swaps=%d revision=%u catalog=%u file=%d enabled=%d error=%d texture_cache=%u body_texture=%d pending_body=%d model=%s\n",
   d.weapon,static_cast<unsigned long long>(d.instance),d.knife,loadout.knife,d.skin,d.swaps,loadout.revision,unsigned(catalog.size()),
-  int(configExists),int(Active()),int(!readError.empty()),unsigned(textures.size()),d.model.empty()?"none":d.model.c_str());
+  int(configExists),int(Active()),int(!readError.empty()),unsigned(textures.size()),d.bodyTexture,int(d.pendingBody),d.model.empty()?"none":d.model.c_str());
  gEngfuncs.Con_Printf("oc2inventory_stickers: weapon=%d selected=%d/%d/%d/%d textures=%d/%d/%d/%d charm=%d\n",
   d.weapon,d.stickers[0],d.stickers[1],d.stickers[2],d.stickers[3],d.slotTextures[0],d.slotTextures[1],d.slotTextures[2],d.slotTextures[3],
   OC2_InventoryCharmSelection(d.weapon));
@@ -959,7 +970,7 @@ void OC2_InventoryInit()
  OC2_WorldAccessoriesInit();
  OC2_InitWorldStickers();
  enabled=gEngfuncs.pfnRegisterVariable("cl_oc2_inventory","1",FCVAR_ARCHIVE);
- textureBudget=gEngfuncs.pfnRegisterVariable("cl_oc2_texture_cache_mb","768",0);
+ textureBudget=gEngfuncs.pfnRegisterVariable("cl_oc2_texture_cache_mb",sizeof(void*)>=8?"1536":"768",0);
  knifeInfo=gEngfuncs.pfnRegisterVariable("oc2_knife","0",FCVAR_USERINFO);
  gEngfuncs.pfnAddCommand("oc2_inventory_dump",Dump);
  gEngfuncs.pfnAddCommand("oc2_inventory_reload",Reload);
@@ -984,9 +995,10 @@ void OC2_InventoryVidInit()
  gloveCatalog.clear();gloveCatalogAttempted=false;gloveDraw=GloveDraw();
  diagnostics=Diagnostics();ReadState(true);
 }
+namespace { void PrefetchAppearanceTextures(); }
 void OC2_PrecacheMatchModels()
 {
- CheckSession();OC2_AccessoriesVidInit();
+ CheckSession();ReadState();PrefetchAppearanceTextures();OC2_AccessoriesVidInit();
  // Prepare third-person geometry during the loading screen. Otherwise a
  // weapon first seen after a death/drop synchronously loads its body, overlay
  // and attachment models in the middle of the combat frame.
@@ -1043,59 +1055,61 @@ namespace
 void PrefetchAppearanceTextures()
 {
  if(!textureStreaming||textureStreaming->value==0||!Active())return;
- struct Wanted {std::string path,key;int limit;bool sticker,speculative;};
+ struct Wanted {std::string path,key;int limit,rank;bool sticker;};
  static std::vector<Wanted> wanted;static double last=-1;static unsigned epoch=0;
- static int lastView=-1;static bool complete=false;static std::uint64_t evictions=0,invalid=0,budget=0;
- const double now=gEngfuncs.GetClientTime();
- const int view=ViewPlayer();
- if(epoch!=texturePrefetchEpoch||now<last||lastView!=view)
+ static int lastView=-1,lastActive=-1;static bool complete=false;static std::uint64_t evictions=0,invalid=0,budget=0;
+ const double now=gEngfuncs.GetClientTime();const int view=ViewPlayer();
+ const auto *active=PlayerItem(view);const int activeSerial=active?active->serial:0;
+ if(epoch!=texturePrefetchEpoch||now<last||lastView!=view||lastActive!=activeSerial)
  {
-  epoch=texturePrefetchEpoch;lastView=view;complete=false;wanted.clear();
-   std::map<std::pair<std::string,int>,std::pair<bool,bool>> unique;
-   const auto append=[&](int id,int limit,bool sticker,bool speculative=false){const auto *entry=Resource(id);if(entry&&!entry->file.empty()){
-    auto result=unique.emplace(std::make_pair(entry->file,limit),std::make_pair(sticker,speculative));
-    if(!speculative)result.first->second.second=false;}};
+  epoch=texturePrefetchEpoch;lastView=view;lastActive=activeSerial;complete=false;wanted.clear();
+  std::map<std::pair<std::string,int>,std::pair<bool,int>> unique;
+  const auto append=[&](int id,int limit,bool sticker,int rank){const auto *entry=Resource(id);if(entry&&!entry->file.empty()){
+   auto result=unique.emplace(std::make_pair(entry->file,limit),std::make_pair(sticker,rank));
+   result.first->second.second=std::min(result.first->second.second,rank);}};
+  // Saved choices are known before the server's item snapshot and before a
+  // purchase. Decode them ahead of time instead of first requesting on draw.
+  const auto *local=gEngfuncs.GetLocalPlayer();const int localIndex=local?local->index:0;
+  for(const auto &weapon:loadout.weapons)
+  {append(weapon.skin,0,false,2);for(int id:weapon.stickers)if(id>0)append(id,0,true,2);if(weapon.charm>0)append(weapon.charm,0,true,2);}
+  if(const auto *knife=FindKnife(loadout,loadout.knife))append(knife->skin,0,false,2);
   for(const auto &row:items)
   {
    const auto &item=row.second;if(!item.owner)continue;
-   append(item.skin,512,false);for(int id:item.stickers)if(id>0)append(id,256,true);if(item.charm>0)append(item.charm,256,true);
-    // Any owned gun can become the viewmodel through pickup/observer/control.
-    // Warm its original resolution while it is still remote, not on that
-    // transition frame. The bounded cache evicts unused images if necessary.
-    const bool speculative=item.owner!=view;
-    append(item.skin,0,false,speculative);for(int id:item.stickers)if(id>0)append(id,0,true,speculative);if(item.charm>0)append(item.charm,0,true,speculative);
+   const int rank=item.serial==activeSerial?0:item.owner==view?1:item.owner==localIndex?2:4;
+   append(item.skin,0,false,rank);for(int id:item.stickers)if(id>0)append(id,0,true,rank);if(item.charm>0)append(item.charm,0,true,rank);
+   append(item.skin,512,false,3);for(int id:item.stickers)if(id>0)append(id,256,true,3);if(item.charm>0)append(item.charm,256,true,3);
   }
-  for(int id:playerGloves)if(const auto *glove=oc2_gloves::FindEntry(gloveCatalog,id))
-   {if(!glove->leftTexture.empty())unique[std::make_pair(glove->leftTexture,0)]={false,false};if(!glove->rightTexture.empty())unique[std::make_pair(glove->rightTexture,0)]={false,false};}
-   for(const auto &entry:unique)if(wanted.size()<400){const auto &path=entry.first.first;const int limit=entry.first.second;wanted.push_back({path,limit?path+"|oc2max="+std::to_string(limit):path,limit,entry.second.first,entry.second.second});}
-   std::stable_sort(wanted.begin(),wanted.end(),[](const Wanted&a,const Wanted&b){return a.speculative<b.speculative;});
+  for(int player=1;player<int(playerGloves.size());++player)if(const auto *glove=oc2_gloves::FindEntry(gloveCatalog,playerGloves[player]))
+  {const int rank=player==view?0:player==localIndex?2:3;
+   for(const auto &path:{glove->leftTexture,glove->rightTexture})if(!path.empty())
+   {auto entry=unique.emplace(std::make_pair(path,0),std::make_pair(false,rank));entry.first->second.second=std::min(entry.first->second.second,rank);}}
+  for(const auto &entry:unique)wanted.push_back({entry.first.first,entry.first.second?entry.first.first+"|oc2max="+std::to_string(entry.first.second):entry.first.first,entry.first.second,entry.second.second,entry.second.first});
+  std::stable_sort(wanted.begin(),wanted.end(),[](const Wanted&a,const Wanted&b){return a.rank<b.rank;});
+  if(wanted.size()>400)wanted.resize(400);
  }
  last=now;
  if(evictions!=textureStats.evictions||invalid!=textureStats.invalid||budget!=TextureBudgetBytes())complete=false;
  evictions=textureStats.evictions;invalid=textureStats.invalid;budget=TextureBudgetBytes();
  if(complete)return;
  BeginTextureDraw();
- // Queue the whole known loadout before it enters the camera. Only one ready
- // image is uploaded per frame; file reads/decoding/resizing run off-thread.
-  const auto spareBudget=[](){const auto budget=TextureBudgetBytes();return textures.size()<224&&budget>64u*1024u*1024u&&textureBytes<budget-64u*1024u*1024u;};
-  for(const auto &entry:wanted)
+ const auto spareBudget=[](){const auto budget=TextureBudgetBytes();return textures.size()<TextureMaximumEntries()-32&&budget>64u*1024u*1024u&&textureBytes<budget-64u*1024u*1024u;};
+ for(const auto &entry:wanted)
  {
-   if(entry.speculative&&!spareBudget())continue;
-  const std::string &requested=entry.key;
-  const auto alias=textureVariantAliases.find(requested);const std::string &key=alias==textureVariantAliases.end()?requested:alias->second;
-  if(textures.count(key))continue;
-   oc2_texture_stream::Request(entry.path,key==requested?entry.limit:0,!entry.speculative);
+  if(entry.rank>=4&&!spareBudget())continue;
+  const auto alias=textureVariantAliases.find(entry.key);const std::string &key=alias==textureVariantAliases.end()?entry.key:alias->second;
+  if(textures.count(key)||(pendingTexture.handle&&pendingTexture.key==key))continue;
+  oc2_texture_stream::Request(entry.path,key==entry.key?entry.limit:0,entry.rank<=2?3-entry.rank:0);
  }
  bool outstanding=false;
  for(const auto &entry:wanted)
  {
-   if(entry.speculative&&!spareBudget())continue;
-   const std::string &requested=entry.key;
-   const auto alias=textureVariantAliases.find(requested);
-   if(textures.count(alias==textureVariantAliases.end()?requested:alias->second))continue;
-   outstanding=true;
-   if(textureUploadFrame==textureVisibleFrame&&textureUploadsThisFrame>=1)break;
-   Texture(entry.path,entry.sticker,entry.limit,!entry.speculative);
+  if(entry.rank>=4&&!spareBudget())continue;
+  const auto alias=textureVariantAliases.find(entry.key);
+  if(textures.count(alias==textureVariantAliases.end()?entry.key:alias->second))continue;
+  outstanding=true;
+  if(textureUploadFrame==textureVisibleFrame&&textureUploadsThisFrame>=1)break;
+  Texture(entry.path,entry.sticker,entry.limit,entry.rank<=2);
  }
  complete=!outstanding;
 }
@@ -1190,7 +1204,7 @@ float OC2_InventoryKnifeDuration(int animation,float fallback)
 int OC2_InventoryCharmSelection(int weapon)
 {
  ReadState();
- const auto *instance=networkReady?PlayerItem(ViewPlayer(),weapon):nullptr;
+ const auto *instance=networkReady?ViewItem(weapon):nullptr;
  if(instance&&instance->accessoryReady&&!OC2_InventoryOwnAccessories(weapon))return instance->charm;
  const WeaponState *state=Find(loadout,weapon);
  if(!OC2_InventoryOwnAccessories(weapon))return -1;
@@ -1201,7 +1215,7 @@ int OC2_InventoryCharmSelection(int weapon)
 bool OC2_InventoryInstanceAccessories(int weapon,oc2_accessories::WeaponConfig &config,unsigned &count)
 {
  if(!networkReady)return false;
- const auto *item=PlayerItem(ViewPlayer(),weapon);
+ const auto *item=ViewItem(weapon);
  const auto *local=gEngfuncs.GetLocalPlayer();
  if(!item||!local||((item->flags&oc2_item::OriginOwner)&&!(item->flags&oc2_item::BotOrigin)&&ViewPlayer()==local->index)||!item->accessoryReady)return false;
  config=item->accessory;count=item->count;return true;
@@ -1222,7 +1236,7 @@ bool OC2_InventoryWorldAccessories(model_s *model,int player,int serial,int enti
 void OC2_InventoryPublishAccessories(int weapon,const oc2_accessories::WeaponConfig &config,unsigned count)
 {
  if(!OC2_InventoryOwnAccessories(weapon))return;
- const auto *local=gEngfuncs.GetLocalPlayer();const auto *item=PlayerItem(local->index,weapon);
+ const auto *local=gEngfuncs.GetLocalPlayer();const auto *item=PlayerItem(local->index,weapon,false);
  if(!item)return;
  const auto *choice=Find(loadout,weapon);const int charm=choice?choice->charm:0;
  std::ostringstream s;s<<"oc2_item_acc "<<item->serial<<' '<<weapon<<' '<<int(config.stattrak)<<' '<<config.statU<<' '<<config.statV<<' '<<int(config.charm)<<' '<<config.charmU<<' '<<config.charmV<<' '<<config.sticker<<' '<<config.amplitude<<' '<<config.length<<' '<<config.stiffness<<' '<<config.damping<<' '<<count<<' '<<charm;
@@ -1235,7 +1249,7 @@ bool OC2_InventoryOwnAccessories(int weapon)
  const auto *local=gEngfuncs.GetLocalPlayer();
  if(!local||ViewPlayer()!=local->index)return false;
  if(!networkReady)return false;
- const auto *item=PlayerItem(local->index,weapon);
+ const auto *item=PlayerItem(local->index,weapon,false);
  return item&&(item->flags&oc2_item::OriginOwner)&&!(item->flags&oc2_item::BotOrigin);
 }
 bool OC2_InventoryCharmOverride(int weapon,int &texture,bool &hide)
@@ -1290,7 +1304,7 @@ OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &ren
  const bool knifeModel=KnifeModel(model->name);
  if(!weapon&&!knifeModel)return;
  const auto found=items.find(instance);
- const auto *item=instance?(player>=1&&player<=32&&found!=items.end()&&found->second.owner==player?&found->second:nullptr):context=='v'?PlayerItem(ViewPlayer()):context=='p'?PlayerItem(player):WorldItem(renderer.m_pCurrentEntity->index,knifeModel?29:weapon);
+ const auto *item=instance?(player>=1&&player<=32&&found!=items.end()&&found->second.owner==player?&found->second:nullptr):context=='v'?ViewItem(knifeModel?29:weapon):context=='p'?PlayerItem(player):WorldItem(renderer.m_pCurrentEntity->index,knifeModel?29:weapon);
  WeaponState effective;
  const WeaponState *state=nullptr;
  const Entry *skin=nullptr;
@@ -1323,6 +1337,7 @@ OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &ren
  }
  if(skin&&(weapon?(skin->kind!=Kind::GunSkin||skin->weapon!=weapon):(skin->kind!=Kind::KnifeSkin||skin->definition!=current.knife)))skin=nullptr;
  const int bodyTexture=skin&&!stickersOnly?Texture(skin->file,false,worldTexture?512:0):0;
+ current.bodyTexture=bodyTexture;current.pendingBody=skin&&!stickersOnly&&!bodyTexture;
  const auto *bodyBindings=bodyTexture?&MaterialFamily(header,materials,skin->material):nullptr;
  const auto &decalSlots=GetMaterialLayout(header,materials).decals;
  for(int i=0;i<header->numtextures;++i)
