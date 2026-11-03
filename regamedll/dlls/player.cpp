@@ -4231,6 +4231,8 @@ void EXT_FUNC CBasePlayer::__API_HOOK(StartDeathCam)()
 		return;
 	}
 
+	// Every death starts in a teammate's eyes; later manual mode changes remain available.
+	m_iObserverLastMode = OBS_IN_EYE;
 	StartObserver(pev->origin, pev->angles);
 
 	if (TheBots)
@@ -10779,14 +10781,14 @@ void CBasePlayer::DropSecondary()
 
 #ifdef REGAMEDLL_ADD
 	ForEachItem(PISTOL_SLOT, [this](CBasePlayerItem *item) {
-		DropPlayerItem(STRING(item->pev->classname));
+		OC2_PickupSoundOnLanding(DropPlayerItem(STRING(item->pev->classname)));
 		return false;
 	});
 #else
 	auto item = m_rgpPlayerItems[PISTOL_SLOT];
 	if (item)
 	{
-		DropPlayerItem(STRING(item->pev->classname));
+		OC2_PickupSoundOnLanding(DropPlayerItem(STRING(item->pev->classname)));
 	}
 #endif
 
@@ -10801,14 +10803,14 @@ void CBasePlayer::DropPrimary()
 
 #ifdef REGAMEDLL_ADD
 	ForEachItem(PRIMARY_WEAPON_SLOT, [this](CBasePlayerItem *item) {
-		DropPlayerItem(STRING(item->pev->classname));
+		OC2_PickupSoundOnLanding(DropPlayerItem(STRING(item->pev->classname)));
 		return false;
 	});
 #else
 	auto item = m_rgpPlayerItems[PRIMARY_WEAPON_SLOT];
 	if (item)
 	{
-		DropPlayerItem(STRING(item->pev->classname));
+		OC2_PickupSoundOnLanding(DropPlayerItem(STRING(item->pev->classname)));
 	}
 #endif
 
