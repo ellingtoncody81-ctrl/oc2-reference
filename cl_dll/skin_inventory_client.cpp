@@ -1229,8 +1229,14 @@ bool OC2_InventoryWorldAccessories(model_s *model,int player,int serial,int enti
  if(!item||!item->accessoryReady||item->weapon!=weapon)return false;
  config=item->accessory;count=item->count;instance=item->serial;
  if(item->charm)config.charm=item->charm>0;
- pattern=item->charm>=0?CharmTexture(item->charm,256):0;
- if(!item->charm&&config.sticker>0)pattern=OC2_LegacyCharmTexture(config.sticker);
+ // Player zero is a dropped world weapon; keep its counter, but no charm.
+ config.charm=config.charm&&player>0;
+ pattern=0;
+ if(config.charm)
+ {
+  pattern=item->charm>=0?CharmTexture(item->charm,256):0;
+  if(!item->charm&&config.sticker>0)pattern=OC2_LegacyCharmTexture(config.sticker);
+ }
  return config.stattrak||config.charm;
 }
 void OC2_InventoryPublishAccessories(int weapon,const oc2_accessories::WeaponConfig &config,unsigned count)
