@@ -3495,7 +3495,9 @@ void CHalfLifeMultiplay::InitHUD(CBasePlayer *pl)
 	if (m_bBombDropped)
 	{
 		CBaseEntity *pWeaponC4 = UTIL_FindEntityByClassname(nullptr, "weapon_c4");
-		if (pWeaponC4)
+		// A fullupdate must not reveal an unspotted drop to the CT team.
+		// Independent spectators retain the original unrestricted sync.
+		if (pWeaponC4 && (pl->m_iTeam == TERRORIST || pl->m_iTeam == SPECTATOR))
 		{
 			SendMsgBombDrop(BOMB_FLAG_DROPPED, pWeaponC4->pev->origin);
 		}
