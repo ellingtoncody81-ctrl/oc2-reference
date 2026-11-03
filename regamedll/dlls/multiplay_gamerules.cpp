@@ -6,6 +6,8 @@
 #include "oc2_inferno.h"
 #include "../../../../common/oc2_knife_icons.h"
 
+namespace { bool oc2LobbyReturnQueued=false; }
+
 CCStrikeGameMgrHelper g_GameMgrHelper;
 CHalfLifeMultiplay *g_pMPGameRules = nullptr;
 RewardAccount CHalfLifeMultiplay::m_rgRewardAccountRules[RR_END];
@@ -371,6 +373,7 @@ void CHalfLifeMultiplay::ReadMultiplayCvars()
 
 CHalfLifeMultiplay::CHalfLifeMultiplay()
 {
+	oc2LobbyReturnQueued=false;
 	m_bFreezePeriod = TRUE;
 
 	m_VoiceGameMgr.Init(&g_GameMgrHelper, gpGlobals->maxClients);
@@ -2588,7 +2591,17 @@ bool CHalfLifeMultiplay::CheckGameOver()
 				|| ((m_flIntermissionStartTime + MAX_INTERMISSION_TIME) < gpGlobals->time))
 			{
 				// intermission is over
-				ChangeLevel();
+				if (!IS_DEDICATED_SERVER())
+				{
+					if (!oc2LobbyReturnQueued)
+					{
+						oc2LobbyReturnQueued=true;
+						ALERT(at_console,"oc2match_lobby: queued ct=%d t=%d\n",m_iNumCTWins,m_iNumTerroristWins);
+						// Run after this rules frame; menu_main also covers developer mode.
+						SERVER_COMMAND("disconnect\nmenu_main\n");
+					}
+				}
+				else ChangeLevel();
 			}
 		}
 
