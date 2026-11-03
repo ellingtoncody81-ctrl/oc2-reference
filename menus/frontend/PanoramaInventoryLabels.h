@@ -109,7 +109,7 @@ inline std::string Finish(const oc2_inventory::Catalog &catalog,int id)
 inline std::string Sticker(const oc2_inventory::Catalog &catalog,int id)
 {
     if(id<0)return u8"未安装";
-    if(!id)return u8"原贴纸";
+    if(!id)return u8"默认透明图案";
     const auto *entry=oc2_inventory::FindEntry(catalog,id);
     if(!entry)return u8"无法读取";
     if(!EncodedName(entry->name))return entry->name;
