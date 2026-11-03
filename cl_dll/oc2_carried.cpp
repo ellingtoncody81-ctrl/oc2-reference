@@ -460,8 +460,11 @@ void OC2_InventoryDrawCarried(CStudioModelRenderer &renderer,const entity_state_
  int he=utility->he-(inHand&&utility->active==4&&utility->he>0?1:0);
  int smoke=utility->smoke-(inHand&&utility->active==9&&utility->smoke>0?1:0);
  int fire=utility->fire-(inHand&&utility->active==31&&utility->fire>0?1:0);
- const float flashA[3]={-2.f,4.f,-6.f},flashB[3]={-2.f,4.f,-2.f};
- const float hePos[3]={-2.f,4.f,3.f},smokePos[3]={-2.f,-3.f,6.f},firePos[3]={-2.f,-3.f,-6.f};
+ // Pelvis Y points toward the front of the player. Keep carried utilities on
+ // the rear-facing belt plane so the body does not occlude them from behind.
+ // The three inner slots sit between the existing fire and smoke positions.
+ const float flashA[3]={-2.f,-3.f,-3.f},flashB[3]={-2.f,-3.f,0.f};
+ const float hePos[3]={-2.f,-3.f,3.f},smokePos[3]={-2.f,-3.f,6.f},firePos[3]={-2.f,-3.f,-6.f};
  if((utility->flags&oc2_carry::HasC4)&&utility->active!=6)
   DrawUtility(renderer,lighting,lightdir,player->number,6,spine,nullptr,nullptr,true);
  if(flash>0)DrawUtility(renderer,lighting,lightdir,player->number,25,pelvis,&flashModel,flashA,false);
