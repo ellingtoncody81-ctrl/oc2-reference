@@ -141,6 +141,25 @@ static float ViewModelReloadFrame(model_t *model, studiohdr_t *header, int seque
 	return oc2_reload::ModelFrame(weapon,sequence,shield,static_cast<float>(elapsed),seq.numframes,seq.fps);
 }
 
+static void ViewModelReloadTransition(model_t *model, studiohdr_t *header, int departingSequence,
+	const float pos[][3], const vec4_t q[], float oldPos[][3], vec4_t oldQ[])
+{
+	bool shield;
+	if (!header || departingSequence != 14 || ViewModelReloadWeapon(model,shield) != 10) return;
+	// The Elite reload seats each magazine in the opposite pistol. Its final
+	// world pose is correct, but its bone identities differ from idle/draw.
+	// Blending those local tracks pulls both magazines through the middle.
+	// Use the incoming socket tracks while the arms and pistols still blend.
+	const mstudiobone_t *bones=(const mstudiobone_t *)((const byte *)header+header->boneindex);
+	for (int bone=0; bone<header->numbones; ++bone)
+		if (!strcmp(bones[bone].name,"v_weapon.m9a1_L_magazine") ||
+			!strcmp(bones[bone].name,"v_weapon.m9a1_R_magazine"))
+		{
+			for (int axis=0; axis<3; ++axis) oldPos[bone][axis]=pos[bone][axis];
+			for (int axis=0; axis<4; ++axis) oldQ[bone][axis]=q[bone][axis];
+		}
+}
+
 struct ReloadEventClock
 {
 	model_t *model=NULL;
@@ -1075,6 +1094,7 @@ void CStudioModelRenderer::StudioSetupBones(void)
 			if (layer < 2) { g_viewFlow.oldSequence[layer]=old.sequence; g_viewFlow.oldFrame[layer]=oldFrame; g_viewFlow.weight[layer]=weight; }
 			if (old.sequence < 0 || old.sequence >= m_pStudioHeader->numseq) continue;
 			StudioSampleSequence(old.sequence,oldFrame,old.blend0,old.blend1,oldPos,oldQ);
+			ViewModelReloadTransition(m_pRenderModel,m_pStudioHeader,old.sequence,pos,q,oldPos,oldQ);
 			StudioSlerpBones(q,pos,oldQ,oldPos,weight);
 		}
 		ViewModelHandPosition(m_pStudioHeader,pos,q,g_viewFlow.blendedHand);
