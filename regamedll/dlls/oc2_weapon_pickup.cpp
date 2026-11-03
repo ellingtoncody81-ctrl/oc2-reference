@@ -171,6 +171,7 @@ bool Deliver(CBasePlayer *p,CWeaponBox *b)
   UTIL_SetOrigin(discard->pev,p->pev->origin+gpGlobals->v_forward*10);
   discard->SetThink(&CWeaponBox::Kill);discard->pev->nextthink=gpGlobals->time+CGameRules::GetItemKillDelay();
   OC2_PickupDropped(discard,p);
+  OC2_PickupSoundOnLanding(discard);
   if(old->m_iId!=incomingId&&!p->GetItemById((WeaponIdType)old->m_iId))p->pev->weapons&=~(1u<<old->m_iId);
   if(active==old)
   {
@@ -179,7 +180,6 @@ bool Deliver(CBasePlayer *p,CWeaponBox *b)
   }
  }
  if(acquired&&p->m_pActiveItem!=received&&(active==old||!p->m_pActiveItem||CSGameRules()->FShouldSwitchWeapon(p,received)))p->SwitchWeapon(received);
- PickupSound(p);
  PickupLog("success",p,b,incomingId,serial);Message(p,u8"\u5df2\u62fe\u53d6\u6b66\u5668");return true;
 }
 }
