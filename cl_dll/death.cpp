@@ -19,6 +19,7 @@
 #include "oc2_hostage.h"
 #include "cl_util.h"
 #include "parsemsg.h"
+#include "event_api.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -74,6 +75,18 @@ int PlayerTeam(int slot)
 	// TeamInfo is authoritative; optional userinfo may be absent or older.
 	if (g_PlayerExtraInfo[slot].teamname[0]) return g_PlayerExtraInfo[slot].teamnumber;
 	return g_PlayerInfoList[slot].team >= 0 ? g_PlayerInfoList[slot].team : TEAM_UNASSIGNED;
+}
+
+bool PlayHeadshotFeedback(bool confirmedKill, const kill_feedback::Event &event)
+{
+	if (!confirmedKill || !event.headshot || !gEngfuncs.pEventAPI || !gEngfuncs.pEventAPI->EV_PlaySound) return false;
+	const cl_entity_t *local = gEngfuncs.GetLocalPlayer();
+	if (!local || local->index != event.local) return false;
+	float origin[3] = {local->origin[0],local->origin[1],local->origin[2]};
+	// This is the killer's confirmation, not an impact at the victim. AUTO
+	// avoids pickup/reload sounds replacing it on the shared ITEM channel.
+	gEngfuncs.pEventAPI->EV_PlaySound(event.local,origin,CHAN_AUTO,"player/headshot1.wav",1.0f,ATTN_NONE,0,PITCH_NORM);
+	return true;
 }
 
 void ExpireNotices(float time)
@@ -721,9 +734,8 @@ int CHudDeathNotice :: MsgFunc_DeathMsg( const char *pszName, int iSize, void *p
 	event.victim_team = rgDeathNoticeList[i].bTeamKill ? event.killer_team : rgDeathNoticeList[i].victimTeam;
 	event.headshot = headshot != 0;
 	const bool confirmedKill = kill_feedback::OnDeath(s_KillFeedback,event);
-	if (confirmedKill && headshot)
+	if (PlayHeadshotFeedback(confirmedKill,event))
 	{
-		PlaySound("player/headshot1.wav", 0.7f);
 		gEngfuncs.Con_DPrintf("oc2_headshot_feedback: killer=%d victim=%d\n",killer,victim);
 	}
 	OC2_AccessoryKill(weaponName,killer,victim,event.killer_team,event.victim_team);
