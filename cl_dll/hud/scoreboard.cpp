@@ -92,7 +92,7 @@ void ModernScoreFill(float x,float y,float width,float height,match_ui::Color co
 
 void ModernScoreValue(const char *value,float right,float y,float width,float height,match_ui::Color color)
 {
-	if(UnicodeLabel(value))FixedLabel(value,right,y,height,color,true,width);
+	if(UnicodeLabel(value))FixedLabel(value,right,y,height,color,true,width,700);
 	else match_ui::Text(value,right,y,height,color,true,width);
 }
 
@@ -146,10 +146,10 @@ int DrawModernScoreboard()
 		ModernScoreFill(x,y,width,layout.teamHeading,{theme.r/3,theme.g/3,theme.b/3,210});
 		ModernScoreFill(x,y,4*s,layout.TeamHeight(index),theme);
 		match_ui::Silhouette(index==0?"gfx/vgui/icon_ct.tga":"gfx/vgui/icon_t.tga",x+16*s,y+10*s,36*s,36*s,theme);
-		FixedLabel(index==0?"反恐精英":"恐怖分子",x+64*s,y+7*s,(layout.sideBySide?22:26)*s,theme,false,width-205*s);
+		FixedLabel(index==0?"反恐精英":"恐怖分子",x+64*s,y+7*s,(layout.sideBySide?22:26)*s,theme,false,width-205*s,700);
 		int alive=0;for(int slot:teams[index])if(!g_PlayerExtraInfo[slot].dead)++alive;
 		char text[64];snprintf(text,sizeof(text),"存活 %d / %d 名玩家",alive,int(teams[index].size()));
-		FixedLabel(text,x+64*s,y+34*s,16*s,{182,190,198},false,width-205*s);
+		FixedLabel(text,x+64*s,y+34*s,16*s,{182,190,198},false,width-205*s,700);
 		if(gHUD.m_Scoreboard.RoundScoreKnown(team))snprintf(text,sizeof(text),"%d",gHUD.m_Scoreboard.RoundScore(team));else snprintf(text,sizeof(text),"--");
 		ModernScoreValue(text,x+width-20*s,y+8*s,110*s,38*s,theme);
 		const float columnY=y+layout.teamHeading;
@@ -165,7 +165,7 @@ int DrawModernScoreboard()
 		const float nameRight=statusRight-statusWidth-12*s;
 		const float nameX=x+20*s+layout.avatar+12*s;
 		const float labelHeight=16*s,labelY=columnY+5*s;
-		FixedLabel("玩家",nameX,labelY,labelHeight,{175,184,194},false,max(1.0f,nameRight-nameX));
+		FixedLabel("玩家",nameX,labelY,labelHeight,{175,184,194},false,max(1.0f,nameRight-nameX),700);
 		ModernScoreValue("延迟",pingRight,labelY,pingWidth,labelHeight,{175,184,194});
 		ModernScoreValue("阵亡",deathsRight,labelY,deathsWidth,labelHeight,{175,184,194});
 		ModernScoreValue("得分",killsRight,labelY,killsWidth,labelHeight,{175,184,194});
@@ -197,7 +197,7 @@ int DrawModernScoreboard()
 	const float footerY=layout.y+layout.height-layout.footer;
 	ModernScoreFill(layout.x,footerY,layout.width,layout.footer,{8,11,15,200});
 	char label[64];snprintf(label,sizeof(label),"观察者 / 正在加入  %d",int(spectators.size()));
-	FixedLabel(label,layout.x+20*s,footerY+12*s,18*s,{160,170,182},false,270*s);
+	FixedLabel(label,layout.x+20*s,footerY+12*s,18*s,{160,170,182},false,270*s,700);
 	std::string names;for(int slot:spectators){if(!names.empty())names+="   ";names+=g_PlayerInfoList[slot].name;}
 	match_ui::Text(names.c_str(),layout.x+300*s,footerY+12*s,18*s,{195,201,207},false,max(1.0f,layout.width-320*s));
 	return 1;

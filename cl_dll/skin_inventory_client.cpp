@@ -1229,8 +1229,9 @@ bool OC2_InventoryWorldAccessories(model_s *model,int player,int serial,int enti
  if(!item||!item->accessoryReady||item->weapon!=weapon)return false;
  config=item->accessory;count=item->count;instance=item->serial;
  if(item->charm)config.charm=item->charm>0;
- // Player zero is a dropped world weapon; keep its counter, but no charm.
- config.charm=config.charm&&player>0;
+ // Dropped models have player zero; holstered models pass an explicit serial.
+ // Keep world charms only on the active held model, without altering its item.
+ config.charm=config.charm&&player>0&&serial==0;
  pattern=0;
  if(config.charm)
  {
