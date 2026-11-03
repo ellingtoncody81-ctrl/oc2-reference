@@ -361,7 +361,7 @@ public:
             if(m_tab)
             {
                 std::snprintf(value,sizeof(value),u8"挂件长度  %.2f",m_draft.length);
-                Text(right,476,rw,24,value,14,Ink());
+                Text(right,476,rw,28,value,20,Ink());
             }
             Text(right+12,574,rw-24,28,u8"本页不修改你的个人皮肤设置",15,Ink());
         }
@@ -395,7 +395,7 @@ public:
             for(int i=0;i<4;++i)
             {
                 std::snprintf(value,sizeof(value),"%s  %.2f",names[i],values[i]);
-                Text(right,430+i*50,rw,24,value,14,Ink());
+                Text(right,426+i*50,rw,28,value,20,Ink());
             }
         }
         Fill(64,704,w-64,64,PackRGBA(9,14,20,125));
@@ -622,7 +622,7 @@ private:
         m_nextSticker.SetRect(right+120+(rw-120)/2,274,(rw-120)/2,42);
         m_filename.SetRect(right,358,rw-120,30);m_import.SetRect(w-144,352,110,38);
         m_useAccessoryPattern.SetRect(right,394,rw,28);
-        for(int i=0;i<4;++i)m_sliders[i+2].SetRect(right,466+i*50,rw,20);
+        for(int i=0;i<4;++i)m_sliders[i+2].SetRect(right,458+i*50,rw,16);
         m_back.SetRect(98,718,134,36);m_revert.SetRect(w-310,718,112,36);m_apply.SetRect(w-184,718,150,36);
         Sync();
     }
