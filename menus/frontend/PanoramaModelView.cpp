@@ -94,6 +94,22 @@ void ConcatPairMatrix(const float pair[3][4],const float local[3][4],float out[3
         out[i][3]+=local[i][3];
     }
 }
+void PresentPairAttachment(int region,const float center[3],const float delta0[3],const float delta1[3],float frame[3][4])
+{
+    // Match RotateRegion(1), then MoveRegion, including the artwork axes.
+    const float *delta=region?delta1:delta0;
+    for(int a=0;a<3;++a)
+    {
+        const float sign=region&&a<2?-1.f:1.f;
+        for(int k=0;k<3;++k)frame[a][k]*=sign;
+        frame[a][3]=sign*frame[a][3]+(region&&a<2?2*center[a]:0.f)+delta[a];
+    }
+}
+void ApplyAttachmentFrame(cl_entity_t &entity,const float frame[3][4])
+{
+    for(int a=0;a<3;++a)entity.origin[a]=entity.curstate.origin[a]=frame[a][3];
+    API()->SetTransform(&entity,frame);
+}
 class PreviewScene
 {
     PreviewAPI *api;
@@ -906,7 +922,8 @@ struct CMenuPanoramaModelView::Scene
     {
         std::uint64_t result=resources.signature;
         const auto add=[&](double n){const auto value=static_cast<std::int64_t>(n*1000000.0);result^=std::uint64_t(value);result*=1099511628211ULL;};
-        for(int n:{w,h,mode,weapon,definition,skin,glove,accessoryRegion,appearance.charm})add(n);
+        for(int n:{w,h,mode,weapon,definition,skin,glove,accessoryRegion,appearance.charm,
+            int(dualUnfold),int(dualSideBySide),int(dualRigid)})add(n);
         for(int n:appearance.stickers)add(n);
         for(double n:{double(yaw),double(pitch),double(zoom),double(accessories.stattrak),double(accessories.charm),
             double(accessories.statU),double(accessories.statV),double(accessories.charmU),double(accessories.charmV),
@@ -918,7 +935,7 @@ struct CMenuPanoramaModelView::Scene
     int mode=1,team=2,weapon=28,definition=0,skin=0,glove=0,accessoryRegion=-1;
     oc2_inventory::WeaponState appearance;
     oc2_accessories::WeaponConfig accessories;
-    bool interactive=true,dragging=false,rendering=false,dualUnfold=false,dualRigid=false,dualSingle=false,dualSideBySide=false;
+    bool interactive=true,dragging=false,rendering=false,dualUnfold=false,dualRigid=false,dualSingle=false,dualSideBySide=true;
     float yaw=0,pitch=0,zoom=1;
     int x=0,y=0,width=0,height=0,lastX=0,lastY=0;
     std::string lastModel;
@@ -1344,10 +1361,21 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     const auto inRegion=[&](float u){return !split||std::min(int(geometry->mounts.regions.size())-1,
         int(std::max(0.f,std::min(1.f,u))*geometry->mounts.regions.size()))==scene.accessoryRegion;};
     float statFrame[3][4],charmFrame[3][4];
-    const bool drawStat=!dualSingle&&scene.mode==1&&config.stattrak&&inRegion(config.statU)&&Attachment(*geometry,config,false,scene.stat,statGeometry,statFrame);
-    const bool drawCharm=!dualSingle&&scene.mode==1&&config.charm&&inRegion(config.charmU)&&Attachment(*geometry,config,true,scene.charm,charmGeometry,charmFrame);
-    if(pairTransformed&&drawStat){float composed[3][4];ConcatPairMatrix(pairMatrix,statFrame,composed);API()->SetTransform(&scene.stat,composed);}
-    if(pairTransformed&&drawCharm){float composed[3][4];ConcatPairMatrix(pairMatrix,charmFrame,composed);API()->SetTransform(&scene.charm,composed);}
+    const bool drawStat=scene.mode==1&&config.stattrak&&inRegion(config.statU)&&Attachment(*geometry,config,false,scene.stat,statGeometry,statFrame);
+    const bool drawCharm=scene.mode==1&&config.charm&&inRegion(config.charmU)&&Attachment(*geometry,config,true,scene.charm,charmGeometry,charmFrame);
+    const auto presentAttachment=[&](bool drawn,float u,cl_entity_t &entity,float frame[3][4])
+    {
+        if(!drawn||(!(dualSingle&&dualArrange)&&!pairTransformed))return;
+        if(dualSingle&&dualArrange)
+            PresentPairAttachment(u>=.5f?1:0,dualRegion1Center,dualDelta0,dualDelta1,frame);
+        if(pairTransformed)
+        {
+            float composed[3][4];ConcatPairMatrix(pairMatrix,frame,composed);std::memcpy(frame,composed,sizeof(composed));
+        }
+        ApplyAttachmentFrame(entity,frame);
+    };
+    presentAttachment(drawStat,config.statU,scene.stat,statFrame);
+    presentAttachment(drawCharm,config.charmU,scene.charm,charmFrame);
     if(drawStat&&scene.overridePreview)scene.stat.curstate.body=int(scene.previewCount);
     DrawOverride statOverride,charmOverride;
     if(drawStat)statOverride.Freeze(*statGeometry,scene.stat.curstate.body,false);
@@ -1364,16 +1392,14 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     for(int kind=0;(scene.interactive||scene.overridePreview)&&kind<2;++kind)
     {
         Geometry *attachment=kind?charmGeometry:statGeometry;if(!attachment)continue;
-        geo::Mount mount;if(!geo::FindMount(geometry->mounts,kind?config.charmU:config.statU,kind?config.charmV:config.statV,mount))continue;
-        float origin[3],axisX[3],axisY[3],normal[3];const auto &bone=geometry->bind[mount.bone];
-        Transform(bone.m,mount.origin,origin);Transform(bone.m,mount.axisX,axisX,false);Transform(bone.m,mount.axisY,axisY,false);Transform(bone.m,mount.normal,normal,false);
+        const auto &attachmentFrame=kind?charmFrame:statFrame;
         float *rect=scene.attachmentRect[kind];rect[0]=rect[1]=1e20f;rect[2]=rect[3]=-1e20f;
         const float size=kind?config.length:1.f;
         for(const auto &point:attachment->mesh.positions)
         {
             float local[3],world[3];Transform(attachment->bind[point.bone].m,point.p,local);
-            for(int a=0;a<3;++a)world[a]=origin[a]+axisX[a]*local[0]*size+axisY[a]*local[1]*size+normal[a]*(local[2]*size+.01f);
-            if(pairTransformed){float turned[3];for(int a=0;a<3;++a)turned[a]=world[0]*pairMatrix[a][0]+world[1]*pairMatrix[a][1]+world[2]*pairMatrix[a][2]+pairMatrix[a][3];std::memcpy(world,turned,sizeof(turned));}
+            for(float &value:local)value*=size;
+            Transform(attachmentFrame,local,world);
             float sx,sy;if(!scene.Project(world,sx,sy))continue;
             rect[0]=std::min(rect[0],sx);rect[1]=std::min(rect[1],sy);rect[2]=std::max(rect[2],sx);rect[3]=std::max(rect[3],sy);scene.attachmentValid[kind]=true;
         }
