@@ -33,14 +33,14 @@ public:
     struct Preview {int count=0;Region regions[2];};
     struct Attachment {std::string file;Bounds bounds;};
     struct Pane {Point p;Size z;float scale=1;Region region;};
-    float *u=nullptr,*v=nullptr;bool dragging=false,rotating=false;int weapon=0,selected=0;
+    float *u=nullptr,*v=nullptr;bool dragging=false;int weapon=0,selected=0;
     oc2_accessories::WeaponConfig *draft=nullptr;
     const oc2_inventory::WeaponState *appearance=nullptr;
     unsigned count=0;std::string sticker;
     const oc2_accessory_domains::Domains *domains=nullptr;
     CEventCallback onSelected;
     bool previewValid=false;
-    void ResetView(){dragging=rotating=false;for(auto& model:m_modelsView)model.ResetView();}
+    void ResetView(){dragging=false;for(auto& model:m_modelsView)model.ResetView();}
     bool LoadPreview(const char *text)
     {
         previewValid=false;
@@ -108,11 +108,8 @@ public:
     bool KeyDown(int key) override
     {
         if(!u||!v)return false;
-        const bool inside=UI_CursorInRect(GetRenderPosition(),GetRenderSize());
-        if(key==K_MOUSE2&&inside){dragging=false;rotating=true;m_rotate=Point(uiStatic.cursorX,uiStatic.cursorY);return true;}
-        if((key==K_MWHEELUP||key==K_MWHEELDOWN)&&inside)
-        {for(auto& model:m_modelsView)model.ZoomView(key==K_MWHEELUP?1.1f:1.f/1.1f);return true;}
-        if(key=='r'||key=='R'){ResetView();return true;}
+        if(UI_CursorInRect(GetRenderPosition(),GetRenderSize())&&
+            (key==K_MOUSE2||key==K_MWHEELUP||key==K_MWHEELDOWN))return true;
         if(UI::Key::IsLeftMouse(key))
         {
             if(!UI_CursorInRect(GetRenderPosition(),GetRenderSize()))return false;
@@ -130,27 +127,20 @@ public:
             dragging=true;if(hit<0)MovePointer();return true;
         }
         float du=0,dv=0;
-        if(UI::Key::IsLeftArrow(key))du=-.01f;
-        else if(UI::Key::IsRightArrow(key))du=.01f;
-        else if(key==K_UPARROW)dv=.01f;
-        else if(key==K_DOWNARROW)dv=-.01f;
+        if(UI::Key::IsLeftArrow(key))du=-.001f;
+        else if(UI::Key::IsRightArrow(key))du=.001f;
+        else if(key==K_UPARROW)dv=.001f;
+        else if(key==K_DOWNARROW)dv=-.001f;
         else return false;
         SetPosition(*u+du,*v+dv);return true;
     }
     bool KeyUp(int key) override
     {
         if(UI::Key::IsLeftMouse(key)){dragging=false;return true;}
-        if(key==K_MOUSE2){rotating=false;return true;}
         return false;
     }
     void Draw() override
     {
-        if(rotating)
-        {
-            const float dx=(uiStatic.cursorX-m_rotate.x)*.45f,dy=(uiStatic.cursorY-m_rotate.y)*.35f;
-            for(auto& model:m_modelsView)model.RotateView(dx,dy);
-            m_rotate=Point(uiStatic.cursorX,uiStatic.cursorY);
-        }
         if(dragging)MovePointer();
         const Point p=GetRenderPosition();const Size z=GetRenderSize();
         UI_FillRect(p,z,PackRGBA(24,36,46,230));
@@ -165,13 +155,13 @@ public:
         for(int i=0;i<n;++i)
         {
             CMenuPanoramaModelView &model=m_modelsView[i];
-            model.SetInteractive(true);model.SetAppearance(*appearance,draft);
+            model.SetInteractive(false);model.SetAppearance(*appearance,draft);
             model.SetAccessoryPreview(sticker,count);model.SetAccessoryRegion(n==2?i:-1);
             const int viewWidth=z.w/n,x0=p.x+(i?z.w-viewWidth:0);
             drawn=model.DrawAt(x0,p.y,viewWidth,z.h)&&drawn;
         }
         if(!drawn)
-            oc2_panorama::DrawText(p,z,u8"3D 预览加载中",16,PackRGBA(160,175,189,255),false,QM_CENTER);
+            oc2_panorama::DrawText(p,z,u8"侧面预览加载中",16,PackRGBA(160,175,189,255),false,QM_CENTER);
         DrawSelection();
     }
     void Dump()
@@ -197,7 +187,7 @@ public:
 private:
     struct Box {Point p;Size z;};
     std::array<Preview,24> m_previews{};Attachment m_models[2];Bounds m_stamp,m_digits[6];
-    std::string m_frame,m_digitFiles[6];Point m_grab,m_rotate;
+    std::string m_frame,m_digitFiles[6];Point m_grab;
     CMenuPanoramaModelView m_modelsView[2];
     static bool SafeImage(const std::string &s)
     {return !s.empty()&&s.size()<81&&s.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")==std::string::npos&&s.find("..") == std::string::npos;}
@@ -320,11 +310,12 @@ public:
     void Open(int weapon,int skin=-1)
     {
         if(oc2_accessories::Index(weapon)<0)return;
-        m_weapon=weapon;m_skin=skin;m_tab=0;ReloadData();m_pad.ResetView();
+        m_weapon=weapon;m_skin=skin;m_tab=0;m_botMode=false;m_modeSwitchPending=false;ReloadData();m_pad.ResetView();
         CMenuFramework::Show();Sync();SetCursorToItem(m_statTab);
     }
     void SelectInventoryPattern(int id)
     {
+        if(m_botMode)return;
         m_appearance.charm=id;m_patternOverride=id;m_patternChanged=false;
         m_inventoryPatternFile.clear();m_inventoryPatternName.clear();
         ResolvePattern();m_draft.charm=id!=-1;m_dirty=true;
@@ -338,7 +329,6 @@ public:
     bool KeyUp(int key) override
     {
         if(UI::Key::IsLeftMouse(key))m_pad.dragging=false;
-        if(key==K_MOUSE2)m_pad.rotating=false;
         return CMenuFramework::KeyUp(key);
     }
     void Draw() override
@@ -346,13 +336,13 @@ public:
         const int w=uiStatic.width,left=Left(),right=Right(),rw=w-right-34;
         oc2_panorama::DrawBackground();
         Fill(64,0,w-64,96,PackRGBA(12,18,25,80));Fill(98,95,w-132,1,PackRGBA(190,206,218,80));
-        const std::string heading=std::string(oc2_accessories::Name(m_weapon))+u8"  /  "+
-            oc2_inventory_labels::Finish(m_skinCatalog,m_skin)+u8"  /  挂件与计数器";
+        const std::string heading=m_botMode?std::string(u8"人机挂点  /  ")+oc2_accessories::Name(m_weapon):
+            std::string(u8"我的装备  /  ")+oc2_accessories::Name(m_weapon)+u8"  /  "+oc2_inventory_labels::Finish(m_skinCatalog,m_skin);
         Text(98,30,w-132,42,heading.c_str(),28,Ink(),true);
         Fill(84,168,left+28,508,PackRGBA(19,29,38,150));
         Fill(right-14,168,rw+28,508,PackRGBA(18,28,37,210));
-        Text(98,181,left-140,30,m_tab?u8"挂件位置 · 3D 实物预览":u8"计数器位置 · 3D 实物预览",20,Accent(),true);
-        Text(98,508,left,24,u8"左键拖动挂点 · 右键旋转 · 滚轮缩放 · R 回到侧面",13,Ink());
+        Text(98,181,left,30,m_tab?u8"挂件位置 · 固定侧面":u8"计数器位置 · 固定侧面",20,Accent(),true);
+        Text(98,508,left,24,u8"拖动附件定位 · 方向键微调",13,Ink());
         Text(98,534,left,22,m_weapon==10?u8"双枪内侧整片枪体可调，挂点随承载部件固定":
             u8"有贴纸一侧的整片枪体可调，挂点随承载部件固定",12,Muted());
         char value[160];
@@ -360,7 +350,22 @@ public:
         Text(98,561,left,24,value,15,Ink());
         std::snprintf(value,sizeof(value),u8"垂直位置  %.2f%%",100*(m_tab?m_draft.charmV:m_draft.statV));
         Text(98,611,left,24,value,15,Ink());
-        if(!m_tab)
+        if(m_botMode)
+        {
+            Text(right,112,rw,42,u8"当前枪型的人机共用位置",17,Accent(),true);
+            Text(right,181,rw,30,m_tab?u8"编辑人机挂件位置":u8"编辑人机计数器位置",20,Accent(),true);
+            Text(right,245,rw,42,oc2_accessories::Name(m_weapon),30,Ink(),true);
+            Text(right+12,323,rw-24,28,u8"保存后，使用这把枪的人机跟随此位置",15,Ink());
+            Text(right+12,365,rw-24,28,u8"保留随机图案、附件开关与击杀计数",14,Muted());
+            Text(right+12,405,rw-24,28,u8"第三人称位置自动对应",15,Muted());
+            if(m_tab)
+            {
+                std::snprintf(value,sizeof(value),u8"挂件长度  %.2f",m_draft.length);
+                Text(right,476,rw,24,value,14,Ink());
+            }
+            Text(right+12,574,rw-24,28,u8"本页不修改你的个人皮肤设置",15,Ink());
+        }
+        else if(!m_tab)
         {
             Text(right,181,rw,30,u8"累计击杀",20,Accent(),true);
             if(m_countsValid)std::snprintf(value,sizeof(value),"%06u",m_count);
@@ -390,7 +395,7 @@ public:
             for(int i=0;i<4;++i)
             {
                 std::snprintf(value,sizeof(value),"%s  %.2f",names[i],values[i]);
-                Text(right,430+i*56,rw,24,value,14,Ink());
+                Text(right,430+i*50,rw,24,value,14,Ink());
             }
         }
         Fill(64,704,w-64,64,PackRGBA(9,14,20,125));
@@ -414,7 +419,7 @@ public:
             filenameHex,m_importStatus,unsigned(m_catalog.size()));
         Con_Printf("%s",line);
         Con_Printf("accessory_profile: weapon=%d skin=%d\n",m_weapon,m_skin);
-        Con_Printf("accessory_defaults_sync: enabled=%d path=%s\n",int(m_shareDefaults),oc2_mount_defaults::kPath);
+        Con_Printf("accessory_edit_mode: scope=%s fixed_side=1 shared_path=%s\n",m_botMode?"bots":"personal",oc2_mount_defaults::kPath);
         Con_Printf("accessory_pattern_source: override=%d source=%s\n",m_patternOverride,m_patternOverride<0?"unequipped":m_patternOverride?"skin_profile":"accessories");
         Con_Printf("accessory_pattern_draft: changed=%d applies_with_settings=1\n",int(m_patternChanged));
         Con_Printf("accessory_regions: loaded=%d stat_allowed=%d charm_allowed=%d dual_sides=%d\n",
@@ -494,9 +499,17 @@ private:
         m_patternOverride=m_appearance.charm;
         m_inventoryPatternFile.clear();m_inventoryPatternName.clear();
         ResolvePattern();
+        if(m_botMode)
+        {
+            if(const auto *layout=oc2_accessories::Find(state.defaultAccessories,m_weapon))m_draft=*layout;
+            // The layout editor always shows both objects. Their actual bot
+            // enablement and artwork remain controlled by the game.
+            m_draft.stattrak=m_draft.charm=true;m_patternOverride=0;
+        }
         Message(!valid||!m_catalogValid?u8"存档无法读取，请先恢复有效文件。":
             !m_countsValid?u8"击杀记录无法读取，已保留原文件。":u8"已读取保存的附件设置。",
             !valid||!m_catalogValid||!m_countsValid);
+        if(valid&&m_botMode)Message(u8"正在编辑人机共用挂点；点击“保存人机挂点”后生效。");
     }
     void ResolvePattern()
     {
@@ -559,9 +572,8 @@ private:
         Button(m_charmToggle,u8"挂件：关闭","accessory_charm_toggle");m_charmToggle.onReleased=VoidCb(&CMenuAccessoriesEditor::ToggleCharm);
         Button(m_apply,u8"应用并保存","accessory_apply");m_apply.onReleased=VoidCb(&CMenuAccessoriesEditor::Apply);
         Button(m_revert,u8"还原","accessory_revert");m_revert.onReleased=VoidCb(&CMenuAccessoriesEditor::Revert);
-        Button(m_defaults,u8"恢复默认","accessory_defaults");m_defaults.onReleased=VoidCb(&CMenuAccessoriesEditor::UseDefaults);
-        Button(m_viewReset,u8"回到侧面","accessory_view_reset");m_viewReset.onReleased=VoidCb(&CMenuAccessoriesEditor::ResetPreview);
-        Button(m_defaultSync,u8"同步为人机默认：开启","accessory_default_sync");m_defaultSync.onReleased=VoidCb(&CMenuAccessoriesEditor::ToggleDefaultSync);
+        Button(m_modeSwitch,u8"编辑人机挂点","accessory_mode_switch");m_modeSwitch.onReleased=VoidCb(&CMenuAccessoriesEditor::ToggleEditorMode);
+        m_modeSwitch.SetCharSize(QM_SMALLERFONT);
         Button(m_back,u8"返回检视","accessory_back");m_back.onReleased=VoidCb(&CMenuAccessoriesEditor::Back);
         Button(m_reset,u8"重置当前武器计数","accessory_reset");m_reset.onReleased=VoidCb(&CMenuAccessoriesEditor::ConfirmReset);
         Button(m_prevSticker,u8"< 上一款","accessory_sticker_previous");m_prevSticker.onReleased=VoidCb(&CMenuAccessoriesEditor::PreviousSticker);
@@ -576,7 +588,7 @@ private:
         m_pad.onChanged=VoidCb(&CMenuAccessoriesEditor::PositionEdited);
         m_pad.onSelected=VoidCb(&CMenuAccessoriesEditor::PreviewSelected);
         static const char *tags[6]={"accessory_u","accessory_v","accessory_amplitude","accessory_length","accessory_stiffness","accessory_damping"};
-        const float lo[6]={0,0,0,.5f,20,2},hi[6]={100,100,25,1.5f,160,30},step[6]={1,1,1,.05f,5,1};
+        const float lo[6]={0,0,0,.5f,20,2},hi[6]={100,100,25,1.5f,160,30},step[6]={.1f,.1f,1,.05f,5,1};
         for(int i=0;i<6;++i)
         {
             m_sliders[i].SetNameAndStatus("",nullptr,tags[i]);m_sliders[i].Setup(lo[i],hi[i],step[i]);
@@ -602,16 +614,15 @@ private:
         m_statTab.SetRect(98,112,(left-10)/2,42);m_charmTab.SetRect(108+(left-10)/2,112,(left-10)/2,42);
         m_statToggle.SetRect(right,112,(rw-10)/2,42);m_charmToggle.SetRect(right+(rw+10)/2,112,(rw-10)/2,42);
         m_pad.SetRect(98,224,left,276);m_sliders[0].SetRect(114,587,left-32,20);m_sliders[1].SetRect(114,637,left-32,20);
-        m_viewReset.SetRect(98+left-130,181,130,30);m_defaultSync.SetRect(right,656,rw,24);
+        m_modeSwitch.SetRect(right,640,rw,30);
         m_reset.SetRect(right+24,330,rw-48,42);
         m_choosePattern.SetRect(right+108,274,rw-108,42);
         m_prevSticker.SetRect(right+108,274,(rw-120)/2,42);
         m_nextSticker.SetRect(right+120+(rw-120)/2,274,(rw-120)/2,42);
         m_filename.SetRect(right,358,rw-120,30);m_import.SetRect(w-144,352,110,38);
         m_useAccessoryPattern.SetRect(right,394,rw,28);
-        for(int i=0;i<4;++i)m_sliders[i+2].SetRect(right,466+i*56,rw,20);
+        for(int i=0;i<4;++i)m_sliders[i+2].SetRect(right,466+i*50,rw,20);
         m_back.SetRect(98,718,134,36);m_revert.SetRect(w-310,718,112,36);m_apply.SetRect(w-184,718,150,36);
-        m_defaults.SetRect(w-454,718,130,36);
         Sync();
     }
     void SyncPositionSliders()
@@ -634,22 +645,26 @@ private:
     void PreviewSelected(){m_tab=m_pad.selected;Sync();}
     void UpdatePreview()
     {
-        m_pad.draft=&m_draft;m_pad.count=m_count;m_pad.selected=m_tab;
+        m_pad.draft=&m_draft;m_pad.count=m_botMode?0:m_count;m_pad.selected=m_tab;
         m_appearance.charm=m_patternChanged?0:m_patternOverride;m_pad.appearance=&m_appearance;
         m_pad.sticker=PatternFile();
     }
     void Sync()
     {
         SyncEnableLabels();
+        m_modeSwitch.SetText(m_botMode?u8"返回我的装备":u8"编辑人机挂点");
+        m_apply.SetText(m_botMode?u8"保存人机挂点":u8"应用并保存");
+        m_back.SetText(m_botMode?u8"返回我的装备":u8"返回检视");
+        m_statToggle.SetVisibility(!m_botMode);m_charmToggle.SetVisibility(!m_botMode);
         m_statTab.colorBase=m_tab?Ink():Accent();m_charmTab.colorBase=m_tab?Accent():Ink();
         m_pad.u=m_tab?&m_draft.charmU:&m_draft.statU;m_pad.v=m_tab?&m_draft.charmV:&m_draft.statV;m_pad.weapon=m_weapon;
         m_pad.domains=&m_domains;
         UpdatePreview();
-        m_reset.SetVisibility(!m_tab);m_prevSticker.SetVisibility(false);m_nextSticker.SetVisibility(false);
-        m_choosePattern.SetVisibility(m_tab);m_choosePattern.SetGrayed(!m_patternPicker||!m_configValid);
-        m_filename.SetVisibility(m_tab);m_import.SetVisibility(m_tab);
-        m_useAccessoryPattern.SetVisibility(m_tab&&m_patternOverride!=0&&!m_patternChanged);
-        for(int i=2;i<6;++i)m_sliders[i].SetVisibility(m_tab);
+        m_reset.SetVisibility(!m_tab&&!m_botMode);m_prevSticker.SetVisibility(false);m_nextSticker.SetVisibility(false);
+        m_choosePattern.SetVisibility(m_tab&&!m_botMode);m_choosePattern.SetGrayed(!m_patternPicker||!m_configValid);
+        m_filename.SetVisibility(m_tab&&!m_botMode);m_import.SetVisibility(m_tab&&!m_botMode);
+        m_useAccessoryPattern.SetVisibility(m_tab&&!m_botMode&&m_patternOverride!=0&&!m_patternChanged);
+        for(int i=2;i<6;++i)m_sliders[i].SetVisibility(m_tab&&(!m_botMode||i==3));
         SyncPositionSliders();m_sliders[2].SetCurrentValue(m_draft.amplitude);m_sliders[3].SetCurrentValue(m_draft.length);
         m_sliders[4].SetCurrentValue(m_draft.stiffness);m_sliders[5].SetCurrentValue(m_draft.damping);
     }
@@ -708,6 +723,13 @@ private:
     {
         if(!m_configValid||!m_catalogValid||!oc2_accessories::Valid(m_draft))
             {Message(u8"设置无效，未保存更改。",true);return;}
+        if(m_botMode)
+        {
+            std::string error;
+            if(!oc2_local_profiles::SaveMountLayout(m_draft,error))
+                {Message(u8"人机挂点保存失败，草稿已保留。",true);return;}
+            m_dirty=false;Message(u8"已保存当前枪型的人机挂点，第三人称自动对应。");Sync();return;
+        }
         oc2_local_profiles::State latest;std::string error;
         if(!oc2_local_profiles::Load(latest,error))
             {Message(u8"皮肤设置存档无法读取，未保存更改。",true);return;}
@@ -716,38 +738,36 @@ private:
         profile.appearance.charm=m_patternChanged?0:m_patternOverride;
         if(m_catalogDirty&&!Write(oc2_accessories::kCatalogPath,oc2_accessories::SerializeCatalog(m_catalog)))
             {Message(u8"无法保存图案目录。",true);return;}
-        if(!oc2_local_profiles::SaveProfile(profile,m_skinCatalog,error,m_shareDefaults))
+        if(!oc2_local_profiles::SaveProfile(profile,m_skinCatalog,error))
             {Message(u8"保存失败，当前皮肤的草稿仍保留。",true);return;}
         m_appearance=profile.appearance;
         if(m_patternChanged)m_patternOverride=0;
         m_patternChanged=false;
         ++m_revision;m_dirty=false;m_catalogDirty=false;
-        char status[160];std::snprintf(status,sizeof(status),m_shareDefaults?u8"已保存，并同步当前武器的人机默认挂点。":u8"已保存：计数器%s / 挂件%s。",
+        char status[160];std::snprintf(status,sizeof(status),u8"已保存个人设置：计数器%s / 挂件%s。",
             m_draft.stattrak?u8"开启":u8"关闭",m_draft.charm?u8"开启":u8"关闭");Message(status);
         Sync();
     }
-    void UseDefaults()
-    {
-        oc2_local_profiles::State current;std::string error;
-        if(!oc2_local_profiles::Load(current,error)){Message(u8"默认布局无法读取，未修改当前位置。",true);return;}
-        const auto *value=oc2_accessories::Find(current.defaultAccessories,m_weapon);if(!value)return;
-        oc2_accessories::WeaponConfig next=*value;
-        oc2_accessory_domains::NearestAllowed(m_domains,m_weapon,next.statU,next.statV);
-        oc2_accessory_domains::NearestAllowed(m_domains,m_weapon,next.charmU,next.charmV);
-        const int sticker=m_draft.sticker;
-        m_draft=next;m_draft.stattrak=true;m_draft.charm=true;m_draft.sticker=sticker;
-        m_pad.dragging=false;m_dirty=true;Sync();Message(u8"已恢复默认位置并启用附件，点击应用保存。");
-    }
     void Revert(){m_pad.dragging=false;ReloadData();Sync();}
-    void ResetPreview(){m_pad.ResetView();}
-    void ToggleDefaultSync(){m_shareDefaults=!m_shareDefaults;m_defaultSync.SetText(m_shareDefaults?u8"同步为人机默认：开启":u8"同步为人机默认：关闭");}
+    void SwitchEditorMode()
+    {
+        m_botMode=!m_botMode;m_modeSwitchPending=false;ReloadData();m_pad.ResetView();Sync();SetCursorToItem(m_modeSwitch);
+    }
+    void ToggleEditorMode()
+    {
+        m_pad.dragging=false;
+        if(m_dirty){m_modeSwitchPending=true;m_discardDialog.Show();m_discardDialog.SetCursorToItem(m_discardDialog.no);}
+        else SwitchEditorMode();
+    }
     void Back()
     {
         m_pad.dragging=false;
+        if(m_botMode){ToggleEditorMode();return;}
+        m_modeSwitchPending=false;
         if(m_dirty){m_discardDialog.Show();m_discardDialog.SetCursorToItem(m_discardDialog.no);}
         else Hide();
     }
-    void Discard(){m_dirty=false;Hide();}
+    void Discard(){m_dirty=false;if(m_modeSwitchPending)SwitchEditorMode();else Hide();}
     void ConfirmReset()
     {
         if(!m_countsValid){Message(u8"击杀记录无法读取，请先恢复有效存档。",true);return;}
@@ -766,7 +786,7 @@ private:
         m_count=0;m_countsValid=true;Message(u8"已重置当前武器的累计击杀。");
     }
     int m_weapon=1,m_skin=-1,m_tab=0,m_patternOverride=0;unsigned m_count=0,m_revision=1;
-    bool m_dirty=false,m_error=false,m_configValid=true,m_countsValid=true,m_catalogValid=true,m_catalogDirty=false,m_patternChanged=false,m_shareDefaults=true;
+    bool m_dirty=false,m_error=false,m_configValid=true,m_countsValid=true,m_catalogValid=true,m_catalogDirty=false,m_patternChanged=false,m_botMode=false,m_modeSwitchPending=false;
     std::string m_message,m_inventoryPatternFile,m_inventoryPatternName;
     const char *m_importStatus="idle";
     oc2_accessories::WeaponConfig m_draft;
@@ -774,7 +794,7 @@ private:
     oc2_inventory::Catalog m_skinCatalog;
     oc2_accessories::Catalog m_catalog;
     oc2_accessory_domains::Domains m_domains;
-    CMenuAction m_statTab,m_charmTab,m_statToggle,m_charmToggle,m_apply,m_revert,m_defaults,m_back,m_reset,m_viewReset,m_defaultSync;
+    CMenuAction m_statTab,m_charmTab,m_statToggle,m_charmToggle,m_apply,m_revert,m_back,m_reset,m_modeSwitch;
     CMenuAction m_prevSticker,m_nextSticker,m_import,m_useAccessoryPattern,m_choosePattern;
     CMenuSlider m_sliders[6];CMenuField m_filename;CMenuAccessoryPad m_pad;CMenuPanoramaChrome m_chrome;
     CMenuYesNoMessageBox m_resetDialog,m_discardDialog;

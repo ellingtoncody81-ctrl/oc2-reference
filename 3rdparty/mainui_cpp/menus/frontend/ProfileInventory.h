@@ -159,6 +159,15 @@ inline bool SaveProfile(const oc2_profiles::Profile &profile,const oc2_inventory
   {error="Skin customization could not be equipped.";return false;}
  return Persist(state,active,error,shareDefaults?&profile.accessories:nullptr);
 }
+inline bool SaveMountLayout(const oc2_accessories::WeaponConfig &layout,std::string &error)
+{
+ State state;if(!Load(state,error))return false;
+ if(!oc2_mount_defaults::Put(state.mountDefaults,layout)){error="Invalid shared mount layout";return false;}
+ state.mountDefaults.revision=oc2_profiles::NextRevision(state.mountDefaults.revision);
+ std::vector<Change> changes;
+ changes.emplace_back(oc2_mount_defaults::kPath,state.mountFile,oc2_mount_defaults::Serialize(state.mountDefaults));
+ return SaveChanges(changes,error);
+}
 inline bool EquipProfile(int weapon,int skin,const oc2_inventory::Catalog &catalog,std::string &error)
 {
  State state;if(!Load(state,error))return false;
