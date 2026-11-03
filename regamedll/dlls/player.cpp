@@ -8180,7 +8180,8 @@ void CBasePlayer::SendBuyState()
 	const int ammo = fire ? fire->PrimaryAmmoIndex() : -1;
 	const bool incendiary = fire && ammo >= 0 && ammo < MAX_AMMO_SLOTS && m_rgAmmo[ammo] > 0 &&
 		(static_cast<CBasePlayerWeapon *>(fire)->m_iWeaponState & CMolotovGrenade::INCENDIARY_STATE);
-	const int equipment = clamp(m_iOc2ZeusPurchases,0,255) | (incendiary ? 256 : 0);
+	const bool hasHelmet = m_iKevlar == ARMOR_VESTHELM;
+	const int equipment = clamp(m_iOc2ZeusPurchases,0,255) | (incendiary ? 256 : 0) | (hasHelmet ? 512 : 0);
     if (m_iClientEquipment != equipment)
     {
         MESSAGE_BEGIN(MSG_ONE,gmsgEquipment,nullptr,pev);
@@ -8189,6 +8190,11 @@ void CBasePlayer::SendBuyState()
         MESSAGE_END();
 		MESSAGE_BEGIN(MSG_ONE,gmsgFireVariant,nullptr,pev);
 			WRITE_BYTE(incendiary ? 1 : 0);
+		MESSAGE_END();
+		// ArmorType was previously sent on pickup only. Refresh it after a
+		// respawn, exhaustion, or other helmet state change as well.
+		MESSAGE_BEGIN(MSG_ONE,gmsgArmorType,nullptr,pev);
+			WRITE_BYTE(hasHelmet ? 1 : 0);
 		MESSAGE_END();
         m_iClientEquipment = equipment;
     }

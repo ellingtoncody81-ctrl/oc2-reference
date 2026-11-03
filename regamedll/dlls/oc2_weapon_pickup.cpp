@@ -20,6 +20,7 @@ struct BoxState
  EHANDLE box, claimant, dropper;
  int userid=0, dropUserid=0, team=0;
  float dropped=-100, started=0;
+ bool landingSound=false;
 };
 std::vector<BoxState> boxes;
 struct PlayerState {int userid=0;float next=0;};
@@ -46,6 +47,12 @@ void PickupLog(const char *event,CBasePlayer *p,CWeaponBox *b,int weapon=0,int s
  if(debug.value)ALERT(at_console,"oc2pickup: event=%s player=%d box=%d weapon=%d serial=%d t=%.3f\n",event,p?p->entindex():0,b?b->entindex():0,weapon,serial,gpGlobals->time);
 }
 void Message(CBasePlayer *p,const char *text){if(p&&!p->IsBot())ClientPrint(p->pev,HUD_PRINTCENTER,text);}
+void PickupSound(CBaseEntity *source)
+{
+ const char *sample=sounds[RANDOM_LONG(0,2)];
+ EMIT_SOUND(source->edict(),CHAN_WEAPON,sample,VOL_NORM,ATTN_NORM);
+ if(debug.value)ALERT(at_console,"oc2pickup_sound: entity=%d landing=%d onground=%d sample=%s t=%.3f\n",source->entindex(),int(FClassnameIs(source->pev,"weaponbox")),int(bool(source->pev->flags&FL_ONGROUND)),sample,gpGlobals->time);
+}
 CBasePlayerItem *Item(CWeaponBox *b)
 {
  if(!Valid(b))return nullptr;
@@ -172,7 +179,7 @@ bool Deliver(CBasePlayer *p,CWeaponBox *b)
   }
  }
  if(acquired&&p->m_pActiveItem!=received&&(active==old||!p->m_pActiveItem||CSGameRules()->FShouldSwitchWeapon(p,received)))p->SwitchWeapon(received);
- EMIT_SOUND(p->edict(),CHAN_WEAPON,sounds[RANDOM_LONG(0,2)],VOL_NORM,ATTN_NORM);
+ PickupSound(p);
  PickupLog("success",p,b,incomingId,serial);Message(p,u8"\u5df2\u62fe\u53d6\u6b66\u5668");return true;
 }
 }
@@ -181,6 +188,11 @@ void OC2_PickupPrecache(){Init();boxes.clear();for(auto &p:players)p=PlayerState
 void OC2_PickupDropped(CWeaponBox *b,CBasePlayer *p)
 {
  Init();if(!Valid(b))return;auto &s=State(b);s.dropper=p;s.dropUserid=p?GETPLAYERUSERID(p->edict()):0;s.dropped=gpGlobals->time;
+}
+void OC2_PickupSoundOnLanding(CBaseEntity *entity)
+{
+ if(!entity || !FClassnameIs(entity->pev,"weaponbox"))return;
+ Init();auto *box=static_cast<CWeaponBox *>(entity);if(Valid(box))State(box).landingSound=true;
 }
 bool OC2_PickupUseDelivery(CWeaponBox *b,CBasePlayer *p){return deliveryBox==b&&deliveryPlayer==p;}
 bool OC2_PickupDeferSwitch(CBasePlayer *p){return deliveryPlayer==p;}
@@ -231,6 +243,8 @@ void OC2_PickupFrame()
  {
   auto *b=boxes[i].box.Get<CWeaponBox>();
   if(!Valid(b)){boxes.erase(boxes.begin()+i);continue;}
+  if(boxes[i].landingSound && (b->pev->flags&FL_ONGROUND))
+  {boxes[i].landingSound=false;PickupSound(b);}
   auto *p=boxes[i].claimant.Get<CBasePlayer>();
   if(boxes[i].userid)
   {
