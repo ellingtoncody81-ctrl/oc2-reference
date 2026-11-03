@@ -72,6 +72,10 @@ const int kSegments[11][2] = {
     {LEFT_HIP, LEFT_KNEE}, {LEFT_KNEE, LEFT_FOOT},
     {RIGHT_HIP, RIGHT_KNEE}, {RIGHT_KNEE, RIGHT_FOOT}
 };
+// Per-second damping keeps settling independent of fixed substeps.
+const float kLinearDamping = 0.18f;
+const float kJointDamping = 0.60f;
+const float kAngularDamping = 0.75f;
 const int MAX_SEGMENT_SAMPLES = 22;
 
 struct Frame
@@ -81,6 +85,7 @@ struct Frame
 
 struct JointState
 {
+    int index;
     int bone;
     Vector base;
     Vector position;
@@ -96,6 +101,45 @@ struct SegmentSample
     bool dynamic;
     bool enabled;
     JointState volume;
+};
+
+struct Quat
+{
+    float x, y, z, w;
+};
+
+const int kPartCount = 12;
+const int kPartPivot[kPartCount] = {
+    PELVIS, WAIST, CHEST, HEAD, LEFT_SHOULDER, LEFT_ELBOW,
+    RIGHT_SHOULDER, RIGHT_ELBOW, LEFT_HIP, LEFT_KNEE,
+    RIGHT_HIP, RIGHT_KNEE
+};
+const int kPartTip[kPartCount] = {
+    LEFT_HIP, CHEST, LEFT_SHOULDER, -1, LEFT_ELBOW, LEFT_HAND,
+    RIGHT_ELBOW, RIGHT_HAND, LEFT_KNEE, LEFT_FOOT,
+    RIGHT_KNEE, RIGHT_FOOT
+};
+const int kPartParent[kPartCount] = {
+    -1, 0, 1, 2, 2, 4, 2, 6, 0, 8, 0, 10
+};
+const int kPartHinge[kPartCount] = {
+    -1, -1, -1, -1, -1, 0, -1, 1, -1, 2, -1, 3
+};
+const float kPartConeLimit[kPartCount] = {
+    0.0f, 0.85f, 0.95f, 0.85f, 2.05f, 0.0f,
+    2.05f, 0.0f, 1.65f, 0.0f, 1.65f, 0.0f
+};
+const int kJointPart[JOINT_COUNT] = {
+    0, 1, 2, 3, 4, 5, 5, 6, 7, 7, 8, 9, 9, 10, 11, 11
+};
+
+struct AngularPart
+{
+    int pivot, tip, parent;
+    Quat orientation, baseOrientation, restRelative;
+    Vector angularVelocity, inertia, tipLocal;
+    float length, radius, coneLimit, hingeLimit;
+    Vector hingeLocal;
 };
 
 struct Body
@@ -130,6 +174,7 @@ struct Body
     studiohdr_t *header;
     int boneCount;
     JointState joints[JOINT_COUNT];
+    AngularPart parts[kPartCount];
     int sampleCount;
     SegmentSample samples[MAX_SEGMENT_SAMPLES];
     float rest[JOINT_COUNT];
@@ -137,7 +182,6 @@ struct Body
     Frame baseFrame;
     Frame basePelvisFrame;
     Vector hingeNormal[4];
-    unsigned char hingeStop[4];
     int boneOwner[MAXSTUDIOBONES];
     Vector boneParentOffset[MAXSTUDIOBONES];
     Vector boneVelocity[MAXSTUDIOBONES];
@@ -349,6 +393,122 @@ Vector Limited(const Vector &value, float maximum)
     return length > maximum ? value * (maximum / length) : value;
 }
 
+Quat QuatIdentity()
+{
+    Quat q = { 0.0f, 0.0f, 0.0f, 1.0f };
+    return q;
+}
+
+Quat QuatNormalize(const Quat &q)
+{
+    const float length = sqrtf(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
+    if (!(length > 0.0001f)) return QuatIdentity();
+    const float s = 1.0f / length;
+    Quat r = { q.x*s, q.y*s, q.z*s, q.w*s };
+    return r;
+}
+
+Quat QuatMultiply(const Quat &a, const Quat &b)
+{
+    Quat r = {
+        a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+        a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+        a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
+        a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z };
+    return r;
+}
+
+Quat QuatConjugate(const Quat &q)
+{
+    Quat r = { -q.x, -q.y, -q.z, q.w };
+    return r;
+}
+
+Vector QuatRotate(const Quat &q, const Vector &v)
+{
+    const Vector u(q.x, q.y, q.z);
+    const float s = q.w;
+    return u*(2.0f*Dot(u, v)) + v*(s*s - Dot(u, u)) +
+        Cross(u, v)*(2.0f*s);
+}
+
+Quat QuatFromAxisAngle(const Vector &axis, float angle)
+{
+    const Vector n = Unit(axis, Vector(0.0f, 0.0f, 1.0f));
+    const float h = angle * 0.5f;
+    const float s = sinf(h);
+    Quat r = { n.x*s, n.y*s, n.z*s, cosf(h) };
+    return r;
+}
+
+Quat QuatFromBasis(const Vector &x, const Vector &y, const Vector &z)
+{
+    const float trace = x.x + y.y + z.z;
+    Quat q;
+    if (trace > 0.0f)
+    {
+        const float s = sqrtf(trace + 1.0f) * 2.0f;
+        q.w = 0.25f*s; q.x = (y.z - z.y)/s;
+        q.y = (z.x - x.z)/s; q.z = (x.y - y.x)/s;
+    }
+    else if (x.x > y.y && x.x > z.z)
+    {
+        const float s = sqrtf(1.0f + x.x - y.y - z.z) * 2.0f;
+        q.w = (y.z - z.y)/s; q.x = 0.25f*s;
+        q.y = (x.y + y.x)/s; q.z = (z.x + x.z)/s;
+    }
+    else if (y.y > z.z)
+    {
+        const float s = sqrtf(1.0f + y.y - x.x - z.z) * 2.0f;
+        q.w = (z.x - x.z)/s; q.x = (x.y + y.x)/s;
+        q.y = 0.25f*s; q.z = (y.z + z.y)/s;
+    }
+    else
+    {
+        const float s = sqrtf(1.0f + z.z - x.x - y.y) * 2.0f;
+        q.w = (x.y - y.x)/s; q.x = (z.x + x.z)/s;
+        q.y = (y.z + z.y)/s; q.z = 0.25f*s;
+    }
+    return QuatNormalize(q);
+}
+
+Vector QuatLogVector(const Quat &input)
+{
+    Quat q = QuatNormalize(input);
+    if (q.w < 0.0f) { q.x=-q.x; q.y=-q.y; q.z=-q.z; q.w=-q.w; }
+    const float s = sqrtf(q.x*q.x + q.y*q.y + q.z*q.z);
+    if (s < 0.00001f) return Vector(2.0f*q.x, 2.0f*q.y, 2.0f*q.z);
+    const float angle = 2.0f*atan2f(s, q.w);
+    return Vector(q.x, q.y, q.z) * (angle / s);
+}
+
+Quat QuatAlignDirection(const Quat &q, const Vector &from, const Vector &to)
+{
+    const Vector a = Unit(from, Vector(0.0f, 0.0f, 1.0f));
+    const Vector b = Unit(to, a);
+    const Vector cross = Cross(a, b);
+    const float sine = Length(cross);
+    const float cosine = Dot(a, b);
+    if (sine < 0.0001f)
+    {
+        if (cosine > 0.0f) return q;
+        const Vector axis = Unit(Cross(a, Vector(0.0f, 0.0f, 1.0f)),
+            Vector(0.0f, 1.0f, 0.0f));
+        return QuatMultiply(QuatFromAxisAngle(axis, 3.14159265f), q);
+    }
+    const Vector axis = cross * (1.0f / sine);
+    return QuatMultiply(QuatFromAxisAngle(axis, atan2f(sine, cosine)), q);
+}
+
+Vector AngularInvInertia(const AngularPart &part, const Vector &torque)
+{
+    const Vector local = QuatRotate(QuatConjugate(part.orientation), torque);
+    const Vector result(local.x/fmaxf(part.inertia.x, 0.02f),
+        local.y/fmaxf(part.inertia.y, 0.02f),
+        local.z/fmaxf(part.inertia.z, 0.02f));
+    return QuatRotate(part.orientation, result);
+}
+
 Frame TorsoFrame(const Body &body, bool base)
 {
     const Vector pelvis = base ? body.joints[WAIST].base : body.joints[WAIST].position;
@@ -422,23 +582,7 @@ void SolveHinge(Body &body, int chain, const Frame &frame)
     // its straight position or fold sideways when its foot catches the floor.
     const float limit = chain < 2 ? 2.60f : 2.65f;
     const float signedAngle = atan2f(Dot(lower, bend), Dot(lower, upper));
-    // Outside the permitted arc, remember which stop was selected until the
-    // joint re-enters the interior. Otherwise a contact oscillating across the
-    // negative-angle branch boundary switches the target between straight and
-    // fully folded every solver iteration, injecting large limb velocities.
-    float angle;
-    if (signedAngle < 0.0f)
-    {
-        if (!body.hingeStop[chain])
-            body.hingeStop[chain] = signedAngle < -1.5708f ? 2 : 1;
-        angle = body.hingeStop[chain] == 2 ? limit : 0.015f;
-    }
-    else
-    {
-        angle = Clamp(signedAngle, 0.015f, limit);
-        if (signedAngle > 0.075f && signedAngle < limit - 0.075f)
-            body.hingeStop[chain] = 0;
-    }
+    const float angle = Clamp(signedAngle, 0.015f, limit);
     const Vector desired = (upper * cosf(angle) + bend * sinf(angle)) * body.rest[last];
     const Vector correction = (desired - lower) * 0.85f;
     const float middleWeight = 1.0f / kMass[middle], lastWeight = 1.0f / kMass[last];
@@ -571,7 +715,10 @@ Vector RecoverFree(const JointState &joint, const Vector &start)
     return joint.lastFree;
 }
 
-bool Collide(JointState &joint, const Vector &start, Vector &normal, bool &stuck, float &planeOffset)
+void ApplyContactTorque(Body &b, int j, const Vector &d);
+void ApplySampleTorque(Body &b, int a, int c, float f, const Vector &d);
+
+bool Collide(Body &body, JointState &joint, const Vector &start, Vector &normal, bool &stuck, float &planeOffset)
 {
     normal = Vector(0.0f, 0.0f, 0.0f);
     planeOffset = 0.0f;
@@ -591,7 +738,12 @@ bool Collide(JointState &joint, const Vector &start, Vector &normal, bool &stuck
         normal = Vector(trace.plane.normal);
         planeOffset = Dot(Vector(trace.endpos), normal) + joint.radius + 0.1f;
         const float depth = planeOffset - Dot(joint.position, normal);
-        if (depth > 0.0f) joint.position = joint.position + normal * depth;
+        if (depth > 0.0f)
+        {
+            const Vector correction = normal * depth;
+            joint.position = joint.position + correction;
+            ApplyContactTorque(body, joint.index, correction);
+        }
         return depth >= -0.03f;
     }
     // Point traces otherwise let feet sink until their center crosses the
@@ -611,7 +763,12 @@ bool Collide(JointState &joint, const Vector &start, Vector &normal, bool &stuck
         // slope, moving to endpos + normal*radius adds a sideways step forever.
         planeOffset = Dot(Vector(trace.endpos), normal) + joint.radius + 0.1f;
         const float depth = planeOffset - Dot(joint.position, normal);
-        if (depth > 0.0f) joint.position = joint.position + normal * depth;
+        if (depth > 0.0f)
+        {
+            const Vector correction = normal * depth;
+            joint.position = joint.position + correction;
+            ApplyContactTorque(body, joint.index, correction);
+        }
         // Nearby planes can participate in later constraint iterations without
         // applying ground friction before the body actually reaches them.
         return depth >= -0.03f;
@@ -656,8 +813,10 @@ void CollideSamples(Body &body, SampleContact *contacts)
         Vector normal;
         float offset;
         bool stuck;
-        const bool active = Collide(sample.volume, contact.start, normal, stuck, offset);
-        ProjectSample(body, sample, sample.volume.position - position);
+        const bool active = Collide(body, sample.volume, contact.start, normal, stuck, offset);
+        const Vector correction = sample.volume.position - position;
+        ProjectSample(body, sample, correction);
+        ApplySampleTorque(body, sample.first, sample.second, sample.fraction, correction);
         if (Length(normal) > 0.5f)
         {
             int slot = 0;
@@ -695,6 +854,331 @@ bool StationaryForSleep(Body &body, bool supported, float motion, float worstErr
     return body.stationaryFrames >= 360;
 }
 
+Quat BoneQuat(const Body &body, int bone)
+{
+    const float (*m)[4] = body.baseMatrix[bone];
+    Vector x = Unit(Vector(m[0][0], m[1][0], m[2][0]), Vector(1,0,0));
+    Vector y = Unit(Vector(m[0][1], m[1][1], m[2][1]), Vector(0,1,0));
+    Vector z = Unit(Cross(x, y), Vector(0,0,1));
+    y = Unit(Cross(z, x), y);
+    x = Unit(Cross(y, z), x);
+    return QuatFromBasis(x, y, z);
+}
+
+float PartMass(const Body &body, int part)
+{
+    const int pivot = kPartPivot[part];
+    const int tip = kPartTip[part];
+    return kMass[pivot] + (tip >= 0 ? 0.5f*kMass[tip] : 0.5f*kMass[pivot]);
+}
+
+Vector PartCenter(const Body &body, int part)
+{
+    const int pivot = kPartPivot[part];
+    const int tip = kPartTip[part];
+    if (tip >= 0)
+        return (body.joints[pivot].position + body.joints[tip].position) * 0.5f;
+    return body.joints[pivot].position +
+        QuatRotate(body.parts[part].orientation, body.parts[part].tipLocal) * 0.5f;
+}
+
+void SyncAngularPart(Body &body, int partIndex)
+{
+    AngularPart &part = body.parts[partIndex];
+    if (part.tip < 0) return;
+    const Vector expected = QuatRotate(part.orientation, part.tipLocal);
+    const Vector current = body.joints[part.tip].position - body.joints[part.pivot].position;
+    part.orientation = QuatNormalize(QuatAlignDirection(part.orientation, expected, current));
+}
+
+void SyncAngularParts(Body &body)
+{
+    for (int part = 0; part < kPartCount; ++part)
+        SyncAngularPart(body, part);
+}
+
+void IntegrateAngular(Body &body, float dt)
+{
+    const float damping = expf(-kAngularDamping * dt);
+    for (int part = 0; part < kPartCount; ++part)
+    {
+        AngularPart &p = body.parts[part];
+        Vector w = Limited(p.angularVelocity, 30.0f);
+        const float speed = Length(w);
+        if (speed > 0.0001f)
+        {
+            const Quat dq = QuatFromAxisAngle(w * (1.0f/speed), speed*dt);
+            p.orientation = QuatNormalize(QuatMultiply(dq, p.orientation));
+        }
+        p.angularVelocity = w * damping;
+    }
+}
+
+void SolveOrientedSegments(Body &body)
+{
+    for (int part = 0; part < kPartCount; ++part)
+    {
+        AngularPart &p = body.parts[part];
+        if (p.tip < 0 || p.length < 0.01f) continue;
+        const Vector dir = Unit(QuatRotate(p.orientation, p.tipLocal), Vector(0,0,1));
+        const Vector desired = body.joints[p.pivot].position + dir * p.length;
+        const Vector correction =
+            (desired - body.joints[p.tip].position) * 0.28f;
+        const float wp = 1.0f/kMass[p.pivot];
+        const float wt = 1.0f/kMass[p.tip];
+        const float sum = wp + wt;
+        body.joints[p.tip].position = body.joints[p.tip].position + correction*(wt/sum);
+        body.joints[p.pivot].position = body.joints[p.pivot].position - correction*(wp/sum);
+    }
+}
+
+void EnforceAngularLimits(Body &body, float relax)
+{
+    for (int part = 1; part < kPartCount; ++part)
+    {
+        AngularPart &p = body.parts[part];
+        const int parent = kPartParent[part];
+        if (parent < 0 || parent >= kPartCount) continue;
+        AngularPart &pa = body.parts[parent];
+        if (kPartHinge[part] >= 0)
+        {
+            const Vector axis = Unit(QuatRotate(pa.orientation, p.hingeLocal),
+                Vector(0,0,1));
+            const Vector upper = Unit(QuatRotate(pa.orientation, pa.tipLocal), axis);
+            const Vector lower = Unit(QuatRotate(p.orientation, p.tipLocal), upper);
+            const Vector bend = Cross(axis, upper);
+            const float signedAngle = atan2f(Dot(lower,bend),Dot(lower,upper));
+            const float limit = p.hingeLimit*(0.82f + 0.18f*relax);
+            const float target = Clamp(signedAngle, 0.015f, limit);
+            if (fabsf(target - signedAngle) > 0.0005f)
+            {
+                const Quat turn = QuatFromAxisAngle(axis, (target-signedAngle)*0.85f);
+                p.orientation = QuatNormalize(QuatMultiply(turn, p.orientation));
+            }
+            const Vector relW = p.angularVelocity - pa.angularVelocity;
+            p.angularVelocity = p.angularVelocity -
+                (relW - axis*Dot(relW, axis))*0.35f;
+        }
+        else if (p.coneLimit > 0.001f)
+        {
+            const Quat qrel = QuatMultiply(QuatConjugate(pa.orientation), p.orientation);
+            const Quat delta = QuatMultiply(QuatConjugate(p.restRelative), qrel);
+            const Vector v = QuatLogVector(delta);
+            const float angle = Length(v);
+            const float limit = p.coneLimit*(0.72f + 0.28f*relax);
+            if (angle > limit && angle > 0.0001f)
+            {
+                const Vector axis = v*(1.0f/angle);
+                const Quat limited = QuatMultiply(
+                    QuatFromAxisAngle(axis, limit), p.restRelative);
+                p.orientation = QuatNormalize(QuatMultiply(pa.orientation, limited));
+                const Vector relW = p.angularVelocity - pa.angularVelocity;
+                const float outward = Dot(relW, axis);
+                if (outward > 0.0f)
+                    p.angularVelocity = p.angularVelocity - axis*outward*0.35f;
+            }
+        }
+    }
+}
+
+void ApplyContactTorque(Body &body, int joint, const Vector &correction)
+{
+    if (!body.ready || Length(correction) < 0.0001f) return;
+    if (joint < 0 || joint >= JOINT_COUNT) return;
+    for (int part = 0; part < kPartCount; ++part)
+    {
+        AngularPart &p = body.parts[part];
+        const Vector center = PartCenter(body, part);
+        const Vector lever = body.joints[joint].position - center;
+        if (joint != p.pivot && joint != p.tip) continue;
+        const Vector dw = AngularInvInertia(p, Cross(lever, correction)) * 14.0f;
+        p.angularVelocity = p.angularVelocity + Limited(dw, 0.75f);
+    }
+}
+
+void ApplySampleTorque(Body &body, int first, int second, float fraction,
+    const Vector &correction)
+{
+    if (!body.ready || Length(correction) < 0.0001f) return;
+    const Vector contact = body.joints[first].position*(1.0f-fraction) +
+        body.joints[second].position*fraction;
+    for (int part = 0; part < kPartCount; ++part)
+    {
+        AngularPart &p = body.parts[part];
+        if (p.pivot != first || p.tip != second) continue;
+        const Vector lever = contact - PartCenter(body, part);
+        const Vector dw = AngularInvInertia(p, Cross(lever, correction)) * 14.0f;
+        p.angularVelocity = p.angularVelocity + Limited(dw, 0.75f);
+    }
+}
+
+void ReconstructAngularVelocity(Body &body, const Vector *carry, float dt)
+{
+    for (int part = 0; part < kPartCount; ++part)
+    {
+        AngularPart &p = body.parts[part];
+        if (p.tip >= 0)
+        {
+            const Vector r = body.joints[p.tip].position - body.joints[p.pivot].position;
+            const Vector vrel = (carry[p.tip] - carry[p.pivot]) * (1.0f/dt);
+            Vector w = Cross(r, vrel) * (1.0f/fmaxf(Dot(r, r), 0.01f));
+            w = Limited(w, 25.0f);
+            p.angularVelocity = p.angularVelocity*0.25f + w*0.75f;
+        }
+        p.angularVelocity = Limited(p.angularVelocity, 25.0f) *
+            expf(-kAngularDamping*dt*0.5f);
+    }
+}
+
+void InitialiseAngularParts(Body &body)
+{
+    for (int part = 0; part < kPartCount; ++part)
+    {
+        AngularPart &p = body.parts[part];
+        p.pivot = kPartPivot[part];
+        p.tip = kPartTip[part];
+        p.parent = kPartParent[part];
+        p.baseOrientation = BoneQuat(body, body.joints[p.pivot].bone);
+        p.orientation = p.baseOrientation;
+        p.angularVelocity = Vector(0,0,0);
+        p.coneLimit = kPartConeLimit[part];
+        p.hingeLimit = kPartHinge[part] < 0 ? 0.0f :
+            (kPartHinge[part] < 2 ? 2.60f : 2.65f);
+        const Vector basePivot = body.joints[p.pivot].base;
+        if (p.tip >= 0)
+            p.tipLocal = QuatRotate(QuatConjugate(p.baseOrientation),
+                body.joints[p.tip].base - basePivot);
+        else
+            p.tipLocal = QuatRotate(QuatConjugate(p.baseOrientation),
+                body.baseFrame.up * body.joints[p.pivot].radius * 1.35f);
+        p.length = Length(p.tipLocal);
+        if (p.length < 0.1f) p.length = 1.0f;
+        const float endRadius = p.tip >= 0 ?
+            fminf(body.joints[p.pivot].radius, body.joints[p.tip].radius) :
+            body.joints[p.pivot].radius;
+        p.radius = Clamp(endRadius*0.55f, 1.2f, 4.5f);
+        const float mass = PartMass(body, part);
+        const float r = fmaxf(p.radius, 1.0f);
+        const float transverse = mass*(p.length*p.length + 3.0f*r*r)/12.0f;
+        const float axial = 0.5f*mass*r*r;
+        const Vector localUnit = Unit(p.tipLocal, Vector(0,0,1));
+        p.inertia = Vector(
+            axial + (transverse-axial)*localUnit.x*localUnit.x,
+            axial + (transverse-axial)*localUnit.y*localUnit.y,
+            axial + (transverse-axial)*localUnit.z*localUnit.z);
+    }
+    for (int part = 0; part < kPartCount; ++part)
+    {
+        AngularPart &p = body.parts[part];
+        const int parent = kPartParent[part];
+        if (parent >= 0)
+            p.restRelative = QuatMultiply(QuatConjugate(body.parts[parent].baseOrientation),
+                p.baseOrientation);
+        const int hinge = kPartHinge[part];
+        if (hinge >= 0 && parent >= 0)
+            p.hingeLocal = QuatRotate(
+                QuatConjugate(body.parts[parent].baseOrientation), body.hingeNormal[hinge]);
+    }
+    for (int part = 0; part < kPartCount; ++part)
+    {
+        AngularPart &p = body.parts[part];
+        const int parent = kPartParent[part];
+        p.angularVelocity = parent >= 0 ? body.parts[parent].angularVelocity :
+            Vector(0,0,0);
+        if (body.hasLiveVelocity && p.tip >= 0)
+        {
+            const Vector r = QuatRotate(p.baseOrientation, p.tipLocal);
+            const Vector vrel = body.boneVelocity[body.joints[p.tip].bone] -
+                body.boneVelocity[body.joints[p.pivot].bone];
+            const Vector w = Cross(r, vrel) * (1.0f/fmaxf(Dot(r,r),0.01f));
+            p.angularVelocity = p.angularVelocity*0.25f + Limited(w,25.0f)*0.75f;
+        }
+    }
+}
+
+void ApplyDeathImpulse(Body &body)
+{
+    if (Length(body.impact) < 0.01f) return;
+    float totalMass = 0.0f;
+    for (int i = 0; i < JOINT_COUNT; ++i) totalMass += kMass[i];
+    const int owner = body.headshot ? HEAD : CHEST;
+    const Vector impulse = Limited(body.impact * 8.0f, 1400.0f);
+    const float sideSign = Dot(body.impact, body.baseFrame.side) < 0.0f ? -1.0f : 1.0f;
+    const Vector contact = body.joints[owner].position +
+        body.baseFrame.forward * body.joints[owner].radius * 0.24f +
+        body.baseFrame.side * sideSign * body.joints[owner].radius * 0.30f;
+    for (int part = 0; part < kPartCount; ++part)
+    {
+        AngularPart &p = body.parts[part];
+        const Vector share = impulse * (PartMass(body, part)/totalMass);
+        const Vector lever = contact - PartCenter(body, part);
+        p.angularVelocity = p.angularVelocity +
+            Limited(AngularInvInertia(p, Cross(lever, share)), 8.0f);
+    }
+    const float twist = (body.headshot ? 2.4f : 1.1f) * sideSign;
+    body.parts[1].angularVelocity = body.parts[1].angularVelocity + body.baseFrame.up*twist*0.55f;
+    body.parts[2].angularVelocity = body.parts[2].angularVelocity + body.baseFrame.up*twist;
+    if (body.headshot)
+        body.parts[3].angularVelocity = body.parts[3].angularVelocity +
+            body.baseFrame.side*1.2f + body.baseFrame.up*(sideSign*1.7f);
+}
+
+void SolveSelfCollisions(Body &body)
+{
+    struct Proxy { int first, second; float fraction, radius; };
+    const Proxy proxies[13] = {
+        {HEAD, HEAD, 0.0f, 2.8f},
+        {LEFT_SHOULDER, RIGHT_SHOULDER, 0.5f, 3.2f},
+        {LEFT_HIP, RIGHT_HIP, 0.5f, 3.8f},
+        {LEFT_ELBOW, LEFT_HAND, 0.5f, 2.2f},
+        {RIGHT_ELBOW, RIGHT_HAND, 0.5f, 2.2f},
+        {LEFT_HAND, LEFT_HAND, 0.0f, 1.6f},
+        {RIGHT_HAND, RIGHT_HAND, 0.0f, 1.6f},
+        {LEFT_HIP, LEFT_KNEE, 0.5f, 2.6f},
+        {RIGHT_HIP, RIGHT_KNEE, 0.5f, 2.6f},
+        {LEFT_KNEE, LEFT_FOOT, 0.5f, 2.2f},
+        {RIGHT_KNEE, RIGHT_FOOT, 0.5f, 2.2f},
+        {LEFT_FOOT, LEFT_FOOT, 0.0f, 1.5f},
+        {RIGHT_FOOT, RIGHT_FOOT, 0.0f, 1.5f}
+    };
+    const int pairs[14][2] = {
+        {0,1}, {3,1}, {4,1}, {5,1}, {6,1}, {5,2}, {6,2},
+        {5,6}, {3,4}, {3,6}, {4,5}, {7,8}, {9,10}, {11,12}
+    };
+    for (int pair = 0; pair < 14; ++pair)
+    {
+        const Proxy &pa = proxies[pairs[pair][0]];
+        const Proxy &pb = proxies[pairs[pair][1]];
+        const Vector a = body.joints[pa.first].position*(1.0f-pa.fraction) +
+            body.joints[pa.second].position*pa.fraction;
+        const Vector b = body.joints[pb.first].position*(1.0f-pb.fraction) +
+            body.joints[pb.second].position*pb.fraction;
+        const Vector delta = b - a;
+        const float distance = Length(delta);
+        const float minimum = pa.radius + pb.radius;
+        if (distance < minimum - 0.20f && distance > 0.001f)
+        {
+            const Vector correction = delta *
+                ((minimum - 0.20f - distance)/(distance*2.0f));
+            const auto apply = [&](const Proxy &px, const Vector &d)
+            {
+                const float wa = 1.0f/kMass[px.first];
+                const float wb = 1.0f/kMass[px.second];
+                const float sum = wa*(1.0f-px.fraction)*(1.0f-px.fraction) +
+                    wb*px.fraction*px.fraction;
+                body.joints[px.first].position = body.joints[px.first].position +
+                    d*(wa*(1.0f-px.fraction)/sum);
+                body.joints[px.second].position = body.joints[px.second].position +
+                    d*(wb*px.fraction/sum);
+            };
+            apply(pa, correction * -1.0f);
+            apply(pb, correction);
+            ApplySampleTorque(body, pa.first, pa.second, pa.fraction, correction * -1.0f);
+            ApplySampleTorque(body, pb.first, pb.second, pb.fraction, correction);
+        }
+    }
+}
+
 void Simulate(Body &body, float dt)
 {
     Vector start[JOINT_COUNT];
@@ -705,6 +1189,7 @@ void Simulate(Body &body, float dt)
     bool contactActive[JOINT_COUNT][2] = {};
     int contactCount[JOINT_COUNT] = {};
     SampleContact samples[MAX_SEGMENT_SAMPLES] = {};
+    IntegrateAngular(body, dt);
     for (int i = 0; i < body.sampleCount; ++i)
         samples[i].start = SamplePosition(body, body.samples[i]);
     for (int i = 0; i < JOINT_COUNT; ++i)
@@ -713,13 +1198,13 @@ void Simulate(Body &body, float dt)
         start[i] = joint.position;
         // Keep inertia in flight. Ground friction and joint projection supply
         // the damping at impact, instead of removing almost all momentum each second.
-        Vector velocity = Limited(joint.position - joint.previous, 600.0f * dt) * 0.998f;
+        Vector velocity = Limited(joint.position - joint.previous, 600.0f * dt) * expf(-kLinearDamping * dt);
         joint.position = joint.position + velocity + Vector(0.0f, 0.0f, -800.0f * dt * dt);
         predictedTravel[i] = joint.position - start[i];
         Vector normal;
         bool trapped = false;
         float planeOffset;
-        const bool collision = Collide(joint, start[i], normal, trapped, planeOffset);
+        const bool collision = Collide(body, joint, start[i], normal, trapped, planeOffset);
         if (!trapped && Length(normal) > 0.5f)
         {
             contactNormal[i][0] = normal;
@@ -761,6 +1246,8 @@ void Simulate(Body &body, float dt)
         if (checkConvergence)
             for (int i = 0; i < JOINT_COUNT; ++i) iterationStart[i] = body.joints[i].position;
         SolveSkeleton(body);
+        if ((iteration & 3) == 0)
+            EnforceAngularLimits(body, iteration/63.0f);
         // Reuse planes found this step between expensive world sweeps. This
         // lets joints and contacts converge together without stretching the
         // last chain whenever the final collision projection touches a floor.
@@ -804,7 +1291,7 @@ void Simulate(Body &body, float dt)
                 Vector normal;
                 bool trapped = false;
                 float planeOffset;
-                if (Collide(body.joints[i], start[i], normal, trapped, planeOffset))
+                if (Collide(body, body.joints[i], start[i], normal, trapped, planeOffset))
                 {
                     stuck[i] = trapped;
                     if (!trapped && contactCount[i] < 2 &&
@@ -849,6 +1336,8 @@ void Simulate(Body &body, float dt)
         }
     }
 
+    SolveSkeleton(body);
+    EnforceAngularLimits(body, 1.0f);
     Vector centerTravel(0.0f, 0.0f, 0.0f);
     Vector predictedCenterTravel(0.0f, 0.0f, 0.0f);
     float totalMass = 0.0f;
@@ -872,7 +1361,7 @@ void Simulate(Body &body, float dt)
             : joint.position - start[i];
         // Joint friction damps relative limb motion while preserving the
         // mass-weighted linear velocity (including gravity and running speed).
-        if (!stuck[i]) carry = centerTravel + (carry - centerTravel) * 0.985f;
+        if (!stuck[i]) carry = centerTravel + (carry - centerTravel) * expf(-kJointDamping * dt);
         for (int contact = 0; contact < contactCount[i]; ++contact)
         {
             if (!contactActive[i][contact]) continue;
@@ -889,7 +1378,7 @@ void Simulate(Body &body, float dt)
                 tangent = tangent * Clamp(1.0f - 0.65f * normalImpulse / tangentSpeed, 0.0f, 1.0f);
             carry = tangent + normal * outward;
         }
-        solvedCarry[i] = carry;
+                        solvedCarry[i] = carry;
         const float displacement = Length(joint.position - start[i]);
         if (displacement > motion) motion = displacement;
         if (WorldFree(joint.position)) joint.lastFree = joint.position;
@@ -945,6 +1434,8 @@ void Simulate(Body &body, float dt)
                 if (samples[i].active[contact]) removeRebound(samples[i].normal[contact]);
     }
     const Vector contactCorrection = solvedCenterTravel - unclippedCenterTravel;
+    ReconstructAngularVelocity(body, solvedCarry, dt);
+    SyncAngularParts(body);
     for (int i = 0; i < JOINT_COUNT; ++i)
         body.joints[i].previous = body.joints[i].position - Limited(solvedCarry[i] + contactCorrection, 600.0f * dt);
     // Contact sweeps return early, so their saved free point must follow the
@@ -974,7 +1465,10 @@ void Simulate(Body &body, float dt)
     body.quietFrames = supported && motion < 0.06f && worstError < 0.8f
         ? body.quietFrames + 1 : 0;
     const bool stationary = StationaryForSleep(body, supported, motion, worstError);
-    if (body.quietFrames > 60 ||
+    // Give the initial fall and small limb settling at least two seconds.
+    // Late landings retain the normal quiet interval instead of waiting for
+    // a second full settling window after every contact change.
+    if ((body.quietFrames > 60 && body.lastTime - body.birth >= 2.0) ||
         stationary ||
         (supported && body.lastTime - body.birth > 12.0 && motion < 0.12f && worstError < 1.2f))
     {
@@ -1028,6 +1522,41 @@ void CacheBoneAttachments(Body &body)
     }
 }
 
+void DeriveCollisionRadii(Body &body)
+{
+    float zMin = body.joints[0].base.z, zMax = zMin;
+    for (int i = 1; i < JOINT_COUNT; ++i)
+    {
+        zMin = fminf(zMin, body.joints[i].base.z);
+        zMax = fmaxf(zMax, body.joints[i].base.z);
+    }
+    float skeletonScale = zMax - zMin;
+    if (skeletonScale < 40.0f || skeletonScale > 100.0f)
+        skeletonScale = Clamp(body.rest[WAIST] + body.rest[CHEST] +
+            body.rest[HEAD] + body.rest[LEFT_HIP] + body.rest[LEFT_KNEE],
+            40.0f, 100.0f);
+    for (int i = 0; i < JOINT_COUNT; ++i)
+    {
+        float boneLength = body.rest[i];
+        for (int child = 1; child < JOINT_COUNT; ++child)
+            if (kParent[child] == i && body.rest[child] > boneLength)
+                boneLength = body.rest[child];
+        const float limbRadius = Clamp(
+            1.1f + boneLength*0.12f, 3.5f, 4.5f);
+        if (i == PELVIS || i == CHEST)
+            body.joints[i].radius = Clamp(
+                fmaxf(boneLength*0.30f, skeletonScale*0.10f), 7.0f, 9.0f);
+        else if (i == WAIST)
+            body.joints[i].radius = Clamp(
+                fmaxf(boneLength*0.35f, skeletonScale*0.085f), 6.0f, 7.5f);
+        else if (i == HEAD)
+            body.joints[i].radius = Clamp(
+                fmaxf(boneLength*0.50f, skeletonScale*0.075f), 6.0f, 7.5f);
+        else
+            body.joints[i].radius = limbRadius;
+    }
+}
+
 bool InitialisePose(Body &body, studiohdr_t *header)
 {
     if (!header || header->numbones <= 0 || header->numbones > MAXSTUDIOBONES) return false;
@@ -1040,15 +1569,17 @@ bool InitialisePose(Body &body, studiohdr_t *header)
         if (bone < 0 && i == CHEST) bone = FindBone(header, "Bip01 Spine2");
         if (bone < 0) return false;
         JointState &joint = body.joints[i];
+        joint.index = i;
         joint.bone = bone;
         joint.base = Origin(body.baseMatrix[bone]);
         joint.position = joint.base;
         joint.lastFree = joint.position;
-        joint.radius = i == PELVIS || i == CHEST ? 7.0f : i == HEAD || i == WAIST ? 6.0f : 3.5f;
+        joint.radius = 0.0f;
         body.rest[i] = kParent[i] >= 0
             ? Length(joint.base - body.joints[kParent[i]].base) : 0.0f;
         if (kParent[i] >= 0 && body.rest[i] < 0.5f) body.rest[i] = 0.5f;
     }
+    DeriveCollisionRadii(body);
     body.baseFrame = TorsoFrame(body, true);
     body.basePelvisFrame = PelvisFrame(body, true);
     body.sampleCount = 0;
@@ -1062,9 +1593,10 @@ bool InitialisePose(Body &body, studiohdr_t *header)
             SegmentSample &sample = body.samples[body.sampleCount++];
             sample.first = first;
             sample.second = second;
-            sample.fraction = 0.5f;
+            sample.fraction = part == 0 ? 0.36f : 0.68f;
             sample.dynamic = part != 0;
             sample.enabled = part == 0;
+            sample.volume.index = -1;
             sample.volume.radius = radius;
             sample.volume.position = sample.volume.lastFree = SamplePosition(body, sample);
         }
@@ -1081,21 +1613,24 @@ bool InitialisePose(Body &body, studiohdr_t *header)
         const Vector lower = Unit(body.joints[kChains[chain][2]].base -
             body.joints[kChains[chain][1]].base, upper);
         const Frame &base = chain < 2 ? body.baseFrame : body.basePelvisFrame;
-        const Vector fallback = Unit(Cross(upper, base.forward * -1.0f), base.side);
-        body.hingeNormal[chain] = Length(Cross(upper, lower)) > 0.025f
+        const Vector fallback = Unit(Cross(upper, base.forward *
+            (chain < 2 ? 1.0f : -1.0f)), base.side);
+        body.hingeNormal[chain] = Length(Cross(upper, lower)) > 0.045f
             ? Unit(Cross(upper, lower), fallback) : fallback;
     }
-    const Vector impact = Length(body.impact) > 0.01f ? body.impact : body.baseFrame.forward * 12.0f;
+    if (Length(body.impact) < 0.01f)
+        body.impact = body.baseFrame.forward * 12.0f;
+    InitialiseAngularParts(body);
+    ApplyDeathImpulse(body);
+    float totalMass = 0.0f;
+    for (int i = 0; i < JOINT_COUNT; ++i) totalMass += kMass[i];
+    const Vector impulseVelocity = Limited(body.impact*(8.0f/totalMass), 40.0f);
     for (int i = 0; i < JOINT_COUNT; ++i)
     {
         JointState &joint = body.joints[i];
         Vector velocity = body.hasLiveVelocity ? body.boneVelocity[joint.bone] : body.launch;
-        float influence = i == PELVIS ? 0.15f : i == WAIST ? 0.3f : 0.0f;
-        if (i == CHEST) influence = body.headshot ? 0.55f : 1.0f;
-        if (i == HEAD) influence = body.headshot ? 1.0f : 0.45f;
-        if (i == LEFT_SHOULDER || i == RIGHT_SHOULDER) influence = body.headshot ? 0.4f : 0.7f;
-        velocity = Limited(velocity + impact * influence, 400.0f);
-        joint.previous = joint.position - velocity * (1.0f / 90.0f);
+        velocity = velocity + impulseVelocity;
+        joint.previous = joint.position - Limited(velocity, 400.0f)*(1.0f/90.0f);
     }
     body.initialHeadZ = body.joints[HEAD].position.z;
     // Ownership and authored parent-local offsets belong to this exact death
@@ -1151,46 +1686,46 @@ Vector PoseVector(const Body &body, int owner, const Vector &value, const Frame 
 
 void ApplyPose(Body &body, CStudioModelRenderer &renderer)
 {
-    const Frame torso = TorsoFrame(body, false);
     const mstudiobone_t *bones = reinterpret_cast<const mstudiobone_t *>(
         reinterpret_cast<const byte *>(body.header) + body.header->boneindex);
     for (int bone = 0; bone < body.boneCount; ++bone)
     {
         const int owner = body.boneOwner[bone];
+        const AngularPart &part = body.parts[kJointPart[owner]];
         const JointState &joint = body.joints[owner];
         const float (*original)[4] = body.baseMatrix[bone];
         float (*render)[4] = (*renderer.m_pbonetransform)[bone];
         float (*light)[4] = (*renderer.m_plighttransform)[bone];
+        const Quat delta = QuatMultiply(part.orientation,
+            QuatConjugate(part.baseOrientation));
         for (int column = 0; column < 3; ++column)
         {
             const Vector axis(original[0][column], original[1][column], original[2][column]);
-            const Vector rotated = PoseVector(body, owner, axis, torso);
+            const Vector rotated = QuatRotate(delta, axis);
             render[0][column] = light[0][column] = rotated.x;
             render[1][column] = light[1][column] = rotated.y;
             render[2][column] = light[2][column] = rotated.z;
         }
         const Vector localOffset = Origin(original) - joint.base;
-        Vector position = joint.position + PoseVector(body, owner, localOffset, torso);
-        // As in Source's RagdollGetBoneMatrix, keep the authored parent-local
-        // attachment offset. Independent physics transforms must not pull the
-        // single-weight GoldSrc mesh apart across spine/clavicle helper bones.
+        Vector position = joint.position + QuatRotate(delta, localOffset);
         const int parent = bones[bone].parent;
         if (parent >= 0 && parent < bone)
         {
             const float (*newParent)[4] = (*renderer.m_pbonetransform)[parent];
             const Vector &parentLocal = body.boneParentOffset[bone];
             for (int axis = 0; axis < 3; ++axis)
-                position[axis] = newParent[axis][3] + newParent[axis][0] * parentLocal.x +
-                    newParent[axis][1] * parentLocal.y + newParent[axis][2] * parentLocal.z;
+                position[axis] = newParent[axis][3] +
+                    newParent[axis][0]*parentLocal.x +
+                    newParent[axis][1]*parentLocal.y +
+                    newParent[axis][2]*parentLocal.z;
         }
         render[0][3] = light[0][3] = position.x;
         render[1][3] = light[1][3] = position.y;
         render[2][3] = light[2][3] = position.z;
     }
-    // Let the normal studio frustum test follow the physical torso after it
-    // travels away from the death-message origin.
     body.joints[PELVIS].position.CopyToArray(renderer.m_pCurrentEntity->origin);
-    VectorCopy(renderer.m_pCurrentEntity->origin, renderer.m_pCurrentEntity->curstate.origin);
+    VectorCopy(renderer.m_pCurrentEntity->origin,
+        renderer.m_pCurrentEntity->curstate.origin);
 }
 
 void DumpRagdolls()
@@ -1502,7 +2037,10 @@ bool OC2_RagdollRegister(tempent_s *corpse, int playerIndex)
         s_pendingKiller != playerIndex)
     {
         cl_entity_t *killer = gEngfuncs.GetEntityByIndex(s_pendingKiller);
-        if (killer)
+        // A non-null GoldSrc entity can still hold an old PVS position. Only
+        // synthesize the attacker-away impulse from a player in this packet.
+        if (killer && gEngfuncs.GetLocalPlayer && IEngineStudio.GetPlayerState &&
+            OC2_CurrentPlayerSnapshot(killer))
         {
             Vector away = body.deathOrigin - Vector(killer->origin);
             away.z = 0.0f;
