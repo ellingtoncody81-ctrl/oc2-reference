@@ -126,18 +126,47 @@ CVAR_DEFINE_AUTO( r_studio_arraychunks, "1", 0, "split oversized studio meshes i
 CVAR_DEFINE_AUTO( r_studio_meshcache, "1", 0, "cache validated studio topology" );
 CVAR_DEFINE_AUTO( r_studio_perf_cold, "0", 0, "log expensive cold appearance work" );
 CVAR_DEFINE_AUTO( r_studio_charm_decal, "1", 0, "stabilize charm artwork at depth-buffer precision limits" );
-static unsigned int charm_decal_draws, charm_decal_biased;
+CVAR_DEFINE_AUTO( r_studio_charm_artwork, "1", 0, "retain filtered alpha coverage of charm artwork" );
+static unsigned int charm_decal_draws, charm_decal_biased, charm_coverage_draws;
 
 static qboolean R_StudioCharmArtwork( const model_t *model, const mstudiotexture_t *texture )
 {
-	return model && !Q_strncmp( model->name, "models/attachments/oc2_sticker_charm", 35 )
+	return model && ( !Q_strcmp( model->name, "models/attachments/oc2_sticker_charm.mdl" )
+		|| !Q_strcmp( model->name, "models/attachments/oc2_sticker_charm_m249.mdl" ))
 		&& !Q_strcmp( texture->name, "charm_sticker.bmp" );
+}
+
+// A sticker is a filtered translucent image, not a binary cutout fence. A
+// 0.5 alpha cutoff discards an entire thin feature as an animation changes its
+// mip footprint. Blend its actual coverage after the opaque case instead.
+static int R_StudioCharmCoverageBegin( void )
+{
+	const int cull = glState.faceCull;
+	GL_Cull( GL_NONE );
+	pglEnable( GL_ALPHA_TEST );
+	pglAlphaFunc( GL_GREATER, 0.0f );
+	pglEnable( GL_BLEND );
+	pglBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+	pglDepthMask( GL_FALSE );
+	return cull;
+}
+
+static void R_StudioCharmCoverageEnd( int cull )
+{
+	// This scope is entered only for an ordinary opaque model pass. Restore
+	// that pass's state before the next mesh; keep the real foreground depth.
+	pglDepthMask( GL_TRUE );
+	pglDisable( GL_BLEND );
+	pglAlphaFunc( GL_GREATER, DEFAULT_ALPHATEST );
+	pglDisable( GL_ALPHA_TEST );
+	GL_Cull( cull );
 }
 
 static void R_StudioCharmDecalDump_f( void )
 {
-	gEngfuncs.Con_Printf( "studio_charm_decal: enabled=%d draws=%u biased=%u stack=%d factor=0 units=-2\n",
-		r_studio_charm_decal.value != 0, charm_decal_draws, charm_decal_biased, glState.num_polyoffsets );
+	gEngfuncs.Con_Printf( "studio_charm_decal: enabled=%d draws=%u biased=%u stack=%d factor=0 units=-2 coverage=%d coverage_draws=%u\n",
+		r_studio_charm_decal.value != 0, charm_decal_draws, charm_decal_biased, glState.num_polyoffsets,
+		r_studio_charm_artwork.value != 0, charm_coverage_draws );
 }
 CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model renderer instead of the one provided by client library (debugging)" );
 static cvar_t			*cl_righthand = NULL;
@@ -166,6 +195,7 @@ void R_StudioInit( void )
 	if( CVAR_CHECK_SENTINEL( &r_studio_meshcache ))gEngfuncs.Cvar_RegisterVariable( &r_studio_meshcache );
 	if( CVAR_CHECK_SENTINEL( &r_studio_perf_cold ))gEngfuncs.Cvar_RegisterVariable( &r_studio_perf_cold );
 	if( CVAR_CHECK_SENTINEL( &r_studio_charm_decal ))gEngfuncs.Cvar_RegisterVariable( &r_studio_charm_decal );
+	if( CVAR_CHECK_SENTINEL( &r_studio_charm_artwork ))gEngfuncs.Cvar_RegisterVariable( &r_studio_charm_artwork );
 	// CVAR_DEFINE_AUTO declares the convar but does not register it.
 	// Register here so its default is applied before studio models are drawn.
 	if( CVAR_CHECK_SENTINEL( &r_studio_arraychunks ))
@@ -2229,7 +2259,12 @@ static void R_StudioDrawPoints( void )
 		float s = 1.0f / (float)ptexture[pskinref[pmesh->skinref]].width;
 		float t = 1.0f / (float)ptexture[pskinref[pmesh->skinref]].height;
 
-		if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
+		const qboolean artwork = R_StudioCharmArtwork( RI.currentmodel, &ptexture[pskinref[pmesh->skinref]] );
+		const qboolean coverage = artwork && r_studio_charm_artwork.value != 0 &&
+			R_ModelOpaque( RI.currententity->curstate.rendermode ) && !g_nForceFaceFlags;
+		const int artworkCull = coverage ? R_StudioCharmCoverageBegin() : GL_NONE;
+		if( coverage ) { tr.blend = 1.0f; ++charm_coverage_draws; }
+		else if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
 		{
 			pglEnable( GL_ALPHA_TEST );
 			pglAlphaFunc( GL_GREATER, 0.5f );
@@ -2251,8 +2286,8 @@ static void R_StudioDrawPoints( void )
 
 		R_StudioSetupSkin( m_pStudioHeader, pskinref[pmesh->skinref] );
 
-		const qboolean artwork = R_StudioCharmArtwork( RI.currentmodel, &ptexture[pskinref[pmesh->skinref]] );
-		const qboolean bias = artwork && r_studio_charm_decal.value != 0;
+		const qboolean bias = artwork && r_studio_charm_decal.value != 0 &&
+			glState.num_polyoffsets < ARRAYSIZE( glState.polyoffset_state );
 		if( artwork ) ++charm_decal_draws;
 		// Artwork already sits outside its case. Keep two depth-buffer units of
 		// separation when a grazing view rounds those distinct planes together.
@@ -2262,7 +2297,8 @@ static void R_StudioDrawPoints( void )
 		R_StudioSubmitMesh( ptricmds, pstudionorms, s, t, shellscale, 0 );
 		if( bias ) GL_PopPolygonOffset();
 
-		if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
+		if( coverage ) R_StudioCharmCoverageEnd( artworkCull );
+		else if( FBitSet( g_nFaceFlags, STUDIO_NF_MASKED ))
 		{
 			pglAlphaFunc( GL_GREATER, DEFAULT_ALPHATEST );
 			pglDisable( GL_ALPHA_TEST );
