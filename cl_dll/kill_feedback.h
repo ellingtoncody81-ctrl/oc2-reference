@@ -34,4 +34,6 @@ namespace kill_feedback
 // Rendering adapter exported by death.cpp; pure-state tests need not link it.
 float HUD_LocalKillFlash( float time );
 void HUD_KillFeedbackDump();
+// A successful bot takeover starts a fresh local kill-card streak.
+void HUD_KillFeedbackTakeover();
 void HUD_DrawKillCard(float time);

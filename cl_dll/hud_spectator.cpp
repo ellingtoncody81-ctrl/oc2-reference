@@ -7,6 +7,7 @@
 
 #include "hud.h"
 #include "oc2_observer.h"
+#include "kill_feedback.h"
 #include "com_weapons.h"
 #include "cl_util.h"
 #include <string.h>
@@ -60,7 +61,7 @@ int ControlMessage(const char *,int size,void *data) {
  const int op=r.ReadByte(),bot=r.ReadByte(),reason=r.ReadByte(),weapon=r.ReadByte(),animation=r.ReadByte(),elapsed=r.ReadShort();
  if(bot>32||op>2||elapsed<0)return 1;
  if(op==0){controlBot=bot;controlReason=reason;controlStatusTime=gEngfuncs.GetClientTime();}
- else if(op==1){controlPhase=ControlPhase();controlPhase.weapon=weapon;controlPhase.animation=animation;controlPhase.elapsed=elapsed*.001;controlPhase.received=gEngfuncs.GetClientTime();controlPhase.pending=true;controlStatusTime=-100;}
+ else if(op==1){HUD_KillFeedbackTakeover();controlPhase=ControlPhase();controlPhase.weapon=weapon;controlPhase.animation=animation;controlPhase.elapsed=elapsed*.001;controlPhase.received=gEngfuncs.GetClientTime();controlPhase.pending=true;controlStatusTime=-100;}
  else {controlPhase=ControlPhase();controlStatusTime=-100;}
  return 1;
 }

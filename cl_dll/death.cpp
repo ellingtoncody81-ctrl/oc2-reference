@@ -359,6 +359,13 @@ void DrawKillCard(float time)
 
 void HUD_DrawKillCard(float time) { DrawKillCard(time); }
 
+void HUD_KillFeedbackTakeover()
+{
+	// Takeover restores a combat body without a normal round respawn.
+	// Discard the old life/streak, including its latched death suppression.
+	kill_feedback::ResetRound(s_KillFeedback);
+}
+
 float HUD_LocalKillFlash(float time)
 {
 	if (!s_KillFeedback.card_visible || s_KillFeedback.local_dead || gHUD.m_Health.m_iHealth <= 0 ||
