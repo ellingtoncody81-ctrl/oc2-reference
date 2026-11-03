@@ -351,6 +351,10 @@ struct Motion
  geo::Mount requested[2];
  bool requestedResolved[2]{};
  bool charmSafe=false,biasReady=false,charmRepose=false;
+ bool neckChosen=false,extendedNeck=false,checkingExtendedNeck=false;
+ unsigned homePathCursor=0;int homePathStage=0;
+ double homePathSince=-1,homePathRetry=0;
+ geo::SwingOutput homePathAngles,homePathFoot;
  geo::SwingOutput safeAngles,bias,foot,restFoot;
  bool swingBasisReady=false;
  geo::SwingOutput basisBias,basisFoot;
@@ -904,7 +908,22 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
  // Animation avoidance may articulate the support temporarily. Always aim
  // back at the original rest support, through the same complete mesh CCD.
  desired.foot=RecoverCharmFoot(motion.foot,motion.restFoot,r.m_clTime-motion.time);
- PosePlacement(r,header,base,body,true,left,desired,false,false);
+ const bool idle=CharmIdleSequence(charmGun.header,r.m_pCurrentEntity->curstate.sequence);
+ if(!idle){motion.homePathStage=0;motion.homePathCursor=0;motion.homePathSince=-1;}
+ const bool plannedLocal=motion.homePathStage!=0;
+ if(plannedLocal)
+ {
+  const auto targetAngles=motion.homePathStage==1?motion.homePathAngles:geo::SwingOutput();
+  const auto targetFoot=motion.homePathStage==1?motion.homePathFoot:geo::SwingOutput();
+  desired.angles=targetAngles;desired.foot=targetFoot;
+  PosePlacement(r,header,base,body,true,left,desired,false,false);
+  const float blend=float(1-std::exp(-12*std::max(0.,std::min(.05,r.m_clTime-motion.time))));
+  for(int i=0;i<header->numbones;++i)for(int a=0;a<3;++a)for(int b=0;b<4;++b)
+   desired.local[i].m[a][b]=motion.safeLocal[i].m[a][b]+(desired.local[i].m[a][b]-motion.safeLocal[i].m[a][b])*blend;
+  desired.angles=RecoverCharmFoot(motion.safeAngles,targetAngles,r.m_clTime-motion.time);
+  desired.foot=RecoverCharmFoot(motion.foot,targetFoot,r.m_clTime-motion.time);
+ }
+ PosePlacement(r,header,base,body,true,left,desired,plannedLocal,false);
  const bool desiredFree=free(desired);
  bool desiredUnchanged=true;
  Placement previous=desired;previous.local=motion.safeLocal;previous.angles=motion.safeAngles;previous.foot=motion.foot;
@@ -935,8 +954,60 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
  // An unresolved interval keeps its last certified pose. Bound work during
  // firing without skipping triangles or accepting an unchecked swing segment.
  options.maximumQueries=16;
- const auto path=geo::CertifySwingPath(from,to,CharmGroups(from,header),
+ auto path=geo::CertifySwingPath(from,to,CharmGroups(from,header),
    [&](const std::vector<geo::Triangle>& triangles,float gap){return CharmFree(triangles,gap,true);},options);
+  // Near contact the isotropic midpoint bound can stall even while the charm
+  // moves away. An independent common-plane proof checks the entire swept
+  // geometry against the current complete gun before accepting that recovery.
+  if(path.fraction<1&&desiredFree&&CharmIdleSequence(charmGun.header,r.m_pCurrentEntity->curstate.sequence)&&
+     FullCharmGun()&&geo::CertifySeparatedSwingPath(charmGun.full,from,to,kCharmCollisionGap,charmGun.footBone))
+  {path.fraction=1;path.limited=false;++path.certifiedSegments;}
+ // At concave contacts, a clear home endpoint can require a detour. Search
+ // fixed-root articulated waypoints over several idle frames, never a large
+ // unbounded search or a teleport to a different UV. Each displayed step is
+ // still certified below against this frame's complete gun geometry.
+ if(idle&&(path.fraction<1||motion.homePathSince>=0)&&motion.charmSafe&&r.m_clTime>=motion.homePathRetry&&
+    std::max({std::fabs(motion.safeAngles.pitch),std::fabs(motion.safeAngles.yaw),std::fabs(motion.foot.pitch),std::fabs(motion.foot.yaw)})>1.f)
+ {
+  if(motion.homePathSince<0)motion.homePathSince=r.m_clTime;
+  if(!motion.homePathStage&&r.m_clTime-motion.homePathSince>.2&&FullCharmGun())
+  {
+   Placement home=pose(geo::SwingOutput());home.foot=geo::SwingOutput();PosePlacement(r,header,base,body,true,left,home,false,false);
+   if(hangingFree(home))
+   {
+    const auto certified=[&](const Placement& start,const Placement& end)
+    {
+     auto a=start.triangles,b=end.triangles;LocalTriangles(a,charmGun.frame);LocalTriangles(b,charmGun.frame);
+     if(geo::CertifySeparatedSwingPath(charmGun.full,a,b,kCharmCollisionGap,charmGun.footBone))return true;
+     auto bounded=options;bounded.maximumQueries=8;
+     return geo::CertifySwingPath(a,b,CharmGroups(a,header),[&](const std::vector<geo::Triangle>& t,float gap){return CharmFree(t,gap,true);},bounded).fraction==1;
+    };
+    const auto started=std::chrono::steady_clock::now();
+    if(motion.homePathCursor==0&&certified(previous,home)){motion.homePathStage=2;motion.homePathSince=r.m_clTime;}
+    static const float bodySteps[]={0,5,-5,15,-15,30,-30,60,-60};
+    static const float supportSteps[]={0,-5,5,-15,15,-30,30,-60,60,-90,90};
+    for(unsigned attempt=0;!motion.homePathStage&&attempt<2;++attempt)
+    {
+     unsigned index=motion.homePathCursor++;
+     if(index>=396){motion.homePathCursor=0;motion.homePathRetry=r.m_clTime+.5;break;}
+     // Four axis pairs, with small changes first. These are joint angles,
+     // not a hand-written weapon/mount table.
+     const unsigned axes=index%4;index/=4;const float bodyStep=bodySteps[index%9];index/=9;
+     const float supportStep=supportSteps[index%11];
+     auto angles=motion.safeAngles;auto foot=motion.foot;
+     (axes&1?angles.yaw:angles.pitch)+=bodyStep;
+     (axes&2?foot.yaw:foot.pitch)+=supportStep;
+     Placement waypoint=pose(angles);waypoint.foot=foot;PosePlacement(r,header,base,body,true,left,waypoint,false,false);
+     if(hangingFree(waypoint)&&certified(previous,waypoint)&&certified(waypoint,home))
+     {motion.homePathAngles=angles;motion.homePathFoot=foot;motion.homePathStage=1;motion.homePathSince=r.m_clTime;}
+     if(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count()>=2)break;
+    }
+   }
+  }
+  else if(motion.homePathStage&&r.m_clTime-motion.homePathSince>1.)
+  {motion.homePathStage=0;motion.homePathSince=r.m_clTime;}
+ }
+ else if(!motion.homePathStage)motion.homePathSince=-1;
  charmStats.segments+=path.certifiedSegments;
  if(path.fraction<1)
  {
@@ -972,9 +1043,34 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
   }
  }
  if(!desiredFree)++charmStats.solved;
+ if(motion.homePathStage)
+ {
+  for(int i=0;i<2;++i)
+  {const float angle=(i?desired.angles.yaw-motion.bias.yaw:desired.angles.pitch-motion.bias.pitch)*.0174532925199433f;
+   desired.swingState.angle[i]=desired.swingState.previousAngle[i]=angle;desired.swingState.velocity[i]=0;}
+  const auto targetAngles=motion.homePathStage==1?motion.homePathAngles:geo::SwingOutput();
+  const auto targetFoot=motion.homePathStage==1?motion.homePathFoot:geo::SwingOutput();
+  const float error=std::max({std::fabs(desired.angles.pitch-targetAngles.pitch),std::fabs(desired.angles.yaw-targetAngles.yaw),std::fabs(desired.foot.pitch-targetFoot.pitch),std::fabs(desired.foot.yaw-targetFoot.yaw)});
+  if(error<.05f){motion.homePathStage=motion.homePathStage==1?2:0;motion.homePathSince=r.m_clTime;motion.homePathCursor=0;}
+ }
  motion.safeLocal=desired.local;motion.safeAngles=desired.angles;motion.foot=desired.foot;
  motion.charmSafe=true;motion.charmRepose=false;
  return desired;
+}
+
+bool ProbeCharmNeck(CStudioModelRenderer& r,studiohdr_t *header,const std::array<Matrix,MAXSTUDIOBONES>& base,
+ int body,bool left,const geo::Mount& mount,bool& pendantOnly)
+{
+ Placement p;p.anchorFrame=MountFrame(mount,r.m_rgCachedLightTransform[mount.bone]);
+ if(!BeginCharmGun(r,p.anchorFrame))return false;
+ const auto bones=reinterpret_cast<const mstudiobone_t *>(reinterpret_cast<const byte *>(header)+header->boneindex);
+ for(int i=0;i<header->numbones;++i)
+ {if(!strcmp(bones[i].name,"skin_08"))charmGun.footBone=i;if(!strcmp(bones[i].name,"skin_10"))charmGun.pendantBone=i;}
+ PosePlacement(r,header,base,body,true,left,p,false,false);
+ if(CharmFree(p.triangles)){pendantOnly=false;return true;}
+ std::vector<geo::Triangle> support;
+ for(const auto& triangle:p.triangles)if(triangle.bone!=charmGun.pendantBone)support.push_back(triangle);
+ pendantOnly=CharmFree(support);return false;
 }
 
 void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool charm)
@@ -986,7 +1082,7 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
  if(!weaponSurface||mount.bone<0||mount.bone>=r.m_nCachedBones)return;
  // M249's moving ammunition box needs the longer physical mounting neck.
  // The chosen neck is fixed for the weapon; animation never moves the root.
- const bool longNeck=frameWeapon==20;
+ const bool longNeck=frameWeapon==20||motion.extendedNeck;
  const char *charmModel=longNeck?"models/attachments/oc2_sticker_charm_m249.mdl":"models/attachments/oc2_sticker_charm.mdl";
  model_t *model=IEngineStudio.Mod_ForName(charm?charmModel:"models/attachments/oc2_stattrak.mdl",false);
  studiohdr_t *header=model?reinterpret_cast<studiohdr_t *>(IEngineStudio.Mod_Extradata(model)):nullptr;
@@ -1005,6 +1101,18 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
  const unsigned count=diag.count;
  const int body=charm?0:static_cast<int>(left?ReverseDigits(count):count);
  const int slot=charm?1:0;
+  if(charm&&(!motion.neckChosen||motion.checkingExtendedNeck))
+  {
+   const bool validatingExtended=motion.checkingExtendedNeck;motion.checkingExtendedNeck=false;motion.neckChosen=true;
+   bool pendantOnly=false;
+   const bool clear=ProbeCharmNeck(r,header,base,body,left,mount,pendantOnly);
+   if(validatingExtended&&!clear)
+   {motion.extendedNeck=false;DrawOne(r,lighting,lightdir,true);return;}
+   if(!longNeck&&!clear&&pendantOnly)
+   {motion.extendedNeck=true;motion.checkingExtendedNeck=true;DrawOne(r,lighting,lightdir,true);return;}
+   if(validatingExtended)
+   {motion.biasReady=motion.charmSafe=false;motion.charmRepose=true;}
+  }
  // Resolve the configured point once in BeginAccessories, then use exactly
  // that bone-local mount through every pose. No avoidance search, return-UV
  // interpolation, or near-plane fallback may change the player's placement.
