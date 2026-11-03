@@ -215,7 +215,7 @@ private:
         static const char *names[]={u8"皮肤图案",u8"贴纸槽 A",u8"贴纸槽 B",u8"贴纸槽 C",u8"贴纸槽 D",u8"挂件图案"};
         return names[m_tab];
     }
-    const char *DefaultLabel()const{return m_tab==5?u8"使用挂件页图案":m_tab?u8"保留原贴纸":u8"原版皮肤";}
+    const char *DefaultLabel()const{return m_tab==5?u8"使用挂件页图案":m_tab?u8"默认透明贴纸":u8"原版皮肤";}
     int Selection()const{return m_knife?m_knifeDraft.skin:m_tab==0?m_draft.skin:m_tab==5?m_draft.charm:m_draft.stickers[oc2_sticker_display::PhysicalSlot(m_weapon,m_tab-1)];}
     const oc2_inventory::Entry *SelectedEntry()const
     {

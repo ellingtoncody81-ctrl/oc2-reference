@@ -163,7 +163,7 @@ int Texture(const std::string &path,bool sticker=false)
 }
 int StickerTexture(int id)
 {
-    if(id<0)return Texture(oc2_inventory::kTransparentPath,true);
+    if(id<=0)return Texture(oc2_inventory::kTransparentPath,true);
     const auto *entry=oc2_inventory::FindEntry(resources.skins,id);
     return entry&&entry->kind==oc2_inventory::Kind::Sticker?Texture(entry->file,true):0;
 }
@@ -1315,7 +1315,7 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         weaponOverride.Replace(gloves->leftMaterial,Texture(gloves->leftTexture));
         weaponOverride.Replace(gloves->rightMaterial,Texture(gloves->rightTexture));
     }
-    if(scene.mode==1)for(int slot=0;slot<4;++slot)if(scene.appearance.stickers[slot])
+    if(scene.mode==1)for(int slot=0;slot<4;++slot)
     {
         char material[]="decal_A.bmp";material[6]=char('A'+slot);
         weaponOverride.Replace(material,StickerTexture(scene.appearance.stickers[slot]),true);
@@ -1355,7 +1355,8 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
     {
         charmOverride.Freeze(*charmGeometry,0,false);
         charmOverride.Scale(config.length);
-        int pattern=scene.overridePreview&&!scene.previewPattern.empty()?Texture(scene.previewPattern,true):StickerTexture(scene.appearance.charm);
+        int pattern=scene.overridePreview&&!scene.previewPattern.empty()?Texture(scene.previewPattern,true):
+            scene.appearance.charm==0&&config.sticker>0?0:StickerTexture(scene.appearance.charm);
         if(!pattern&&config.sticker>0)for(const auto &entry:resources.patterns)if(entry.id==config.sticker)
         {pattern=Texture(std::string(oc2_accessories::kStickerDirectory)+entry.file,true);break;}
         charmOverride.Replace("charm_sticker.bmp",pattern,true);

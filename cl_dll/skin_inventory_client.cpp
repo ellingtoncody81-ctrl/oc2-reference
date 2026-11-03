@@ -750,13 +750,6 @@ void UnpinTextures(const std::vector<int> &pinned)
   if(found!=texturePins.end()&&!--found->second)texturePins.erase(found);
  }
 }
-int StickerTexture(int id,int maxDimension=0)
-{
- if(id<0)return Texture(kTransparentPath,true,maxDimension);
- const Entry *entry=Resource(id);
- return entry&&entry->kind==Kind::Sticker?Texture(entry->file,true,maxDimension):0;
-}
-
 int PendingCharmTexture()
 {
  // A requested image can span several bounded uploads. Never substitute a
@@ -767,6 +760,14 @@ int PendingCharmTexture()
  const byte tga[22]={0,0,2,0,0,0,0,0,0,0,0,0,1,0,1,0,32,40,0,0,0,0};
  handle=gRenderAPI.GL_LoadTexture?gRenderAPI.GL_LoadTexture(name,tga,sizeof(tga),TF_CLAMP|TF_NOMIPMAP):0;
  return handle;
+}
+int StickerTexture(int id,int maxDimension=0)
+{
+ // Zero is the transparent default, never the MDL's embedded donor artwork.
+ if(!id)return PendingCharmTexture();
+ if(id<0)return Texture(kTransparentPath,true,maxDimension);
+ const Entry *entry=Resource(id);
+ return entry&&entry->kind==Kind::Sticker?Texture(entry->file,true,maxDimension):0;
 }
 int CharmTexture(int id,int maxDimension=0)
 {
@@ -1214,7 +1215,7 @@ bool OC2_InventoryWorldAccessories(model_s *model,int player,int serial,int enti
  if(!item||!item->accessoryReady||item->weapon!=weapon)return false;
  config=item->accessory;count=item->count;instance=item->serial;
  if(item->charm)config.charm=item->charm>0;
- pattern=item->charm>0?CharmTexture(item->charm,256):0;
+ pattern=item->charm>=0?CharmTexture(item->charm,256):0;
  if(!item->charm&&config.sticker>0)pattern=OC2_LegacyCharmTexture(config.sticker);
  return config.stattrak||config.charm;
 }
@@ -1314,7 +1315,7 @@ OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &ren
    if(state->stickers[slot]>0&&!(selectedTextures[slot]=StickerTexture(state->stickers[slot],worldTexture?256:0)))return;
   const auto *layout=GetOverlayLayout(model,header,materials);if(!layout)return;
   auto *bytes=reinterpret_cast<byte *>(header);
-  for(const auto &command:layout->commands)if(state->stickers[command.second]<0)
+  for(const auto &command:layout->commands)if(state->stickers[command.second]<=0)
   {
    auto *first=reinterpret_cast<short *>(bytes+command.first);
    hidden.push_back(SavedShort(first,*first));*first=0;
@@ -1331,7 +1332,7 @@ OC2_InventoryMaterialScope::OC2_InventoryMaterialScope(CStudioModelRenderer &ren
    const int slot=decalSlots[i];
    if(state&&slot>=0)
   {
-    if(state->stickers[slot]&&(!stickersOnly||state->stickers[slot]>0))
+    if(!stickersOnly||state->stickers[slot]>0)
      {replacement=stickersOnly?selectedTextures[slot]:StickerTexture(state->stickers[slot],worldTexture?256:0);current.slotTextures[slot]=replacement;}
   }
   if(!replacement)continue;

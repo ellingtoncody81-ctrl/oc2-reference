@@ -559,6 +559,7 @@ private:
     std::string PatternName()const
     {
         if(!m_patternChanged&&m_patternOverride>0&&!m_inventoryPatternName.empty())return m_inventoryPatternName;
+        if(!m_draft.sticker)return u8"默认透明图案";
         for(std::size_t i=0;i<m_catalog.size();++i)if(m_catalog[i].id==m_draft.sticker)
             return std::string(u8"挂件图案 · 序号")+std::to_string(i+1);
         return u8"未选择图案";
