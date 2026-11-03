@@ -1352,7 +1352,7 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
         {pattern=Texture(std::string(oc2_accessories::kStickerDirectory)+entry.file,true);break;}
         charmOverride.Replace("charm_sticker.bmp",pattern,true);
     }
-    for(int kind=0;scene.interactive&&kind<2;++kind)
+    for(int kind=0;(scene.interactive||scene.overridePreview)&&kind<2;++kind)
     {
         Geometry *attachment=kind?charmGeometry:statGeometry;if(!attachment)continue;
         geo::Mount mount;if(!geo::FindMount(geometry->mounts,kind?config.charmU:config.statU,kind?config.charmV:config.statV,mount))continue;
