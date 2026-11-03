@@ -144,11 +144,13 @@ int StickerTexture(int id)
  return texture;
 }
 
+void DumpMotion();
 struct Diagnostics
 {
  int weapon=0,drawn=0,statBone=-1,charmBone=-1,sticker=0;
  float statOffset=0,charmOffset=0,statRequired=0,charmRequired=0,pitch=0,yaw=0,minDepth=1e20f,boxMinDepth=1e20f;
  float statUV[2]{},charmUV[2]{};
+ float pendantDrop=0;
  float mountLocal[2][3]{};
  unsigned steps=0,resets=0;int triangles=0;
  int statNearIterations=0,charmNearIterations=0;
@@ -203,6 +205,7 @@ void Dump()
  gEngfuncs.Con_Printf("oc2accessory_charm_collision: enabled=1 oracle=%d checks=%u blocked=%u solved=%u limited=%u triangles=%d stat_collision=0 failures=%u queries=%u segments=%u raw_blocked=%u contact_only=%u contact_half=%.6f contact_neck_only=1 neck=%.3f retained=%u refits=%u host_only=%d host_root=%d host_bones=%d mag_bone=%d mag_detached=%d socket_error=%.6f run_failures=%u run_blocked=%u\n",
   int(charmVerify&&charmVerify->value!=0),charmStats.checks,charmStats.blocked,charmStats.solved,charmStats.limited,
   diag.triangles,charmStats.failures,charmStats.queries,charmStats.segments,charmStats.rawBlocked,charmStats.contactOnly,oc2_accessory::kMountContactHalf,diag.charmNeck,charmStats.retained,charmStats.refits,int(diag.charmHostOnly),diag.charmHostRoot,diag.charmHostBones,diag.charmMagBone,int(diag.charmMagDetached),diag.charmSocketError,runCharmFailures,runCharmBlocked);
+ DumpMotion();
 }
 void Reload() { nextRead=-1;stickerTextures.clear();ReadSettings(gEngfuncs.GetClientTime(),true); }
 }
@@ -347,7 +350,7 @@ struct Motion
  WeaponConfig config;
  geo::Mount requested[2];
  bool requestedResolved[2]{};
- bool charmSafe=false,biasReady=false;
+ bool charmSafe=false,biasReady=false,charmRepose=false;
  geo::SwingOutput safeAngles,bias,foot;
  std::array<Matrix,MAXSTUDIOBONES> safeLocal;
 } motion;
@@ -356,6 +359,31 @@ bool SameCustomization(const WeaponConfig &a,const WeaponConfig &b)
  return a.weapon==b.weapon&&a.stattrak==b.stattrak&&a.statU==b.statU&&a.statV==b.statV&&
   a.charm==b.charm&&a.charmU==b.charmU&&a.charmV==b.charmV&&a.sticker==b.sticker&&
   a.amplitude==b.amplitude&&a.length==b.length&&a.stiffness==b.stiffness&&a.damping==b.damping;
+}
+void SynchronizeMotion(const WeaponConfig &cfg,int weapon,const studiohdr_t *header,bool left,unsigned revision)
+{
+ // A file revision or tuning change does not move the physical mounting joint.
+ // Keep the certified rest orientation instead of searching a new one mid-pose.
+ const bool reset=motion.weapon!=weapon||motion.header!=header||motion.left!=left||
+  motion.config.charm!=cfg.charm||motion.config.charmU!=cfg.charmU||motion.config.charmV!=cfg.charmV;
+ if(reset)
+ {
+  const unsigned token=motion.token+1;motion=Motion();motion.weapon=weapon;motion.header=header;
+  motion.left=left;motion.token=token;swing=geo::SwingState();
+ }
+ else if(!SameCustomization(motion.config,cfg))
+ {
+  if(motion.config.length!=cfg.length)motion.charmRepose=true;
+  if(motion.config.stattrak!=cfg.stattrak||motion.config.statU!=cfg.statU||motion.config.statV!=cfg.statV)
+   motion.requestedResolved[0]=false;
+ }
+ motion.config=cfg;motion.revision=revision;
+}
+void DumpMotion()
+{
+ gEngfuncs.Con_Printf("oc2accessory_pose_state: token=%u bias_ready=%d safe=%d repose=%d bias=%.6f/%.6f foot=%.6f/%.6f safe_angles=%.6f/%.6f length=%.6f pendant_drop=%.6f\n",
+  motion.token,int(motion.biasReady),int(motion.charmSafe),int(motion.charmRepose),motion.bias.pitch,motion.bias.yaw,
+  motion.foot.pitch,motion.foot.yaw,motion.safeAngles.pitch,motion.safeAngles.yaw,motion.config.length,diag.pendantDrop);
 }
 std::map<const studiohdr_t *,std::array<Matrix,MAXSTUDIOBONES>> addonBind;
 geo::MountCache *weaponSurface=nullptr;
@@ -591,6 +619,13 @@ struct Placement
  float offset=.01f,minDepth=1e20f,boxMinDepth=1e20f;
  float contactGap=0,contactLateral=0;
 };
+float PendantDrop(const Placement &p)
+{
+ double height=0;unsigned count=0;
+ for(const auto &triangle:p.triangles)if(triangle.bone==charmGun.pendantBone)
+  for(const auto &point:triangle.p){height+=point[2];++count;}
+ return count?float(p.anchorFrame.origin[2]-height/count):0.f;
+}
 // These samples are points on the real compiled shell/clip backing mesh, not
 // arbitrary origins or bounding boxes. Their coordinates are evaluated through
 // the same bones as the pixels drawn below.
@@ -720,6 +755,7 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
   PosePlacement(r,header,base,body,true,left,p,false,false);return p;
  };
  const auto free=[&](const Placement& p){return CharmFree(p.triangles);};
+  const auto hangingFree=[&](const Placement& p){return PendantDrop(p)>=-.05f&&free(p);};
  const auto seekRest=[&](Placement& result)
  {
   // Continue a bounded search across frames. The old nested search could do
@@ -745,7 +781,7 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
     angles.pitch=bodyPitch[(cursor%72)/9];angles.yaw=bodyYaw[cursor%9];
    }
    Placement test=pose(angles);
-   if(free(test)){result=std::move(test);motion.searchCursor=0;motion.searchRetry=0;return true;}
+    if(hangingFree(test)){result=std::move(test);motion.searchCursor=0;motion.searchRetry=0;return true;}
    if(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count()>=3)break;
   }
   motion.foot=old;return false;
@@ -755,7 +791,7 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
  if(!motion.biasReady)
  {
   Placement neutral=pose(geo::SwingOutput());
-  bool found=free(neutral);
+   bool found=hangingFree(neutral);
   if(!found)found=seekRest(neutral);
    if(!found){CharmFailure();PosePlacement(r,header,base,body,true,left,desired,false,false);return desired;}
   motion.bias=neutral.angles;motion.biasReady=true;
@@ -766,7 +802,7 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
  const bool desiredFree=free(desired);
  bool desiredUnchanged=true;
  Placement previous=desired;previous.local=motion.safeLocal;previous.angles=motion.safeAngles;
- PosePlacement(r,header,base,body,true,left,previous,true,false);
+ PosePlacement(r,header,base,body,true,left,previous,!motion.charmRepose,false);
  bool previousFree=motion.charmSafe&&free(previous);
  if(!previousFree)
  {
@@ -776,7 +812,7 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
   const auto seek=[&](float pitch,float yaw)
   {
    geo::SwingOutput angles;angles.pitch=pitch;angles.yaw=yaw;
-   Placement test=pose(angles);if(!free(test))return false;
+   Placement test=pose(angles);if(!hangingFree(test))return false;
    previous=std::move(test);return true;
   };
   if(desiredFree){previous=desired;found=true;}
@@ -829,7 +865,7 @@ Placement ConstrainCharm(CStudioModelRenderer& r,studiohdr_t *header,
   }
  }
  if(!desiredFree)++charmStats.solved;
- motion.safeLocal=desired.local;motion.safeAngles=desired.angles;motion.charmSafe=true;
+ motion.safeLocal=desired.local;motion.safeAngles=desired.angles;motion.charmSafe=true;motion.charmRepose=false;
  return desired;
 }
 
@@ -869,7 +905,7 @@ void DrawOne(CStudioModelRenderer &r,alight_t &lighting,float *lightdir,bool cha
  {
   OC2ColdTimer solve("view_charm_solve",r.m_pRenderModel?r.m_pRenderModel->name:nullptr);
   selected=ConstrainCharm(r,header,base,body,left,std::move(selected));
-   PlacementDiagnostics(r,header,base,true,selected);
+    PlacementDiagnostics(r,header,base,true,selected);diag.pendantDrop=PendantDrop(selected);
   if(charmVerify&&charmVerify->value!=0)
   {
    ++charmStats.checks;
@@ -1013,13 +1049,7 @@ void OC2_BeginAccessories(CStudioModelRenderer &r,int weapon)
   effective=*cfg;effective.charm=charmSelection>0;cfg=&effective;
  }
  diag.revision=settings.revision;if(cfg)diag.config=*cfg;
- if(motion.weapon!=weapon||motion.header!=r.m_pStudioHeader||motion.left!=left||motion.revision!=settings.revision||
-    (cfg&&!SameCustomization(motion.config,*cfg)))
- {
-  const unsigned token=motion.token+1;motion=Motion();motion.weapon=weapon;motion.header=r.m_pStudioHeader;
-  motion.left=left;motion.revision=settings.revision;motion.token=token;swing=geo::SwingState();
-  if(cfg)motion.config=*cfg;
- }
+ if(cfg)SynchronizeMotion(*cfg,weapon,r.m_pStudioHeader,left,settings.revision);
  if((accessoriesEnabled&&accessoriesEnabled->value==0)||!cfg||(!cfg->stattrak&&!cfg->charm)||!IEngineStudio.IsHardware())return;
  auto it=mounts.find(r.m_pStudioHeader);
  if(it==mounts.end())
