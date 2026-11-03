@@ -1201,6 +1201,14 @@ bool CMenuPanoramaModelView::DrawAt(int x,int y,int width,int height)
             dualSingle&&mounts.regions.size()>1?mounts.regions[0].side:
             scene.weapon==10&&mounts.regions.size()>1?mounts.regions[1].side:mounts.side;
         std::memcpy(normal,side.normal,sizeof(normal));
+        if(scene.weapon==21&&mounts.rigRoot>=0&&std::size_t(mounts.rigRoot)<geometry->bind.size())
+        {
+            // Nova's curved sticker faces bias their averaged normal away from
+            // its true side. Local X of NOVA_PARENT is the gun's side normal.
+            float face[3];for(int a=0;a<3;++a)face[a]=geometry->bind[mounts.rigRoot].m[a][0];
+            if(Dot(face,normal)<0)for(float &value:face)value=-value;
+            Normalize(face);std::memcpy(normal,face,sizeof(normal));
+        }
     }
     const bool rigidPair=scene.dualRigid&&split;
     const float viewYaw=rigidPair?0.f:scene.yaw,viewPitch=rigidPair?0.f:scene.pitch;
