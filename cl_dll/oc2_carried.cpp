@@ -129,7 +129,7 @@ int UtilityMessage(const char *,int size,void *buffer)
  if(operation!=oc2_carry::Upsert||size!=oc2_carry::kUpsertBytes)return 1;
  oc2_carry::State state;
  state.player=reader.ReadByte();state.userid=reader.ReadLong();state.active=reader.ReadByte();
- state.flash=reader.ReadByte();state.he=reader.ReadByte();state.smoke=reader.ReadByte();state.fire=reader.ReadByte();state.flags=reader.ReadByte();
+ state.flash=reader.ReadByte();state.he=reader.ReadByte();state.smoke=reader.ReadByte();state.fire=reader.ReadByte();state.flags=reader.ReadByte();state.taser=reader.ReadByte();
  if(state.player<1||state.player>32||state.userid<=0||state.active>31||
     (state.flags&~(oc2_carry::HasC4|oc2_carry::Incendiary|oc2_carry::ThrowReleased)))return 1;
  CheckUtilityLevel();
@@ -217,6 +217,9 @@ const UtilityModel heModel={"models/w_hegrenade.mdl",6.37906f,-.03460f,2.54697f,
 const UtilityModel smokeModel={"models/w_smokegrenade.mdl",.98406f,-.02460f,2.14198f,.99460f,.10379f,.65f};
 const UtilityModel molotovModel={"models/w_molotov.mdl",5.05342f,.57512f,3.05426f,1.f,-.00179f,.75f};
 const UtilityModel incendiaryModel={"models/w_incendiary.mdl",2.34906f,.56540f,4.10698f,.99998f,-.00556f,.40f};
+// The taser rides on the knife side, below the knife. Its origin is the grip,
+// so the mount point is the target; the axis and scale follow the other W models.
+const UtilityModel taserModel={"models/w_zeus.mdl",0.f,0.f,0.f,1.f,0.f,.65f};
 
 void DrawUtility(CStudioModelRenderer &r,alight_s &lighting,float *lightdir,int player,int weapon,int anchor,
  const UtilityModel *spec,const float target[3],bool backpack)
@@ -240,8 +243,18 @@ void DrawUtility(CStudioModelRenderer &r,alight_s &lighting,float *lightdir,int 
  float orient[3][4]={},lightOrient[3][4]={};
  if(!backpack)
  {
-  orient[0][0]=spec->axisX;orient[0][1]=spec->axisY;
-  orient[1][2]=1;orient[2][0]=spec->axisY;orient[2][1]=-spec->axisX;
+  if(spec==&taserModel)
+  {
+   // Full pistol-family orientation: rotate around the other local axis.
+   orient[0][0]=-1.f;orient[0][1]=0.f;
+   orient[1][0]=0.f;orient[1][1]=1.f;
+   orient[2][2]=-1.f;
+  }
+  else
+  {
+   orient[0][0]=spec->axisX;orient[0][1]=spec->axisY;
+   orient[1][2]=1;orient[2][0]=spec->axisY;orient[2][1]=-spec->axisX;
+  }
   memcpy(lightOrient,orient,sizeof(orient));
   for(int i=0;i<3;++i)for(int j=0;j<3;++j)orient[i][j]*=spec->scale;
   const float centre[3]={spec->x,spec->y,spec->z};
@@ -331,7 +344,9 @@ void OC2_InventoryDrawCarried(CStudioModelRenderer &renderer,const entity_state_
   const auto &item=owned[ownedIndex];
   const int index=oc2_accessories::Index(item.weapon);
   const bool knife=item.weapon==29;
-  if(item.owner!=player->number||(item.flags&oc2_item::Active)||(!knife&&index<0))continue;
+  const bool taser=item.weapon==2&&item.definition==371;
+  if(item.owner!=player->number||(item.flags&oc2_item::Active)||(!knife&&!taser&&index<0))continue;
+  if(taser)continue; // taser is drawn on the belt, not as a primary/pistol
   const bool pistol=CarriedPistol(item.weapon);
   const int anchor=(pistol||knife)?pelvis:spine;
   if(anchor<0||(knife?drawnKnife:pistol?drawnPistol:drawnPrimary))continue;
@@ -451,6 +466,14 @@ void OC2_InventoryDrawCarried(CStudioModelRenderer &renderer,const entity_state_
   IEngineStudio.StudioSetupLighting(&lighting);IEngineStudio.SetForceFaceFlags(faceFlags);
   if(knife)drawnKnife=true;else if(pistol)drawnPistol=true;else drawnPrimary=true;
  }
+  // The taser shares weapon id 2 with the glock; definition 371 is its
+  // server-issued appearance tag. Draw it only when it is owned and holstered,
+  // on the pistol side and a little lower than the pistol.
+  if(pelvis>=0&&utility&&utility->taser>0&&utility->active!=2)
+  {
+   const float taserTarget[3]={-3.5f,0.f,-9.f};
+   DrawUtility(renderer,lighting,lightdir,player->number,2,pelvis,&taserModel,taserTarget,false);
+  }
  if(!utility)return;
  // Throw recovery keeps the weapon active after the release attempt. Successful
  // projectile creation decrements ammo; failure leaves it unchanged. In either
@@ -462,27 +485,39 @@ void OC2_InventoryDrawCarried(CStudioModelRenderer &renderer,const entity_state_
  int fire=utility->fire-(inHand&&utility->active==31&&utility->fire>0?1:0);
  // One horizontal belt row. The smoke model's carried height is the common
  // X datum; four evenly spaced Z slots are available, and the server's total
- // three-grenade limit leaves one empty. Fill from player-right to player-left
- // in canonical order: flash pair, smoke, HE, fire.
+ // three-grenade limit leaves one empty. The slot positions never move, but
+ // which item sits in which slot is permuted per player, so two players do not
+ // carry the same item in the same place. The seed is the player slot and the
+ // userid, so the order stays stable for that player across frames.
  const float beltX=2.6f;
  const float slotZ[4]={-7.5f,-2.5f,2.5f,7.5f};
+ int slotOrder[4]={0,1,2,3};
+ {
+  unsigned seed=(unsigned)player->number*2654435761u+(unsigned)utility->userid*40503u;
+  for(int i=3;i>0;--i)
+  {
+   seed=seed*1664525u+1013904223u;
+   const int j=(int)((seed>>16)%(unsigned)(i+1));
+   const int swap=slotOrder[i];slotOrder[i]=slotOrder[j];slotOrder[j]=swap;
+  }
+ }
  const UtilityModel *models[4]={};
- float depth[4]={};
  int weapons[4]={};
+ float beltY[4]={};
  int carried=0;
- if(flash>0){weapons[carried]=25;models[carried]=&flashModel;depth[carried++]=-6.5f;}
- if(flash>1){weapons[carried]=25;models[carried]=&flashModel;depth[carried++]=-6.8f;}
- if(smoke>0){weapons[carried]=9;models[carried]=&smokeModel;depth[carried++]=-6.9f;}
- if(he>0){weapons[carried]=4;models[carried]=&heModel;depth[carried++]=-7.5f;}
+ if(flash>0){weapons[carried]=25;models[carried]=&flashModel;beltY[carried++]=-6.5f;}
+ if(flash>1){weapons[carried]=25;models[carried]=&flashModel;beltY[carried++]=-6.8f;}
+ if(smoke>0){weapons[carried]=9;models[carried]=&smokeModel;beltY[carried++]=-6.9f;}
+ if(he>0){weapons[carried]=4;models[carried]=&heModel;beltY[carried++]=-7.5f;}
  if(fire>0){weapons[carried]=31;
   models[carried]=utility->flags&oc2_carry::Incendiary?&incendiaryModel:&molotovModel;
-  depth[carried++]=-7.1f;}
+  beltY[carried++]=-7.1f;}
  if((utility->flags&oc2_carry::HasC4)&&utility->active!=6)
   DrawUtility(renderer,lighting,lightdir,player->number,6,spine,nullptr,nullptr,true);
  const int drawCount=carried<4?carried:4;
  for(int i=0;i<drawCount;++i)
  {
-  const float target[3]={beltX,depth[i],slotZ[i]};
+  const float target[3]={beltX,beltY[i],slotZ[slotOrder[i]]};
   DrawUtility(renderer,lighting,lightdir,player->number,weapons[i],pelvis,
    models[i],target,false);
  }

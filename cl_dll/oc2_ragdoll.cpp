@@ -12,6 +12,7 @@
 #include "eventscripts.h"
 #include "oc2_ragdoll.h"
 #include "player_model_policy.h"
+#include "oc2_ivp_adapter.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -76,6 +77,13 @@ const int kSegments[11][2] = {
 const float kLinearDamping = 0.18f;
 const float kJointDamping = 0.60f;
 const float kAngularDamping = 0.75f;
+// Render-side swing allowances. The physics keeps its authored cones and
+// hinges; these only bound how far a drawn limb may leave the arc it had in
+// the death pose, so a flailing arm cannot fly out to the side.
+const float kShoulderSwing = 1.30f;
+const float kHipFlexion = 1.40f;
+const float kHipAbduction = 0.35f;
+const float kKneeFlexion = 2.40f;
 const int MAX_SEGMENT_SAMPLES = 22;
 
 struct Frame
@@ -181,7 +189,11 @@ struct Body
     float clusterRest[2][4][4];
     Frame baseFrame;
     Frame basePelvisFrame;
+    // Clamped render directions per chain: [chain][0] pivot->middle and
+    // [chain][1] middle->tip. Rebuilt on every render, never persisted.
+    Vector renderDir[4][2];
     Vector hingeNormal[4];
+    IvpCorpse *ivp;
     int boneOwner[MAXSTUDIOBONES];
     Vector boneParentOffset[MAXSTUDIOBONES];
     Vector boneVelocity[MAXSTUDIOBONES];
@@ -1179,8 +1191,149 @@ void SolveSelfCollisions(Body &body)
     }
 }
 
+// ---------------------------------------------------------------- IVP backend
+// The optional oc2_ivp.dll carries the CSSO/Source 1 style articulated
+// ragdoll: IVP/Havok balls joined by three axis limited ball sockets. When
+// the DLL is absent every entry point falls back to the PBD solver.
+//
+// The DLL works in the model space of the corpse (the same inches, Z up
+// space as the studio bind pose), so the client only adds the death origin.
+
+// The DLL body order, with the joint index of its pivot and its tip:
+//   0 pelvis->waist   1 waist->chest   2 chest->head    3 head
+//   4 L_shoulder->L_elbow  5 L_elbow->L_hand
+//   6 R_shoulder->R_elbow  7 R_elbow->R_hand
+//   8 L_hip->L_knee   9 L_knee->L_foot  10 R_hip->R_knee  11 R_knee->R_foot
+static const int kIvpBodyPivot[12] = {0, 1, 2, 3, 4, 5, 7, 8, 10, 11, 13, 14};
+static const int kIvpBodyTip[12] = {1, 2, 3, -1, 5, 6, 8, 9, 11, 12, 14, 15};
+
+// The floor under the corpse, in the model space of the corpse.
+static float IvpGroundHeight(const Vector &origin)
+{
+    const Vector start = origin + Vector(0.0f, 0.0f, 16.0f);
+    const Vector end = origin - Vector(0.0f, 0.0f, 4096.0f);
+    pmtrace_t trace;
+    TraceWorld(start, end, trace);
+    if (trace.startsolid || trace.allsolid || trace.fraction >= 1.0f) return -4096.0f;
+    return start.z + (end.z - start.z) * trace.fraction;
+}
+
+static void IvpCreateCorpse(Body &body)
+{
+    // One time console line, so the tester can prove that the DLL loaded and
+    // see whether the pose extension is present. The offline harness stubs the
+    // console with null pointers, so the call is guarded.
+    static bool reported = false;
+    if (!reported)
+    {
+        reported = true;
+        if (gEngfuncs.Con_Printf)
+            gEngfuncs.Con_Printf("ragdoll_ivp: %s\n", IvpAdapterStatus());
+    }
+    if (!IvpAdapterAvailable() || body.ivp) return;
+    const float ground = IvpGroundHeight(body.deathOrigin) - body.deathOrigin.z;
+    body.ivp = IvpCorpseCreate(ground);
+    if (!body.ivp) return;
+    // Pose the world in the death pose: the 16 bind pose joints of this
+    // corpse are already in the model space.
+    float joints[JOINT_COUNT * 3];
+    for (int i = 0; i < JOINT_COUNT; ++i)
+    {
+        joints[i * 3 + 0] = body.joints[i].base.x;
+        joints[i * 3 + 1] = body.joints[i].base.y;
+        joints[i * 3 + 2] = body.joints[i].base.z;
+    }
+    IvpCorpseSetJoints(body.ivp, joints);
+}
+
+static void IvpDestroyCorpse(Body &body)
+{
+    if (!body.ivp) return;
+    IvpCorpseDestroy(body.ivp);
+    body.ivp = NULL;
+}
+
+// Resolve the world once per step for the whole rig: the floor height under
+// the root is pushed into the DLL, which clamps the entire skeleton. Teleporting
+// the bodies one by one fights the constraints and tears the ragdoll apart, so
+// the per body teleport is not used here (it stays available in the adapter for
+// a rate limited rescue only).
+static int IvpResolveWorld(Body &body)
+{
+    const Vector rootWorld = body.deathOrigin + body.joints[PELVIS].position;
+    const float floorWorld = IvpGroundHeight(rootWorld);
+    const float floorModel = floorWorld - body.deathOrigin.z;
+    IvpCorpseSetGround(body.ivp, floorModel);
+    body.contacts++;
+    return 1;
+}
+
+// One fixed step of the IVP world, then map the 16 joint positions back onto
+// the product joints and the 12 angular parts. The existing render path then
+// follows the joint skeleton with no further change.
+static void IvpSimulate(Body &body, float dt)
+{
+    if (!body.ivp) return;
+    if (IvpCorpseStep(body.ivp, dt) != 0) { IvpDestroyCorpse(body); return; }
+    IvpResolveWorld(body);
+    float joints[JOINT_COUNT * 3];
+    float quats[12 * 4];
+    if (IvpCorpseReadJoints(body.ivp, joints, quats) != JOINT_COUNT) return;
+    Vector before[JOINT_COUNT];
+    for (int i = 0; i < JOINT_COUNT; ++i) before[i] = body.joints[i].position;
+    for (int i = 0; i < JOINT_COUNT; ++i)
+    {
+        body.joints[i].position = Vector(joints[i * 3], joints[i * 3 + 1], joints[i * 3 + 2]) +
+            body.deathOrigin;
+    }
+    // The part rotations: the DLL body rotation is the segment rotation, the
+    // part orientation is that rotation composed with the bind pose offset.
+    static const int kIvpPartBody[12] = {1, 3, 4, 5, 6, 7, 8, 9, 10, 11, -1, -1};
+    for (int part = 0; part < kPartCount; ++part)
+    {
+        const int source = kIvpPartBody[part];
+        if (source < 0) continue;
+        Quat bodyRotation;
+        bodyRotation.x = quats[source * 4];
+        bodyRotation.y = quats[source * 4 + 1];
+        bodyRotation.z = quats[source * 4 + 2];
+        bodyRotation.w = quats[source * 4 + 3];
+        body.parts[part].orientation = QuatMultiply(bodyRotation, body.parts[part].baseOrientation);
+    }
+    float motion = 0.0f;
+    for (int i = 0; i < JOINT_COUNT; ++i)
+    {
+        const float travel = Length(body.joints[i].position - before[i]);
+        if (travel > motion) motion = travel;
+        body.joints[i].previous = before[i];
+    }
+    float worstError = 0.0f;
+    for (int i = 1; i < JOINT_COUNT; ++i)
+    {
+        const float error = fabsf(Length(body.joints[i].position -
+            body.joints[kParent[i]].position) - body.rest[i]);
+        if (error > worstError) worstError = error;
+    }
+    const bool supported = body.contacts > 0;
+    body.quietFrames = supported && motion < 0.06f && worstError < 0.8f
+        ? body.quietFrames + 1 : 0;
+    const bool stationary = StationaryForSleep(body, supported, motion, worstError);
+    if ((body.quietFrames > 60 && body.lastTime - body.birth >= 2.0) || stationary ||
+        (supported && body.lastTime - body.birth > 12.0 && motion < 0.12f && worstError < 1.2f))
+    {
+        body.sleeping = true;
+        for (int i = 0; i < JOINT_COUNT; ++i) body.joints[i].previous = body.joints[i].position;
+    }
+    ++body.steps;
+}
+
 void Simulate(Body &body, float dt)
 {
+    if (body.ivp)
+    {
+        IvpSimulate(body, dt);
+        return;
+    }
     Vector start[JOINT_COUNT];
     Vector predictedTravel[JOINT_COUNT];
     bool stuck[JOINT_COUNT] = {};
@@ -1622,6 +1775,7 @@ bool InitialisePose(Body &body, studiohdr_t *header)
         body.impact = body.baseFrame.forward * 12.0f;
     InitialiseAngularParts(body);
     ApplyDeathImpulse(body);
+    IvpCreateCorpse(body);
     float totalMass = 0.0f;
     for (int i = 0; i < JOINT_COUNT; ++i) totalMass += kMass[i];
     const Vector impulseVelocity = Limited(body.impact*(8.0f/totalMass), 40.0f);
@@ -1651,6 +1805,115 @@ bool Initialise(Body &body, CStudioModelRenderer &renderer)
     return InitialisePose(body, renderer.m_pStudioHeader);
 }
 
+Vector RotateAboutAxis(const Vector &value, const Vector &axis, float angle)
+{
+    const Vector unit = Unit(axis, Vector(0.0f, 0.0f, 1.0f));
+    const float cosine = cosf(angle);
+    const float sine = sinf(angle);
+    return value * cosine + Cross(unit, value) * sine +
+        unit * (Dot(unit, value) * (1.0f - cosine));
+}
+
+// Keep a drawn limb inside the arc it had in the death pose.
+Vector ClampToCone(const Vector &direction, const Vector &reference, float limit)
+{
+    const Vector d = direction;
+    const Vector r = Unit(reference, d);
+    const float angle = acosf(Clamp(Dot(d, r), -1.0f, 1.0f));
+    if (angle <= limit || angle < 0.0001f) return d;
+    Vector axis = Cross(r, d);
+    const float length = Length(axis);
+    if (length < 0.0001f) return d;
+    axis = axis * (1.0f / length);
+    return Unit(RotateAboutAxis(d, axis, angle - limit), d);
+}
+
+// Separate forward and sideways allowances around the death-pose direction.
+Vector ClampToSwingAxes(const Vector &direction, const Vector &reference,
+    const Vector &flexionAxis, const Vector &abductionAxis,
+    float flexion, float abduction)
+{
+    Vector d = direction;
+    const Vector r = Unit(reference, d);
+    if (flexion > 0.0f)
+    {
+        Vector a = r - flexionAxis * Dot(r, flexionAxis);
+        Vector b = d - flexionAxis * Dot(d, flexionAxis);
+        const float la = Length(a), lb = Length(b);
+        if (la > 0.001f && lb > 0.001f)
+        {
+            a = a * (1.0f / la);
+            b = b * (1.0f / lb);
+            const float angle = atan2f(Dot(Cross(a, b), flexionAxis), Dot(a, b));
+            const float limit = Clamp(angle, -flexion, flexion);
+            if (fabsf(limit - angle) > 0.0001f)
+                d = Unit(RotateAboutAxis(d, flexionAxis, limit - angle), d);
+        }
+    }
+    if (abduction > 0.0f)
+    {
+        Vector a = r - abductionAxis * Dot(r, abductionAxis);
+        Vector b = d - abductionAxis * Dot(d, abductionAxis);
+        const float la = Length(a), lb = Length(b);
+        if (la > 0.001f && lb > 0.001f)
+        {
+            a = a * (1.0f / la);
+            b = b * (1.0f / lb);
+            const float angle = atan2f(Dot(Cross(a, b), abductionAxis), Dot(a, b));
+            const float limit = Clamp(angle, -abduction, abduction);
+            if (fabsf(limit - angle) > 0.0001f)
+                d = Unit(RotateAboutAxis(d, abductionAxis, limit - angle), d);
+        }
+    }
+    return d;
+}
+
+// The hinge axis has to follow the clamped bone direction, otherwise the
+// rendered roll drifts away from the limb it belongs to.
+Vector RenderHingeNormal(const Body &body, int chain, const Frame &frame,
+    const Vector &axis)
+{
+    const int first = kChains[chain][0], middle = kChains[chain][1];
+    const Frame &base = chain < 2 ? body.baseFrame : body.basePelvisFrame;
+    const Vector oldAxis = RotateFrame(body.joints[middle].base - body.joints[first].base, base, frame);
+    return Unit(RotateArc(RotateFrame(body.hingeNormal[chain], base, frame), oldAxis, axis), frame.side);
+}
+
+// Rebuild the drawn chain directions for this frame.
+void CacheRenderDirections(Body &body, const Frame &torso)
+{
+    for (int chain = 0; chain < 4; ++chain)
+    {
+        const int first = kChains[chain][0], middle = kChains[chain][1];
+        const int last = kChains[chain][2];
+        const Frame &socket = chain < 2 ? torso : PelvisFrame(body, false);
+        const Vector upper = Unit(body.joints[middle].position - body.joints[first].position, socket.up);
+        const Vector upperBase = Unit(body.joints[middle].base - body.joints[first].base, socket.up);
+        if (chain < 2)
+        {
+            body.renderDir[chain][0] = ClampToCone(upper, upperBase, kShoulderSwing);
+        }
+        else
+        {
+            body.renderDir[chain][0] = ClampToSwingAxes(upper, upperBase,
+                socket.side, socket.forward, kHipFlexion, kHipAbduction);
+        }
+        const Vector lower = Unit(body.joints[last].position - body.joints[middle].position, socket.up);
+        if (chain < 2)
+        {
+            body.renderDir[chain][1] = lower;
+        }
+        else
+        {
+            // A knee that was already bent in the death pose keeps its own arc.
+            const Vector lowerBase = Unit(body.joints[last].base - body.joints[middle].base, socket.up);
+            const float baseKnee = acosf(Clamp(Dot(upperBase, lowerBase), -1.0f, 1.0f));
+            const float kneeLimit = baseKnee > kKneeFlexion ? baseKnee : kKneeFlexion;
+            body.renderDir[chain][1] = ClampToCone(lower, body.renderDir[chain][0], kneeLimit);
+        }
+    }
+}
+
 Vector PoseVector(const Body &body, int owner, const Vector &value, const Frame &torso)
 {
     if (owner == PELVIS)
@@ -1670,10 +1933,10 @@ Vector PoseVector(const Body &body, int owner, const Vector &value, const Frame 
         from.side = body.hingeNormal[chain];
         from.forward = Unit(Cross(from.up, from.side), base.forward);
         from.side = Cross(from.forward, from.up);
-        to.up = Unit(body.joints[b].position - body.joints[a].position, socket.up);
+        to.up = body.renderDir[chain][owner == first ? 0 : 1];
         // Transport the hinge frame through a straight elbow/knee too. A cross
         // product of almost-collinear segments would introduce arbitrary rolls.
-        to.side = HingeNormal(body, chain, socket);
+        to.side = RenderHingeNormal(body, chain, socket, body.renderDir[chain][0]);
         to.forward = Unit(Cross(to.up, to.side), socket.forward);
         to.side = Cross(to.forward, to.up);
         return RotateFrame(value, from, to);
@@ -1688,26 +1951,25 @@ void ApplyPose(Body &body, CStudioModelRenderer &renderer)
 {
     const mstudiobone_t *bones = reinterpret_cast<const mstudiobone_t *>(
         reinterpret_cast<const byte *>(body.header) + body.header->boneindex);
+    const Frame torso = TorsoFrame(body, false);
+    CacheRenderDirections(body, torso);
     for (int bone = 0; bone < body.boneCount; ++bone)
     {
         const int owner = body.boneOwner[bone];
-        const AngularPart &part = body.parts[kJointPart[owner]];
         const JointState &joint = body.joints[owner];
         const float (*original)[4] = body.baseMatrix[bone];
         float (*render)[4] = (*renderer.m_pbonetransform)[bone];
         float (*light)[4] = (*renderer.m_plighttransform)[bone];
-        const Quat delta = QuatMultiply(part.orientation,
-            QuatConjugate(part.baseOrientation));
         for (int column = 0; column < 3; ++column)
         {
             const Vector axis(original[0][column], original[1][column], original[2][column]);
-            const Vector rotated = QuatRotate(delta, axis);
+            const Vector rotated = PoseVector(body, owner, axis, torso);
             render[0][column] = light[0][column] = rotated.x;
             render[1][column] = light[1][column] = rotated.y;
             render[2][column] = light[2][column] = rotated.z;
         }
         const Vector localOffset = Origin(original) - joint.base;
-        Vector position = joint.position + QuatRotate(delta, localOffset);
+        Vector position = joint.position + PoseVector(body, owner, localOffset, torso);
         const int parent = bones[bone].parent;
         if (parent >= 0 && parent < bone)
         {
@@ -1982,6 +2244,7 @@ bool OC2_RagdollRegister(tempent_s *corpse, int playerIndex)
         s_bodies[slot].corpse->die = static_cast<float>(now) - 1.0f;
     }
     Body &body = s_bodies[slot];
+    IvpDestroyCorpse(body);
     body = Body();
     if (s_nextSerial >= INT_MAX - 1) s_nextSerial = 0;
     body.serial = ++s_nextSerial;
@@ -2115,7 +2378,10 @@ void OC2_RagdollTick(double clientTime)
         Body &body = s_bodies[i];
         if (!body.serial || !body.ready || body.expires < now ||
             !body.corpse || body.corpse->entity.curstate.iuser4 != body.serial)
+        {
+            IvpDestroyCorpse(body);
             continue;
+        }
         for (int step = 0; step < 10 && body.catchupSteps > 0 &&
             !body.sleeping; ++step, --body.catchupSteps)
             Simulate(body, 1.0f / 90.0f);
@@ -2146,6 +2412,7 @@ void OC2_RagdollApply(CStudioModelRenderer &renderer)
 
 void OC2_RagdollClear()
 {
+    for (int i = 0; i < 64; ++i) IvpDestroyCorpse(s_bodies[i]);
     for (int i = 0; i < 64; ++i) s_bodies[i] = Body();
     for (int i = 0; i < 33; ++i) s_livePose[i] = LivePose();
     for (int i = 0; i < 33; ++i) s_deaths[i] = PlayerDeath();

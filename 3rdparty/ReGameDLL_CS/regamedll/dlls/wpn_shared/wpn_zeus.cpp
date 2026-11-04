@@ -146,8 +146,14 @@ void CZeus::RemoveSpent()
 {
 	CBasePlayer *owner = m_pPlayer;
 	if (!owner || m_iClip > 0) return;
-	if (owner->m_pActiveItem == this) RetireWeapon();
-	// RetireWeapon may already have called our Holster/DestroyItem.
+	if (owner->m_pActiveItem == this)
+	{
+		// RetireWeapon() calls Holster(), and Holster() destroys an exhausted
+		// taser. Do not touch this object again: it can already be freed here,
+		// which was the SV_TouchLinks/Materialize crash.
+		RetireWeapon();
+		return;
+	}
 	if (owner->HasPlayerItem(this)) DestroyItem();
 }
 
