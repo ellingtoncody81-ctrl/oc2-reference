@@ -88,6 +88,7 @@ oc2_carry::State CarryCurrent(CBasePlayer *player)
      state.active==WEAPON_SMOKEGRENADE||state.active==WEAPON_MOLOTOV))
   state.flags|=oc2_carry::ThrowReleased;
  if(player->m_bHasC4)state.flags|=oc2_carry::HasC4;
+ state.taser=(player->pev->weapons & (1U << WEAPON_TASER))?1:0;
  state.he=CarryAmmo(player,player->GetItemById(WEAPON_HEGRENADE));
  state.flash=CarryAmmo(player,player->GetItemById(WEAPON_FLASHBANG));
  state.smoke=CarryAmmo(player,player->GetItemById(WEAPON_SMOKEGRENADE));
@@ -103,7 +104,7 @@ oc2_carry::State CarryCurrent(CBasePlayer *player)
 bool CarryEqual(const oc2_carry::State &a,const oc2_carry::State &b)
 {
  return a.player==b.player&&a.userid==b.userid&&a.active==b.active&&
-  a.flash==b.flash&&a.he==b.he&&a.smoke==b.smoke&&a.fire==b.fire&&a.flags==b.flags;
+  a.flash==b.flash&&a.he==b.he&&a.smoke==b.smoke&&a.fire==b.fire&&a.flags==b.flags&&a.taser==b.taser;
 }
 void SendCarry(int operation,const oc2_carry::State *state=nullptr,CBasePlayer *target=nullptr)
 {
@@ -115,7 +116,7 @@ void SendCarry(int operation,const oc2_carry::State *state=nullptr,CBasePlayer *
  if(operation==oc2_carry::Upsert)
  {
   WRITE_BYTE(state->active);WRITE_BYTE(state->flash);WRITE_BYTE(state->he);
-  WRITE_BYTE(state->smoke);WRITE_BYTE(state->fire);WRITE_BYTE(state->flags);
+  WRITE_BYTE(state->smoke);WRITE_BYTE(state->fire);WRITE_BYTE(state->flags);WRITE_BYTE(state->taser);
  }
  MESSAGE_END();
 }
@@ -207,6 +208,9 @@ void ApplyChoice(CBasePlayerItem *item,CBasePlayer *player)
 Appearance Current(CBasePlayerItem *item)
 {
  Appearance a=item->m_oc2Appearance;
+ // The taser shares weapon id 2 with the glock; the appearance definition is
+ // the distinct client-facing tag used to draw a holstered taser on the belt.
+ if(item->m_iId==WEAPON_TASER) a.definition=371;
  a.entity=item->entindex();a.owner=0;a.box=0;
  a.flags&=oc2_item::BotOrigin;
  if(item->m_pPlayer)
@@ -641,7 +645,12 @@ void OC2_ItemsClientDisconnected(CBasePlayer *player)
 }
 void OC2_ItemsAcquire(CBasePlayerItem *item,CBasePlayer *player)
 {
- if(!item||!player||(item->m_iId!=WEAPON_KNIFE&&oc2_accessories::Index(item->m_iId)<0))return;
+ if(!item||!player)return;
+ // The Zeus intentionally shares weapon id 2 with the legacy glock slot, so
+ // the accessory catalogue (which has no id 2 row) must not drop it here.
+ // Without this the taser never gets a serial or a published appearance and
+ // the client can never draw the holstered belt model.
+ const bool taser=item->m_iId==WEAPON_TASER; if(!taser&&item->m_iId!=WEAPON_KNIFE&&oc2_accessories::Index(item->m_iId)<0)return;
  EquipBotGlove(player);
  auto &a=item->m_oc2Appearance;
  if(!a.serial)
