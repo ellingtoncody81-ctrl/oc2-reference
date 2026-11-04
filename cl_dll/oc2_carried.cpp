@@ -460,20 +460,30 @@ void OC2_InventoryDrawCarried(CStudioModelRenderer &renderer,const entity_state_
  int he=utility->he-(inHand&&utility->active==4&&utility->he>0?1:0);
  int smoke=utility->smoke-(inHand&&utility->active==9&&utility->smoke>0?1:0);
  int fire=utility->fire-(inHand&&utility->active==31&&utility->fire>0?1:0);
- // Two-row belt layout: +Z is player-left. HE and smoke occupy the upper row;
- // flash A (+Z, player-left) is upper/inner and flash B (-Z, player-right) is
- // lower/outer, preserving the pair with 3.4-unit lateral separation plus a
- // small vertical/depth stagger. Fire completes the lower row. Per-row Y depth
- // clears the body without floating while keeping the cluster compact.
- const float flashA[3]={-5.0f,-6.5f,1.0f},flashB[3]={-6.0f,-6.8f,-2.4f};
- const float hePos[3]={2.6f,-7.5f,-4.0f},smokePos[3]={2.6f,-6.9f,1.0f};
- const float firePos[3]={-5.0f,-7.1f,-6.0f};
+ // One horizontal belt row. The smoke model's carried height is the common
+ // X datum; four evenly spaced Z slots are available, and the server's total
+ // three-grenade limit leaves one empty. Fill from player-right to player-left
+ // in canonical order: flash pair, smoke, HE, fire.
+ const float beltX=2.6f;
+ const float slotZ[4]={-7.5f,-2.5f,2.5f,7.5f};
+ const UtilityModel *models[4]={};
+ float depth[4]={};
+ int weapons[4]={};
+ int carried=0;
+ if(flash>0){weapons[carried]=25;models[carried]=&flashModel;depth[carried++]=-6.5f;}
+ if(flash>1){weapons[carried]=25;models[carried]=&flashModel;depth[carried++]=-6.8f;}
+ if(smoke>0){weapons[carried]=9;models[carried]=&smokeModel;depth[carried++]=-6.9f;}
+ if(he>0){weapons[carried]=4;models[carried]=&heModel;depth[carried++]=-7.5f;}
+ if(fire>0){weapons[carried]=31;
+  models[carried]=utility->flags&oc2_carry::Incendiary?&incendiaryModel:&molotovModel;
+  depth[carried++]=-7.1f;}
  if((utility->flags&oc2_carry::HasC4)&&utility->active!=6)
   DrawUtility(renderer,lighting,lightdir,player->number,6,spine,nullptr,nullptr,true);
- if(flash>0)DrawUtility(renderer,lighting,lightdir,player->number,25,pelvis,&flashModel,flashA,false);
- if(flash>1)DrawUtility(renderer,lighting,lightdir,player->number,25,pelvis,&flashModel,flashB,false);
- if(he>0)DrawUtility(renderer,lighting,lightdir,player->number,4,pelvis,&heModel,hePos,false);
- if(smoke>0)DrawUtility(renderer,lighting,lightdir,player->number,9,pelvis,&smokeModel,smokePos,false);
- if(fire>0)DrawUtility(renderer,lighting,lightdir,player->number,31,pelvis,
-  utility->flags&oc2_carry::Incendiary?&incendiaryModel:&molotovModel,firePos,false);
+ const int drawCount=carried<4?carried:4;
+ for(int i=0;i<drawCount;++i)
+ {
+  const float target[3]={beltX,depth[i],slotZ[i]};
+  DrawUtility(renderer,lighting,lightdir,player->number,weapons[i],pelvis,
+   models[i],target,false);
+ }
 }
