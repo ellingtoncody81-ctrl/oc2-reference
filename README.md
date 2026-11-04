@@ -1,3 +1,7 @@
+> **OC2 完整版分支** —— 本分支含 CS 1.6 (Xash3D) 完整项目代码，
+> ReGameDLL_CS / mainui_cpp / CSSDK 已内嵌展开，可直接编译。
+> 精简审阅版见 `cs16-client` 分支。
+
 > [!CAUTION]
 > **Only download Xash3D FWGS from official sources.** Third-party builds, "modded launchers", "optimized" repacks and random mirrors are frequently bundled with malware, miners, spyware and credential stealers. We cannot vouch for anything we did not build. Get official binaries only from the [releases page](https://github.com/FWGS/xash3d-fwgs/releases/tag/continuous).
 
