@@ -343,6 +343,19 @@ static bool DrawPresentation(int team, int weaponId, int x, int y, int width, in
 	if (!LoadMetadata(actorPath, actorMetadata) || !ValidPose(actorMetadata, sequence)
 		|| (idle>=0&&(!ValidPose(actorMetadata,idle)||(playEntry&&!ValidPose(actorMetadata,playback.entry))))) return false;
 	const bool drawWeapon = selected.weaponBody >= 0;
+	// The preview is the only place where the weapon model is chosen, so the
+	// mapping is logged when the selection changes. A wrong model in the buy
+	// menu is then visible in the log instead of having to be guessed from
+	// the screen.
+	static int s_loggedWeaponId = -1;
+	static int s_loggedTeam = -1;
+	if (weaponId != s_loggedWeaponId || team != s_loggedTeam)
+	{
+		s_loggedWeaponId = weaponId;
+		s_loggedTeam = team;
+		Con_Printf("buymenu_preview: weaponId=%d body=%d path=%s sequence=%d team=%d\n",
+			weaponId, selected.weaponBody, weaponPath, sequence, team);
+	}
 	if (drawWeapon && (!LoadMetadata(weaponPath, weaponMetadata)
 		|| !ValidPose(weaponMetadata, sequence)
 		|| (idle>=0&&(!ValidPose(weaponMetadata,idle)||(playEntry&&!ValidPose(weaponMetadata,playback.entry))))

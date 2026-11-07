@@ -133,6 +133,17 @@ bool GetState(oc2_buy::State &state)
 
 bool GetItem(int index, oc2_buy::Item &item)
 {
+	// The weapon ids live in a shared header. A stale object file keeps the
+	// value that was current when it was built, and a wrong id sends the buy
+	// menu preview to the wrong model. The ids this binary was built with are
+	// printed once so that can be seen in the log.
+	static bool s_printedIds = false;
+	if (!s_printedIds)
+	{
+		s_printedIds = true;
+		gEngfuncs.Con_Printf("buymenu_state: taser=%d p90=%d glock=%d\n",
+			WEAPON_TASER, WEAPON_P90, WEAPON_GLOCK);
+	}
 	item = oc2_buy::Item();
 	if (index < 0 || index >= kItems) return false;
 	const Entry &entry = catalog[index];

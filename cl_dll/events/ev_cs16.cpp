@@ -38,6 +38,7 @@
 
 #include "r_studioint.h"
 #include "com_model.h"
+#include "studio.h"
 
 #include <assert.h>
 
@@ -776,6 +777,16 @@ void OC2_CorpseForget(tempent_s *corpse)
 	}
 }
 
+void OC2_CorpseTakeOverPhysics(tempent_s *corpse)
+{
+	if (!corpse) return;
+	// Bone physics owns motion; the temp-entity gravity/animation would
+	// otherwise move the model a second time underneath the same bones.
+	corpse->flags &= ~(FTENT_SPRANIMATE|FTENT_COLLIDEWORLD|FTENT_BODYTRACE|FTENT_BODYGRAVITY);
+	corpse->callback = NULL;
+	corpse->hitcallback = NULL;
+}
+
 void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAnimTime, int iSequence, int iBody, int playerIndex)
 {
 	if (!OC2_RagdollCanCreateCorpse(playerIndex)) return;
@@ -791,7 +802,7 @@ void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAn
 		OC2_InventoryCaptureCorpseGlove(&model->entity, playerIndex);
 		model->flags = (FTENT_CLIENTCUSTOM|FTENT_PERSIST|FTENT_SPRANIMATE|FTENT_FADEOUT|FTENT_COLLIDEWORLD|FTENT_BODYTRACE);
 		model->frameMax = 255.0f;
-		model->entity.curstate.framerate = 1.0f;
+		model->entity.curstate.framerate = g_oc2CorpseSequenceFramerate;
 		model->entity.curstate.animtime = flAnimTime;
 		model->entity.curstate.frame = 0.0f;
 		model->entity.curstate.fuser1 = gHUD.m_flTime + 1.0f;
@@ -806,11 +817,7 @@ void CreateCorpse(Vector vOrigin, Vector vAngles, const char *pModel, float flAn
 		model->die = gEngfuncs.GetClientTime() + gEngfuncs.pfnGetCvarFloat("cl_corpsestay") + 9.0f;
 		if (OC2_RagdollRegister(model, playerIndex))
 		{
-			// Bone physics owns motion; the temp-entity gravity/animation would
-			// otherwise move the model a second time underneath the same bones.
-			model->flags &= ~(FTENT_SPRANIMATE|FTENT_COLLIDEWORLD|FTENT_BODYTRACE|FTENT_BODYGRAVITY);
-			model->callback = NULL;
-			model->hitcallback = NULL;
+			OC2_CorpseTakeOverPhysics(model);
 		}
 		//model->entity.curstate.renderfx = kRenderFxDeadPlayer;
 		//model->entity.curstate.fuser4 = gHUD.m_flTime;

@@ -39,7 +39,7 @@ public:
 	void Precache()
 	{
 		if (!g_pOc2BuyMenu) return;
-		for(int height:{14,18,20,22,28}) Font(height);
+		for(int height:{14,18,20,22,28}) { Font(height); Font(height,true); }
 		for(int i=0;i<g_pOc2BuyMenu->ItemCount();++i)
 		{
 			oc2_buy::Item item;
@@ -52,7 +52,7 @@ public:
 		pos=Point(0,0); size=Size(int(ScreenWidth/uiStatic.scaleX),int(ScreenHeight/uiStatic.scaleY));
 		CMenuItemsHolder::VidInit();
 		pictures.clear();
-		if (fontScreenHeight!=ScreenHeight) { fonts.clear(); fontScreenHeight=ScreenHeight; }
+		if (fontScreenHeight!=ScreenHeight) { fonts.clear(); boldFonts.clear(); fontScreenHeight=ScreenHeight; }
 	}
 	void Show() override
 	{
@@ -88,19 +88,21 @@ public:
 			// Full-height actor framing from the reference. The main world pass
 			// still renders its viewmodel; this scene adds only the preview actor.
 			int(ScreenWidth*.67f),int(ScreenHeight*.12f),int(ScreenWidth*.33f),int(ScreenHeight*.88f)))
-			Text("反恐精英",Area(.70f,.45f,.27f,.07f),28,PackRGBA(220,220,220,255),QM_CENTER);
+			Text("反恐精英",Area(.70f,.45f,.27f,.07f),28,PackRGBA(220,220,220,255),QM_CENTER,true);
 
-		Fill(Area(.01f,.133333f,.65f,.711111f),PackRGBA(0,0,0,100));
+		// One grey plate behind the whole menu. It has to reach up to the
+		// team/money header and down over the close and buy buttons.
+		Fill(Area(.01f,.05f,.65f,.93f),PackRGBA(0,0,0,100));
 		char info[128];
 		std::snprintf(info,sizeof(info),"%s   $%d",state.team==2?"反恐精英":"恐怖分子",state.money);
-		Text(info,Area(.02f,.065f,.43f,.04f),28,PackRGBA(255,255,255,255));
+		Text(info,Area(.02f,.065f,.43f,.04f),28,PackRGBA(255,255,255,255),QM_CENTER,true);
 		if (state.seconds>=0) std::snprintf(info,sizeof(info),"购买时间  %d:%02d",state.seconds/60,state.seconds%60);
 		else std::snprintf(info,sizeof(info),"%s",state.seconds==-1?"购买时间不限":"购买菜单");
-		Text(info,Area(.44f,.065f,.21f,.04f),20,PackRGBA(220,220,220,255),QM_CENTER);
+		Text(info,Area(.44f,.065f,.21f,.04f),20,PackRGBA(220,220,220,255),QM_CENTER,true);
 
 		for (int col=0;col<5;++col)
 		{
-			Text(columnName[col],Area(columnX[col],.115f,columnW[col],.035f),18,PackRGBA(230,230,230,255));
+			Text(columnName[col],Area(columnX[col],.115f,columnW[col],.035f),18,PackRGBA(230,230,230,255),QM_CENTER,true);
 			const Rect viewport=Viewport(col);
 			UI::Scissor::PushScissor(viewport.x,viewport.y,viewport.w,viewport.h);
 			for (int row=0;row<int(columns[col].size());++row)
@@ -131,9 +133,9 @@ public:
 		if (hasSelection)
 		{
 			std::snprintf(info,sizeof(info),"%s   $%d",selected.name,selected.price);
-			Text(info,Area(.02f,.89f,.39f,.035f),22,PackRGBA(255,255,255,255));
+			Text(info,Area(.02f,.89f,.39f,.035f),22,PackRGBA(255,255,255,255),QM_CENTER,true);
 			Text(selected.enabled?"点击购买或按回车键":selected.reason,Area(.02f,.93f,.39f,.028f),18,
-				selected.enabled?PackRGBA(210,210,210,255):PackRGBA(230,170,110,255));
+				selected.enabled?PackRGBA(210,210,210,255):PackRGBA(230,170,110,255),QM_CENTER,true);
 		}
 	}
 	bool MouseMove(int x,int y) override
@@ -238,6 +240,7 @@ private:
 	bool enterHeld=false;
 	std::map<std::string,HIMAGE> pictures;
 	std::map<int,HFont> fonts;
+	std::map<int,HFont> boldFonts;
 	int fontScreenHeight=0;
 	void _Init() override {}
 	bool Refresh()
@@ -308,18 +311,21 @@ private:
 		const int width=std::max(2,int(track.w*oc2_buy_scroll::visibleRows/count));
 		const int x=track.x+int((track.w-width)*scroll[col].position/oc2_buy_scroll::State::Maximum(count));
 		Fill({x,track.y,width,std::max(2,track.h)},PackRGBA(224,198,130,220));
-		Text("滚轮滚动",Area(columnX[col],.845f,columnW[col],.023f),14,PackRGBA(215,215,215,220),QM_CENTER);
+		Text("滚轮滚动",Area(columnX[col],.845f,columnW[col],.023f),14,PackRGBA(215,215,215,220),QM_CENTER,true);
 	}
-	HFont Font(int height)
+	// Two weights: 500 keeps the item cards as they are, 700 is the real
+	// bold face of Microsoft YaHei UI for everything outside the cards.
+	HFont Font(int height,bool bold=false)
 	{
 		const int pixels=std::max(10,int(height*ScreenHeight/1080.0f));
-		if (!fonts.count(pixels) || g_FontMgr->GetFontTall(fonts[pixels])<=0)
-			fonts[pixels]=CFontBuilder("Microsoft YaHei UI",pixels,500).Create();
-		return fonts[pixels];
+		std::map<int,HFont> &cache=bold?boldFonts:fonts;
+		if (!cache.count(pixels) || g_FontMgr->GetFontTall(cache[pixels])<=0)
+			cache[pixels]=CFontBuilder("Microsoft YaHei UI",pixels,bold?700:500).Create();
+		return cache[pixels];
 	}
-	void Text(const char *text,Rect rect,int height,unsigned int color,uint align=QM_CENTER)
+	void Text(const char *text,Rect rect,int height,unsigned int color,uint align=QM_CENTER,bool bold=false)
 	{
-		const HFont font=Font(height);
+		const HFont font=Font(height,bold);
 		const int actualHeight=std::max(1,g_FontMgr->GetFontTall(font));
 		UI_DrawString(font,rect.x,rect.y,rect.w,rect.h,text,color,actualHeight,align,ETF_NO_WRAP|ETF_FORCECOL);
 	}
@@ -374,7 +380,7 @@ private:
 	{
 		const int value=enabled?255:100;
 		Fill(r,PackRGBA(0,0,0,230));
-		Text(id==-2?"关闭":"购买",r,28,PackRGBA(value,value,value,255),QM_CENTER);
+		Text(id==-2?"关闭":"购买",r,28,PackRGBA(value,value,value,255),QM_CENTER,true);
 		if (hover==id && enabled) UI_DrawRectangleExt(r.x,r.y,r.w,r.h,PackRGBA(237,199,97,255),2);
 	}
 	int Hit(int x,int y) const

@@ -370,6 +370,32 @@ CBasePlayer *CBasePlayer::GetNextRadioRecipient(CBasePlayer *pStartPlayer)
 	return nullptr;
 }
 
+// OC2: throw callouts are voiced with the thrower's own character voice.
+// The server sends the generic "%!MRAD_OC2_<TYPE>" token; here it is rewritten
+// into the per-character sentence name that sound\sentences.txt already knows:
+// T side uses the Phoenix pack, CT side the SAS pack (same split as the player
+// models at player.cpp:285/290). The client engine then resolves
+// radio\<model>\<file>.wav from that sentence.
+static const char *OC2_PlayerRadioSentence(const CBasePlayer *pSender, const char *msg_id, char *szOut, size_t outSize)
+{
+	if (!msg_id || Q_strncmp(msg_id, "%!MRAD_OC2_", 11) != 0)
+		return msg_id;
+
+	const char *pszType = msg_id + 11;
+	const char *pszModel = (pSender->m_iTeam == 1) ? "PHOENIX" : "SAS";
+	const int iVariant = int(RANDOM_LONG(0, 2)) + 1;
+
+	char szSuffix[8];
+	// sentences.txt spells FIREINHOLE as 1..3 and the throw types as 01..03
+	if (Q_strcmp(pszType, "FIREINHOLE") == 0)
+		Q_snprintf(szSuffix, sizeof(szSuffix), "%d", iVariant);
+	else
+		Q_snprintf(szSuffix, sizeof(szSuffix), "%02d", iVariant);
+
+	Q_snprintf(szOut, outSize, "%%!MRAD_%s_%s%s", pszModel, pszType, szSuffix);
+	return szOut;
+}
+
 LINK_HOOK_CLASS_VOID_CHAIN(CBasePlayer, Radio, (const char *msg_id, const char *msg_verbose, short pitch, bool showIcon), msg_id, msg_verbose, pitch, showIcon)
 
 void EXT_FUNC CBasePlayer::__API_HOOK(Radio)(const char *msg_id, const char *msg_verbose, short pitch, bool showIcon)
@@ -381,6 +407,10 @@ void EXT_FUNC CBasePlayer::__API_HOOK(Radio)(const char *msg_id, const char *msg
 	// Neither do dead guys.
 	if (pev->deadflag != DEAD_NO && !IsBot())
 		return;
+
+	// Voice the callout with the thrower's own character voice.
+	char szRadioSentence[64];
+	msg_id = OC2_PlayerRadioSentence(this, msg_id, szRadioSentence, sizeof(szRadioSentence));
 
 	CBaseEntity *pEntity = nullptr;
 	while ((pEntity = UTIL_FindEntityByClassname(pEntity, "player")))
@@ -4738,6 +4768,14 @@ bool CBasePlayer::CanPlayerBuy(bool display)
 		return false;
 	}
 
+	// OC2: the buy window is the freeze period only. The round start stamp
+	// is reset when the freeze ends, which used to hand out a fresh full
+	// buy window right after the freeze.
+	if (!g_pGameRules->IsFreezePeriod())
+	{
+		return false;
+	}
+
 	// is the player in a buy zone?
 	if (!(m_signals.GetState() & SIGNAL_BUY))
 	{
@@ -8211,13 +8249,12 @@ void CBasePlayer::SendBuyState()
 #endif
 	)
 	{
-		// Keep the rule's float multiplication/truncation for ordinary values,
-		// but never add an out-of-range/NaN float-to-int conversion in this UI path.
-		const double rawBuySeconds = buytime.value * 60.0f;
-		int buySeconds = MIN_BUY_TIME;
-		if (rawBuySeconds >= MIN_BUY_TIME)
-			buySeconds = rawBuySeconds >= INT_MAX ? INT_MAX : int(rawBuySeconds);
-		const float timeLeft = buySeconds - (gpGlobals->time - CSGameRules()->m_fRoundStartTime);
+		// OC2: buying is limited to the freeze period, so the countdown that
+		// reaches the client is the freeze time left (m_iRoundTimeSecs holds the
+		// freeze length during the freeze) and 0 once the freeze expired.
+		const float timeLeft = g_pGameRules->IsFreezePeriod()
+			? CSGameRules()->GetRoundRemainingTime()
+			: 0.0f;
 		seconds = 0;
 		if (timeLeft > 0.0f)
 		{

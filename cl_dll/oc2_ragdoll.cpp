@@ -13,6 +13,7 @@
 #include "oc2_ragdoll.h"
 #include "player_model_policy.h"
 #include "oc2_ivp_adapter.h"
+#include "oc2_bullet_ragdoll.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -21,6 +22,11 @@
 
 extern engine_studio_api_t IEngineStudio;
 #include "oc2_player_snapshot.h"
+
+// The frame rate of the death animation the corpse plays. The temp entity
+// needs it because its own default of one frame per second would freeze the
+// corpse in the pose of the first frame.
+float g_oc2CorpseSequenceFramerate = 30.0f;
 
 namespace
 {
@@ -177,6 +183,10 @@ struct Body
     Vector launch;
     Vector impact;
     Vector deathOrigin;
+    // Where on the body the shot landed, from the feet (0) to the head (1).
+    // It is what decides which part of the body the shot pushes and with it
+    // how the body falls.
+    float hitHeight = 0.72f;
     tempent_s *corpse;
     model_t *model;
     studiohdr_t *header;
@@ -227,6 +237,19 @@ struct PlayerDeath
     tempent_s *corpse;
     int corpseTag;
     unsigned confirmations;
+    // Who killed this player and where the shot landed. The corpse is
+    // registered a second or more after the death message, because the death
+    // animation has to play first, so this cannot live in a temporary that is
+    // cleared right after the corpse was created.
+    int killer;
+    bool headshot;
+    // Where the shooter stood when the shot was fired. The shooter may have
+    // moved on by the time the corpse is handed to the physics.
+    float killerOrigin[3];
+    bool killerOriginValid;
+    // How much higher the shooter stood than the victim. It decides where on
+    // the body the shot landed.
+    float shooterHeight;
 };
 
 Body s_bodies[64] = {};
@@ -266,6 +289,10 @@ void BeginDeath(PlayerDeath &state)
     state.corpse = NULL;
     state.corpseTag = 0;
     state.confirmations = 0;
+    state.killer = 0;
+    state.headshot = false;
+    state.killerOriginValid = false;
+    state.shooterHeight = 0.0f;
 }
 
 float Clamp(float value, float low, float high)
@@ -343,12 +370,32 @@ bool IsDeathAnimation(model_t *model, int sequence)
     const mstudioseqdesc_t *sequences = reinterpret_cast<const mstudioseqdesc_t *>(
         reinterpret_cast<const byte *>(header) + header->seqindex);
     const char *label = sequences[sequence].label;
+    // The flinches are two frame hits, not falls. "head_flinch" would
+    // otherwise pass for the "head" fall.
+    if (strstr(label, "_flinch"))
+        return false;
     return !strncmp(label, "death", 5) ||
         !strncmp(label, "crouch_die", 10) ||
         !strncmp(label, "head", 5) ||
         !strncmp(label, "gutshot", 8) ||
         !strncmp(label, "left", 5) || !strncmp(label, "back", 5) ||
         !strncmp(label, "right", 6) || !strncmp(label, "forward", 8);
+}
+
+// The position of a player entity is only usable when it means something.
+// Xash keeps the slot of a player after it left the PVS, so the entity can
+// still hold an old position. A position that is out of any plausible range
+// would push the body the wrong way, so it is refused. A position that is in
+// range but a little old is still much better than no direction at all.
+bool UsableShooterOrigin(const cl_entity_t *shooter, const Vector &victim, Vector &out)
+{
+	if (!shooter) return false;
+	const Vector position(shooter->origin);
+	const float distance = Length(position - victim);
+	if (distance < 1.0f || distance > 16384.0f)
+		return false;
+	out = position;
+	return true;
 }
 
 model_t *RenderedPlayerModel(int playerIndex)
@@ -1218,8 +1265,81 @@ static float IvpGroundHeight(const Vector &origin)
     return start.z + (end.z - start.z) * trace.fraction;
 }
 
+/* cl_ragdoll is a three state switch: 0 off, 1 the PBD solver, 2 Bullet. */
+static bool BulletMode()
+{
+    return s_ragdoll && s_ragdoll->value >= 2.0f;
+}
+
+// The height of the hit along the body: zero at the feet, one at the head,
+// and half at the pelvis. A shot from above lands on the shoulder and tips
+// the body backwards, a level shot lands on the chest and a shot from below
+// lands on the legs and throws the body forward. On level ground the shooter
+// stands at the same height as the victim, so this mostly keeps the head
+// shot apart from the chest shot; the side the shot came from is what tells
+// two corpses apart.
+float HitHeightFor(float shooterHeight, bool headshot)
+{
+    if (headshot) return 0.97f;
+    return Clamp(0.72f + shooterHeight * 0.008f, 0.16f, 0.93f);
+}
+
+// The point the fatal hit landed on. It gives the fall a lever arm, so a head
+// shot and a leg shot topple the body differently.
+static void DeathContactPoint(const Body &body, float out[3])
+{
+    // The hit lands somewhere on the body axis, from the legs up to the
+    // shoulder, so the push is applied where the body was actually hit.
+    const float height = Clamp(body.hitHeight, 0.0f, 1.0f);
+    const Vector foot = body.joints[LEFT_FOOT].position;
+    const Vector pelvis = body.joints[PELVIS].position;
+    const Vector head = body.joints[HEAD].position;
+    Vector contact;
+    if (height < 0.5f)
+        contact = foot + (pelvis - foot) * (height / 0.5f);
+    else
+        contact = pelvis + (head - pelvis) * ((height - 0.5f) / 0.5f);
+    // The shot came from the side the shooter stands on, so the contact point
+    // is on that side of the body and not inside it. The offset follows the
+    // shooter around the body, which is what tells a shot from the front
+    // apart from a shot from the side.
+    Vector approach = body.impact;
+    approach.z = 0.0f;
+    const float length = Length(approach);
+    if (length > 0.01f)
+    {
+        // The radius of the body where the hit landed. The legs are much
+        // thinner than the torso, so the chest radius would push the contact
+        // point off the surface of the leg. The two are blended, otherwise
+        // the offset steps by an inch at the hip.
+        const float legRadius = body.joints[LEFT_KNEE].radius;
+        const float torsoRadius = body.joints[CHEST].radius;
+        const float blend = Clamp((0.5f - height) * 2.0f, 0.0f, 1.0f);
+        const float radius = torsoRadius + (legRadius - torsoRadius) * blend;
+        contact = contact - approach * (radius * 0.35f / length);
+    }
+    out[0] = contact.x;
+    out[1] = contact.y;
+    out[2] = contact.z;
+}
+
 static void IvpCreateCorpse(Body &body)
 {
+    if (BulletMode() && body.model && body.header && body.boneCount > 0)
+    {
+        // The Bullet backend owns its own world; the IVP path stays untouched.
+        float contact[3] = { 0.0f, 0.0f, 0.0f };
+        DeathContactPoint(body, contact);
+        const float impact[3] = { body.impact.x, body.impact.y, body.impact.z };
+        const float launch[3] = { body.launch.x, body.launch.y, body.launch.z };
+        if (gEngfuncs.Con_Printf)
+            gEngfuncs.Con_Printf("ragdoll_bullet: corpse %u takeover pose head %.1f pelvis %.1f, hit on %s\n",
+                body.serial, body.joints[HEAD].position.z, body.joints[PELVIS].position.z,
+                body.headshot ? "head" : "chest");
+        oc2_bullet::Init();
+        oc2_bullet::CreateRagdoll(body.serial, body.model->name, body.header,
+            body.baseMatrix, body.boneCount, impact, launch, contact, body.headshot);
+    }
     // One time console line, so the tester can prove that the DLL loaded and
     // see whether the pose extension is present. The offline harness stubs the
     // console with null pointers, so the call is guarded.
@@ -1248,6 +1368,8 @@ static void IvpCreateCorpse(Body &body)
 
 static void IvpDestroyCorpse(Body &body)
 {
+    if (body.serial)
+        oc2_bullet::DestroyRagdoll(body.serial);
     if (!body.ivp) return;
     IvpCorpseDestroy(body.ivp);
     body.ivp = NULL;
@@ -1329,6 +1451,7 @@ static void IvpSimulate(Body &body, float dt)
 
 void Simulate(Body &body, float dt)
 {
+    if (BulletMode()) return;
     if (body.ivp)
     {
         IvpSimulate(body, dt);
@@ -1772,7 +1895,12 @@ bool InitialisePose(Body &body, studiohdr_t *header)
             ? Unit(Cross(upper, lower), fallback) : fallback;
     }
     if (Length(body.impact) < 0.01f)
+    {
         body.impact = body.baseFrame.forward * 12.0f;
+        if (gEngfuncs.Con_Printf)
+            gEngfuncs.Con_Printf("ragdoll_bullet: corpse %u has no shot direction, falling straight\n",
+                body.serial);
+    }
     InitialiseAngularParts(body);
     ApplyDeathImpulse(body);
     IvpCreateCorpse(body);
@@ -1799,7 +1927,10 @@ bool Initialise(Body &body, CStudioModelRenderer &renderer)
 {
     if (!renderer.m_pStudioHeader || renderer.m_pStudioHeader->numbones <= 0 ||
         renderer.m_pStudioHeader->numbones > MAXSTUDIOBONES || !IEngineStudio.IsHardware()) return false;
-    if (!body.hasLivePose)
+    // The Bullet backend starts the corpse from the pose the fall animation
+    // left behind, so the bones of the frame the physics takes over are the
+    // ones that count and not the ones from the moment of death.
+    if (!body.hasLivePose || BulletMode())
         memcpy(body.baseMatrix, *renderer.m_pbonetransform,
             sizeof(body.baseMatrix[0]) * renderer.m_pStudioHeader->numbones);
     return InitialisePose(body, renderer.m_pStudioHeader);
@@ -2102,6 +2233,14 @@ static void SpawnCurrentDeath(int victimIndex, int killerIndex, bool headshot)
     PlayerDeath &state = DeathState(victimIndex);
     BeginDeath(state);
     if (state.claimed) return;
+    // BeginDeath leaves everything alone when the player was already dead, so
+    // the shot of this death has to be cleared here. Otherwise a death without
+    // a usable shooter position would fall back to the position of the
+    // previous death.
+    state.killer = killerIndex;
+    state.headshot = headshot;
+    state.killerOriginValid = false;
+    state.shooterHeight = 0.0f;
     cl_entity_t *player = gEngfuncs.GetEntityByIndex(victimIndex);
     // DeathMsg is global, entity updates are PVS-limited. Wait for the
     // authoritative ClCorpse position when this slot is only an old snapshot.
@@ -2122,7 +2261,64 @@ static void SpawnCurrentDeath(int victimIndex, int killerIndex, bool headshot)
     const studiohdr_t *header = IEngineStudio.Mod_Extradata
         ? static_cast<const studiohdr_t *>(IEngineStudio.Mod_Extradata(model)) : NULL;
     if (!SupportedSkeleton(header)) return;
+    // The corpse starts from the standing pose and the physics does the whole
+    // fall. That is what a ragdoll is: the shot only decides where the body
+    // is pushed and how hard, the rest is solved.
     const int sequence = FindLiveIdleSequence(header);
+    bool haveAttacker = false;
+    if (BulletMode() && killerIndex > 0 &&
+        killerIndex <= gEngfuncs.GetMaxClients() && killerIndex != victimIndex)
+    {
+        cl_entity_t *killer = gEngfuncs.GetEntityByIndex(killerIndex);
+        Vector shooter;
+        if (killer && UsableShooterOrigin(killer, origin, shooter))
+        {
+            // The shooter may have moved on by the time the corpse reaches the
+            // physics, so the position of the shot is kept with the death.
+            state.killerOrigin[0] = shooter.x;
+            state.killerOrigin[1] = shooter.y;
+            state.killerOrigin[2] = shooter.z;
+            state.killerOriginValid = true;
+            // How much higher the shooter stood. It decides where on the body
+            // the shot landed.
+            state.shooterHeight = shooter.z - origin.z;
+            haveAttacker = true;
+        }
+    }
+    if (gEngfuncs.Con_Printf && BulletMode())
+    {
+        gEngfuncs.Con_Printf("ragdoll_bullet: corpse starts from the standing pose, shooter=%d headshot=%d\n",
+            haveAttacker ? 1 : 0, headshot ? 1 : 0);
+    }
+    g_oc2CorpseSequenceFramerate = 1.0f;
+    // The corpse has to play the death animation at its own frame rate.
+    //
+    // The renderer drives a studio sequence from two sources at once
+    // (StudioModelRenderer.cpp:932-947): the temp entity frame, which counts
+    // in a 0..255 space, and the elapsed time since the animation started.
+    // Together they advance the animation frame at
+    //
+    //     framerate * (fps + (numframes - 1) / 256)
+    //
+    // per second, so the rate has to be divided by that sum to make the
+    // animation play at its own fps. With the plain fps the second term
+    // runs the animation dozens of times too fast and the corpse reaches
+    // its last frame within a few milliseconds, which is exactly the
+    // "every corpse falls the same way" symptom.
+    {
+        const mstudioseqdesc_t *sequences = reinterpret_cast<const mstudioseqdesc_t *>(
+            reinterpret_cast<const byte *>(header) + header->seqindex);
+        const float fps = (sequence > 0 && sequence < header->numseq)
+            ? sequences[sequence].fps : 0.0f;
+        const int total = (sequence > 0 && sequence < header->numseq)
+            ? sequences[sequence].numframes : 0;
+        g_oc2CorpseSequenceFramerate = (fps > 0.0f && total > 1)
+            ? (fps / (fps + static_cast<float>(total - 1) / 256.0f)) : 1.0f;
+    }
+    // The killer and the hit belong to the death, not to the moment the
+    // corpse was created: the corpse is registered again a second or more
+    // later, after its death animation has played, and the temporaries that
+    // carried them are long gone by then.
     s_pendingEarlyVictim = victimIndex;
     s_pendingKiller = killerIndex;
     s_pendingHeadshot = headshot;
@@ -2182,6 +2378,14 @@ void OC2_RagdollPlayerState(int playerIndex, bool dead)
         state.dead = false;
         state.corpse = NULL;
         state.corpseTag = 0;
+        // The player is alive again, the shot of the last death is gone.
+        state.killer = 0;
+        state.headshot = false;
+        state.killerOriginValid = false;
+        state.shooterHeight = 0.0f;
+        // The corpse of the last death is released too, so that a death that
+        // follows without a living edge in between is not thrown away.
+        state.claimed = false;
     }
 }
 
@@ -2225,6 +2429,15 @@ bool OC2_RagdollRegister(tempent_s *corpse, int playerIndex)
     const studiohdr_t *header = static_cast<const studiohdr_t *>(
         IEngineStudio.Mod_Extradata(corpse->entity.model));
     if (!SupportedSkeleton(header)) return false;
+
+    if (BulletMode() && gEngfuncs.Con_Printf)
+    {
+        const int sequence = corpse->entity.curstate.sequence;
+        gEngfuncs.Con_Printf("ragdoll_bullet: register check seq=%d numseq=%d model=%s\n",
+            sequence, header->numseq,
+            corpse->entity.model ? corpse->entity.model->name : "(null)");
+    }
+
     const double now = gEngfuncs.GetClientTime();
     int slot = -1;
     for (int i = 0; i < 64; ++i)
@@ -2249,14 +2462,24 @@ bool OC2_RagdollRegister(tempent_s *corpse, int playerIndex)
     if (s_nextSerial >= INT_MAX - 1) s_nextSerial = 0;
     body.serial = ++s_nextSerial;
     body.playerIndex = playerIndex;
+    int killerIndex = 0;
+    bool headshot = false;
     if (playerIndex >= 1 && playerIndex <= 32)
     {
         const PlayerDeath &state = DeathState(playerIndex);
         body.userid = state.userid;
         body.deathGeneration = state.generation;
+        killerIndex = state.killer;
+        headshot = state.headshot;
     }
-    body.early = s_pendingEarlyVictim == playerIndex;
-    body.headshot = body.early && s_pendingHeadshot;
+    // The corpse is registered a second time after its death animation has
+    // played, so the killer and the hit come from the death state and not
+    // from a temporary that was cleared when the corpse was created.
+    body.early = killerIndex > 0 || s_pendingEarlyVictim == playerIndex;
+    body.headshot = headshot || (body.early && s_pendingHeadshot);
+    // Where the shot lands on the body. Without a shooter only the head shot
+    // tells anything, a level shot is assumed.
+    body.hitHeight = HitHeightFor(0.0f, body.headshot);
     body.birth = body.lastTime = now;
     body.expires = corpse->die;
     body.corpse = corpse;
@@ -2295,22 +2518,60 @@ bool OC2_RagdollRegister(tempent_s *corpse, int playerIndex)
         cl_entity_t *player = gEngfuncs.GetEntityByIndex(playerIndex);
         if (player) body.launch = Vector(player->curstate.velocity);
     }
-    if (body.early && s_pendingKiller > 0 &&
-        s_pendingKiller <= gEngfuncs.GetMaxClients() &&
-        s_pendingKiller != playerIndex)
+    if (killerIndex > 0 && killerIndex <= gEngfuncs.GetMaxClients() &&
+        killerIndex != playerIndex)
     {
-        cl_entity_t *killer = gEngfuncs.GetEntityByIndex(s_pendingKiller);
-        // A non-null GoldSrc entity can still hold an old PVS position. Only
-        // synthesize the attacker-away impulse from a player in this packet.
-        if (killer && gEngfuncs.GetLocalPlayer && IEngineStudio.GetPlayerState &&
-            OC2_CurrentPlayerSnapshot(killer))
+        float shooter[3] = {0.0f, 0.0f, 0.0f};
+        bool haveShooter = false;
+        float shooterHeight = 0.0f;
+        // The position of the shot comes with the death. The shooter may have
+        // moved on by the time the corpse reaches the physics.
+        if (playerIndex >= 1 && playerIndex <= 32)
         {
-            Vector away = body.deathOrigin - Vector(killer->origin);
+            const PlayerDeath &state = DeathState(playerIndex);
+            if (state.killerOriginValid)
+            {
+                memcpy(shooter, state.killerOrigin, sizeof(shooter));
+                shooterHeight = state.shooterHeight;
+                haveShooter = true;
+            }
+        }
+        if (!haveShooter)
+        {
+            cl_entity_t *killer = gEngfuncs.GetEntityByIndex(killerIndex);
+            Vector position;
+            if (killer && UsableShooterOrigin(killer, body.deathOrigin, position))
+            {
+                shooter[0] = position.x;
+                shooter[1] = position.y;
+                shooter[2] = position.z;
+                shooterHeight = position.z - body.deathOrigin.z;
+                haveShooter = true;
+            }
+        }
+        if (haveShooter)
+        {
+            Vector away = body.deathOrigin - Vector(shooter);
             away.z = 0.0f;
             const float distance = Length(away);
             if (distance > 1.0f)
-                body.impact = away * ((body.headshot ? 125.0f : 100.0f) / distance);
+            {
+                // A shot from close range throws the body, a distant one only
+                // makes it flop over.
+                const float reach = Clamp(240.0f / (distance + 120.0f), 0.55f, 1.45f);
+                const float strength = (body.headshot ? 125.0f : 100.0f) * reach;
+                body.impact = away * (strength / distance);
+            }
+            // The height of the shooter decides where on the body the shot
+            // landed.
+            body.hitHeight = HitHeightFor(shooterHeight, body.headshot);
+            if (gEngfuncs.Con_Printf)
+                gEngfuncs.Con_Printf("ragdoll_bullet: corpse %u shot from %.0f inch away, impact %.0f, hit height %.2f\n",
+                    body.serial, distance, Length(body.impact), body.hitHeight);
         }
+        else if (gEngfuncs.Con_Printf)
+            gEngfuncs.Con_Printf("ragdoll_bullet: corpse %u has no attacker position, no impact\n",
+                body.serial);
     }
     body.launch = Limited(body.launch, 400.0f);
     corpse->entity.curstate.iuser4 = body.serial;
@@ -2373,6 +2634,17 @@ void OC2_RagdollTick(double clientTime)
     OC2ColdTimer cold("ragdoll_tick","bodies");
     double now = clientTime;
     if (IEngineStudio.GetTimes) IEngineStudio.GetTimes(NULL, &now, NULL);
+
+    // The Bullet world holds every corpse, so the step is global.
+    if (BulletMode())
+    {
+        // One world holds every corpse, so the step is global.
+        static double lastTime = 0.0;
+        const double dt = now - lastTime;
+        lastTime = now;
+        if (dt > 0.0 && dt < 0.25)
+            oc2_bullet::Step((float)dt, now);
+    }
     for (int i = 0; i < 64; ++i)
     {
         Body &body = s_bodies[i];
@@ -2407,6 +2679,11 @@ void OC2_RagdollApply(CStudioModelRenderer &renderer)
         body->lastTime = renderer.m_clTime;
     }
     if (body->header != renderer.m_pStudioHeader) return;
+    if (BulletMode() && oc2_bullet::HasRagdoll(body->serial))
+    {
+        oc2_bullet::ApplyBones(renderer, body->serial);
+        return;
+    }
     ApplyPose(*body, renderer);
 }
 

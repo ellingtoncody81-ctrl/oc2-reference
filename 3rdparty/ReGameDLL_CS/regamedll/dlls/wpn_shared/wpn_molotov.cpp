@@ -216,7 +216,10 @@ void CMolotovGrenade::EmitThrow()
 		if (m_iPrimaryAmmoType >= 0 && m_iPrimaryAmmoType < MAX_AMMO_SLOTS && m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] > 0)
 			--m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType];
 		m_pPlayer->SetAnimation(PLAYER_ATTACK1);
-		m_pPlayer->Radio("%!MRAD_FIREINHOLE", "#Fire_in_the_hole");
+		// Incendiary and molotov get their own callout; voice is per character.
+		const bool bIncendiary = (m_iWeaponState & INCENDIARY_STATE) != 0;
+		m_pPlayer->Radio(bIncendiary ? "%!MRAD_OC2_INCENDIARY" : "%!MRAD_OC2_MOLOTOV",
+			bIncendiary ? "#Incendiary_out" : "#Molotov_out");
 	}
 	if (CVAR_GET_FLOAT("developer")>0)
 		ALERT(at_console,"oc2throw: t=%.6f player=%d userid=%d id=%d strength=%.6f created=%d before=%d after=%d incendiary=%d\n",

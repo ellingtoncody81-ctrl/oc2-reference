@@ -1,7 +1,3 @@
-> **OC2 完整版分支** —— 本分支含 CS 1.6 (Xash3D) 完整项目代码，
-> ReGameDLL_CS / mainui_cpp / CSSDK 已内嵌展开，可直接编译。
-> 精简审阅版见 `cs16-client` 分支。
-
 # CS16Client [![Build Status](https://github.com/Velaron/cs16-client/actions/workflows/build.yml/badge.svg)](https://github.com/Velaron/cs16-client/actions) <img align="right" width="128" height="128" src="https://github.com/Velaron/cs16-client/raw/main/android/app/src/main/ic_launcher-playstore.png" alt="CS16Client" />
 Reverse-engineered Counter Strike 1.6 client, designed for mobile platforms and other officially non-supported platforms.
 

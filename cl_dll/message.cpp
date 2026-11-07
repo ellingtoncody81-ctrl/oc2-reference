@@ -714,66 +714,20 @@ void CHudMessage::MessageAdd(client_textmessage_t * newMessage )
 
 int CHudMessage::MsgFunc_HudTextPro( const char *pszName, int iSize, void *pbuf )
 {
-	const char *sz;
-	qboolean hintMessage;
-	BufferReader reader( pszName, pbuf, iSize );
-	sz = reader.ReadString();
-	hintMessage = reader.ReadByte();
-
-	MessageAdd(sz, gHUD.m_flTime, hintMessage/*, Newfont*/ ); // TODO
-
-	// Remember the time -- to fix up level transitions
-	m_parms.time = gHUD.m_flTime;
-
-	// Turn on drawing
-	m_iFlags |= HUD_DRAW;
+	// The below-crosshair message channel is disabled project-wide. Both the
+	// green hints and the orange map-entity notices were drawn under the
+	// crosshair (x = -1, y = 0.7); nothing arriving on this channel is
+	// queued or drawn anymore. The engine hands us a private copy of the
+	// payload (cl_parse.c MSG_ReadBytes), so dropping the message here
+	// cannot desync the net stream.
 	return 1;
 }
 
 int CHudMessage::MsgFunc_HudTextArgs( const char *pszName, int iSize, void *pbuf )
 {
-	BufferReader reader( pszName, pbuf, iSize );
-
-	const char *sz = reader.ReadString();
-	qboolean hintMessage = reader.ReadByte();
-
-	MessageAdd( sz, gHUD.m_flTime, hintMessage/*, Newfont*/ ); // TODO
-
-	int slot = -1;
-	for ( int i = 0; i < maxHUDMessages; i++ )
-	{
-		if ( m_pMessages[i].pMessage && m_startTime[i] == gHUD.m_flTime )
-		{
-			slot = i;
-			break;
-		}
-	}
-
-	if ( slot != -1 )
-	{
-		int argCount = reader.ReadByte();
-		if ( argCount > 4 ) argCount = 4;
-		if ( argCount < 0 ) argCount = 0;
-
-		m_pMessages[slot].arg_count = argCount;
-
-		for ( int i = 0; i < argCount; i++ )
-		{
-			const char *arg = reader.ReadString();
-			if ( !arg ) arg = "";
-
-			const char *localizedArg = Localize( arg );
-			strncpy( m_pMessages[slot].args[i], localizedArg, 128 );
-			m_pMessages[slot].args[i][127] = 0;
-		}
-	}
-
-	// Remember the time -- to fix up level transitions
-	m_parms.time = gHUD.m_flTime;
-
-	// Turn on drawing
-	m_iFlags |= HUD_DRAW;
-
+	// Same as MsgFunc_HudTextPro: the whole below-crosshair channel is
+	// disabled, including the trailing argument list the server appends
+	// to this message.
 	return 1;
 }
 

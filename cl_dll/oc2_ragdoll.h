@@ -18,4 +18,12 @@ void OC2_RagdollApply(CStudioModelRenderer &renderer);
 void OC2_RagdollTick(double clientTime);
 void OC2_RagdollResolveDeaths(double clientTime);
 void OC2_RagdollClear();
+// Hand the corpse over to the bone physics: the temp entity must stop
+// animating and colliding on its own.
+void OC2_CorpseTakeOverPhysics(tempent_s *corpse);
+
+// The frame rate of the death animation the corpse should play. The temp
+// entity needs it because its own default of one frame per second would
+// freeze the corpse in the pose of the first frame.
+extern float g_oc2CorpseSequenceFramerate;
 void OC2_CorpseForget(tempent_s *corpse);

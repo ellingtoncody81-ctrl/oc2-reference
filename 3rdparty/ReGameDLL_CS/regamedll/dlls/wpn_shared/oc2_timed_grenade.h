@@ -69,7 +69,12 @@ inline void EmitProjectile(CBasePlayerWeapon &w,unsigned short event)
 	if (projectile)
 	{
 		--player->m_rgAmmo[w.m_iPrimaryAmmoType];player->SetAnimation(PLAYER_ATTACK1);
-		player->Radio("%!MRAD_FIREINHOLE","#Fire_in_the_hole");
+		// Announce the thrown item type; the voice is picked per character.
+		const char *pszRadio = "%!MRAD_OC2_FIREINHOLE";
+		const char *pszRadioText = "#Fire_in_the_hole";
+		if (w.m_iId == WEAPON_FLASHBANG) { pszRadio = "%!MRAD_OC2_FLASHBANG"; pszRadioText = "#Flashbang_out"; }
+		else if (w.m_iId == WEAPON_SMOKEGRENADE) { pszRadio = "%!MRAD_OC2_SMOKE"; pszRadioText = "#Smoke_out"; }
+		player->Radio(pszRadio, pszRadioText);
 	}
 	if (CVAR_GET_FLOAT("developer")>0)
 		ALERT(at_console,"oc2throw: t=%.6f player=%d id=%d strength=%.6f speed=%.6f lower=%.6f eye=%.6f,%.6f,%.6f trace=%.6f origin=%.6f,%.6f,%.6f velocity=%.6f,%.6f,%.6f inherited=%.6f,%.6f,%.6f pitch=%.6f created=%d before=%d after=%d\n",

@@ -74,6 +74,54 @@ else()
 endif()
 
 add_library(${CLIENT_LIB} SHARED ${CS_CLIENT_SRC})
+
+# The build tree keeps object files that are older than the headers they
+# include, so a header can change without the translation units that use it
+# being rebuilt. The weapon ids are the ones that hurt: a stale object kept
+# the old value and the buy menu drew the P90 for the Zeus. Every header of
+# this directory is pinned, so a change to any of them always rebuilds every
+# unit that includes it. Only headers that really changed are rebuilt, so
+# the cost is paid once per header change.
+file(GLOB_RECURSE OC2_CLIENT_HEADERS "*.h")
+set(OC2_PINNED_HEADERS ${OC2_CLIENT_HEADERS}
+    "${CMAKE_CURRENT_SOURCE_DIR}/../dlls/weapontype.h")
+foreach(pinned ${OC2_PINNED_HEADERS})
+    if(EXISTS "${pinned}")
+        set_property(SOURCE ${CS_CLIENT_SRC} APPEND PROPERTY OBJECT_DEPENDS "${pinned}")
+    endif()
+endforeach()
+
+# --- OC2 ragdoll (BulletPhysics) batch 1: x64 static link smoke test ---
+# The Bullet3 static libraries are built separately (x64, /MD to match this DLL);
+# see BulletPhysics-Xash3D-adaptation-plan.md for the build command. This step only
+# proves they can be linked into client_amd64.dll; the physics core itself lands
+# in batch 3.
+set(OC2_BULLET3_ROOT "D:/xashcs2/_ai-build/bullet3_build" CACHE PATH
+    "Prebuilt Bullet3 static library root (x64)")
+set(OC2_BULLET3_SRC "D:/xashcs2/_ai-build/deps/bullet3/src" CACHE PATH
+    "Bullet3 source root (header search path)")
+if(EXISTS "${OC2_BULLET3_SRC}")
+    # Batch 1 only compiles one smoke translation unit, so the Bullet3 include path
+    # is set per file: a target-wide include path would invalidate every object.
+    set_source_files_properties(oc2_bullet_smoke.cpp oc2_bullet_ragdoll.cpp PROPERTIES
+        COMPILE_OPTIONS "/I${OC2_BULLET3_SRC}")
+    set(OC2_BULLET3_LIBS "")
+    foreach(_b3 Bullet3Collision Bullet3Common Bullet3Dynamics Bullet3Geometry
+            BulletCollision BulletDynamics LinearMath)
+        find_library(OC2_B3_${_b3} NAMES ${_b3}
+            PATHS "${OC2_BULLET3_ROOT}/lib" NO_DEFAULT_PATH)
+        if(OC2_B3_${_b3})
+            list(APPEND OC2_BULLET3_LIBS "${OC2_B3_${_b3}}")
+        else()
+            message(WARNING "OC2 ragdoll: Bullet3 static library not found: ${_b3}")
+        endif()
+    endforeach()
+    if(OC2_BULLET3_LIBS)
+        target_link_libraries(${CLIENT_LIB} PRIVATE ${OC2_BULLET3_LIBS})
+        message(STATUS "OC2 ragdoll: linked ${OC2_BULLET3_LIBS}")
+    endif()
+endif()
+
 if(MSVC)
 	set_source_files_properties(ammo.cpp buy_menu_state.cpp hud/scoreboard.cpp hud/spectator_gui.cpp statusbar.cpp text_message.cpp message.cpp saytext.cpp vgui_parser.cpp PROPERTIES COMPILE_OPTIONS "/utf-8")
 endif()
