@@ -51,7 +51,7 @@ extern vec3_t v_sim_org;	// last sim origin
 
 namespace {
 int controlBot=0,controlReason=3;
-bool observerMap=true,observerStats=false;
+bool observerMap=true,observerStats=false,controlActive=false;
 void ObserverStats(){if(!g_iUser1){gEngfuncs.pfnServerCmd("lastinv\n");return;}observerStats=!observerStats;}
 double controlStatusTime=-100;
 struct ControlPhase {int weapon=0,animation=0;double received=0,elapsed=0;float start=0;unsigned action=0;bool pending=false,bound=false;} controlPhase;
@@ -61,13 +61,14 @@ int ControlMessage(const char *,int size,void *data) {
  const int op=r.ReadByte(),bot=r.ReadByte(),reason=r.ReadByte(),weapon=r.ReadByte(),animation=r.ReadByte(),elapsed=r.ReadShort();
  if(bot>32||op>2||elapsed<0)return 1;
  if(op==0){controlBot=bot;controlReason=reason;controlStatusTime=gEngfuncs.GetClientTime();}
- else if(op==1){HUD_KillFeedbackTakeover();controlPhase=ControlPhase();controlPhase.weapon=weapon;controlPhase.animation=animation;controlPhase.elapsed=elapsed*.001;controlPhase.received=gEngfuncs.GetClientTime();controlPhase.pending=true;controlStatusTime=-100;}
- else {controlPhase=ControlPhase();controlStatusTime=-100;}
+ else if(op==1){HUD_KillFeedbackTakeover();controlPhase=ControlPhase();controlPhase.weapon=weapon;controlPhase.animation=animation;controlPhase.elapsed=elapsed*.001;controlPhase.received=gEngfuncs.GetClientTime();controlPhase.pending=true;controlStatusTime=-100;controlActive=true;}
+ else {controlPhase=ControlPhase();controlStatusTime=-100;controlActive=false;}
  return 1;
 }
 void ControlDump(){gEngfuncs.Con_Printf("oc2control_client: mode=%d target=%d bot=%d reason=%d phase_weapon=%d phase_anim=%d pending=%d bound=%d elapsed=%.3f\n",g_iUser1,g_iUser2,controlBot,controlReason,controlPhase.weapon,controlPhase.animation,controlPhase.pending,controlPhase.bound,controlPhase.elapsed);}
 }
 bool OC2_ObserverFullMap(){return observerMap;}
+int OC2_ControlBotSlot(){return controlActive?controlBot:0;}
 bool OC2_ObserverStatsOpen(){return g_iUser1&&observerStats;}
 void OC2_ObserverResetInputs(){observerStats=false;observerMap=true;}
 void OC2_ObserverSelect(int key){

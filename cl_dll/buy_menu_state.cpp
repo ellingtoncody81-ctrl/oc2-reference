@@ -10,6 +10,7 @@
 #include "cl_dll/IOc2BuyMenu.h"
 #include "buy_menu_state.h"
 #include "skin_inventory_client.h"
+#include "oc2_observer.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -169,7 +170,7 @@ bool GetItem(int index, oc2_buy::Item &item)
 		&& (entry.kind != Defuser || state.team == TEAM_CT);
 	const int armor = max(0,gHUD.m_Battery.GetArmor());
 	const bool helmet = gHUD.m_Battery.HasHelmet();
-	hud_player_info_t info{}; const int local = LocalSlot(info);
+	hud_player_info_t info{}; LocalSlot(info);
 	switch (entry.kind)
 	{
 	case Gun: case Zeus: item.owned = Owned(entry.id); item.count = item.owned ? 1 : 0; break;
@@ -186,7 +187,7 @@ bool GetItem(int index, oc2_buy::Item &item)
 		item.price = armor >= 100 ? (helmet ? 1000 : 350) : (helmet ? 650 : 1000);
 		break;
 	case Defuser:
-		item.owned = hasItemStatus ? (itemStatus & 2) != 0 : local && g_PlayerExtraInfo[local].has_defuse_kit;
+		item.owned = buy_menu_state::HasDefuser();
 		item.count = item.owned ? 1 : 0; break;
 	}
 
@@ -338,9 +339,28 @@ bool FireIsIncendiary() { return fireVariant == 1; }
 
 bool HasDefuser()
 {
-	if (hasItemStatus) return (itemStatus & 2) != 0;
 	const int local = gEngfuncs.GetLocalPlayer() ? gEngfuncs.GetLocalPlayer()->index : 0;
-	return local > 0 && local <= MAX_PLAYERS && g_PlayerExtraInfo[local].has_defuse_kit;
+	const bool localKit = local > 0 && local <= MAX_PLAYERS && g_PlayerExtraInfo[local].has_defuse_kit;
+	// A bot takeover hands the combat body, and with it the defuser, to the
+	// local player, but the server sends no fresh ItemStatus for it, so the
+	// cached message still carries the value from before the takeover. Only
+	// during a takeover does the score attribute get the final say; outside
+	// it ItemStatus stays authoritative and a dropped defuser cannot linger.
+	const int bot = OC2_ControlBotSlot();
+	const bool takeover = bot > 0;
+	const bool result = hasItemStatus ? ((itemStatus & 2) != 0 || (takeover && localKit)) : localKit;
+	// Diagnostic: report only when the state changes so the log stays readable.
+	const bool botKit = bot > 0 && bot <= MAX_PLAYERS && g_PlayerExtraInfo[bot].has_defuse_kit;
+	static int lastKit = -1, lastBot = -1, lastBotKit = -1, lastStatus = -1, lastHas = -1;
+	if (int(localKit) != lastKit || bot != lastBot || int(botKit) != lastBotKit ||
+		itemStatus != lastStatus || int(hasItemStatus) != lastHas)
+	{
+		lastKit = localKit; lastBot = bot; lastBotKit = botKit;
+		lastStatus = itemStatus; lastHas = hasItemStatus;
+		gEngfuncs.Con_Printf("defuser_state: local=%d local_kit=%d bot=%d bot_kit=%d item_status=%d has_status=%d takeover=%d result=%d\n",
+			local, int(localKit), bot, int(botKit), itemStatus, int(hasItemStatus), int(takeover), int(result));
+	}
+	return result;
 }
 
 bool HostageRescueKitMode()

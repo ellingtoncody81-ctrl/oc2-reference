@@ -1030,7 +1030,12 @@ void CHudRadarModern::LoadObjectives( const char *mapName )
 	int rescueIndex = 0;
 	for( int i = 0; i < m_iObjectiveCount; ++i )
 		if( !m_Objectives[i].bomb )
-			m_Objectives[i].label = rescueIndex < 2 ? (char)( 'A' + rescueIndex++ ) : 0;
+		{
+			// Rescue points are hostages, not bomb sites. CS2 labels them with
+			// a capital H, so the A/B site letters never apply to them.
+			if( rescueIndex < 2 ) m_Objectives[i].label = 'H';
+			++rescueIndex;
+		}
 	// Letter fallback. GoldSrc maps name the plant trigger inconsistently
 	// (tgt_a, target01, empty), and the radar has to show A and B on bomb
 	// maps, so: a trailing digit 1/2 maps to A/B, and when neither site of
@@ -2231,41 +2236,8 @@ void CHudRadarModern::DrawObjectives( int localTeam )
 			const int from = (int)ceilf( left ), to = (int)floorf( right );
 			if( from <= to ) FillRGBABlend( from, row, to - from + 1, 1, 25, 175, 165, 38 );
 		}
-		if( gHUD.m_WhiteTex )
-		{
-			gRenderAPI.GL_SelectTexture( 0 );
-			gRenderAPI.GL_Bind( 0, gHUD.m_WhiteTex );
-		}
-		gEngfuncs.pTriAPI->RenderMode( kRenderTransAlpha );
-		gEngfuncs.pTriAPI->CullFace( TRI_NONE );
-		for( int pass = 0; pass < 2; ++pass )
-		{
-			const float half = pass ? 1.0f : 2.0f;
-			gEngfuncs.pTriAPI->Color4ub( pass ? 45 : 0, pass ? 230 : 0, pass ? 215 : 0, 255 );
-			gEngfuncs.pTriAPI->Begin( TRI_QUADS );
-			for( int k = 0; k < n; ++k )
-			{
-				const int j = ( k + 1 ) % n;
-				// UVs identify the original rectangle sides. Circle-clipping
-				// edges are viewport cuts, not physical rescue-zone borders.
-				const bool originalEdge =
-					( fabsf( u[k] ) < 0.0001f && fabsf( u[j] ) < 0.0001f ) ||
-					( fabsf( u[k] - 1 ) < 0.0001f && fabsf( u[j] - 1 ) < 0.0001f ) ||
-					( fabsf( v[k] ) < 0.0001f && fabsf( v[j] ) < 0.0001f ) ||
-					( fabsf( v[k] - 1 ) < 0.0001f && fabsf( v[j] - 1 ) < 0.0001f );
-				if( !originalEdge ) continue;
-				const float dx = x[j] - x[k], dy = y[j] - y[k];
-				const float length = sqrtf( dx * dx + dy * dy );
-				if( length < 0.001f ) continue;
-				const float nx = -dy * half / length, ny = dx * half / length;
-				gEngfuncs.pTriAPI->Vertex3f( x[k] + nx, y[k] + ny, 0 );
-				gEngfuncs.pTriAPI->Vertex3f( x[j] + nx, y[j] + ny, 0 );
-				gEngfuncs.pTriAPI->Vertex3f( x[j] - nx, y[j] - ny, 0 );
-				gEngfuncs.pTriAPI->Vertex3f( x[k] - nx, y[k] - ny, 0 );
-			}
-			gEngfuncs.pTriAPI->End();
-		}
-		gEngfuncs.pTriAPI->RenderMode( kRenderNormal );
+		// CS2 marks hostage rescue points with a letter only: the zone keeps
+		// its faint fill but gets no box around it.
 	}
 }
 
@@ -2313,7 +2285,8 @@ void CHudRadarModern::DrawSiteLetter( int cx, int cy, char letter, int scale, in
 {
 	static const unsigned char kA[7] = { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
 	static const unsigned char kB[7] = { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E };
-	const unsigned char *rows = ( letter == 'A' ) ? kA : kB;
+	static const unsigned char kH[7] = { 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
+	const unsigned char *rows = ( letter == 'A' ) ? kA : ( letter == 'H' ) ? kH : kB;
 	const int w = 5 * scale;
 	const int h = 7 * scale;
 	const int ox = cx - w / 2;
@@ -2341,7 +2314,7 @@ void CHudRadarModern::DrawObjectiveLabels()
 	for( int i = 0; i < m_iObjectiveCount; ++i )
 	{
 		const Objective &site = m_Objectives[i];
-		if( site.label != 'A' && site.label != 'B' ) continue;
+		if( site.label != 'A' && site.label != 'B' && site.label != 'H' ) continue;
 		if( !site.bomb )
 		{
 			if( RadarTeamOf( m_iPlayerNum ) != TEAM_CT ) continue;
